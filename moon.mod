@@ -13,7 +13,7 @@ name = "superbigcup325/moonlake"
 
 version = "0.1.0"
 
-readme = "README.md"
+readme = "README.mbt.md"
 
 repository = "https://github.com/superbigcup325/moonlake"
 
