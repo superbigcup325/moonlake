@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  MOONBIT_VERSION: 0.1.20260920
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -22,12 +25,18 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Moon version
-        run: moon version --all
-      - name: Check
-        run: moon check
-      - name: Format
+      - name: Verify pinned toolchain version
+        run: |
+          moon version --all
+          moon version | grep -F "${{ env.MOONBIT_VERSION }}"
+      - name: Lint (check --deny-warn)
+        run: moon check --deny-warn
+      - name: Format check
         run: moon fmt --check
+      - name: Interface freshness (info)
+        run: |
+          moon info
+          git diff --exit-code -- '*.mbti'
 
   test:
     strategy:

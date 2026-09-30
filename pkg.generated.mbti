@@ -1,0 +1,17 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "superbigcup325/moonlake"
+
+// Values
+pub const DESCRIPTION : String = "Embeddable analytical query engine for MoonBit"
+
+pub const VERSION : String = "0.1.0"
+
+pub fn version() -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits
