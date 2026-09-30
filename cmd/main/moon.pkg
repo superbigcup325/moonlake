@@ -1,0 +1,6 @@
+import {
+  "superbigcup325/moonlake",
+  "moonbitlang/core/env",
+}
+
+pkgtype(kind: "executable")
