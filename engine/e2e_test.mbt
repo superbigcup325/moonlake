@@ -101,3 +101,119 @@ test "binder rejects unknown columns and tables" {
     .contains("unknown table"),
   )
 }
+
+///|
+const GROUP_SQL : String = "SELECT a, b, sum(v) AS s, count(*) AS c, avg(v) AS m FROM t GROUP BY a, b ORDER BY a, b"
+
+///|
+fn group_catalog() -> @catalog.Catalog {
+  // two groups on (a,b) plus one all-NULL-v group
+  let content = "a,b,v\n" +
+    "1,x,10\n" +
+    "1,x,20\n" +
+    "1,y,5\n" +
+    "2,x,\n" +
+    "2,x,7\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "t") catch { e => abort("\{e}") })
+  cat
+}
+
+///|
+test "group by two keys aggregates, counts and averages" {
+  let r = run(GROUP_SQL, group_catalog())
+  assert_eq(r.names(), ["a", "b", "s", "c", "m"])
+  assert_eq(r.row_count(), 3)
+  // group (1,x): sum 30, count 2, avg 15
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1))
+  assert_eq(r.get(0, 1), @types.Scalar::Str("x"))
+  assert_eq(r.get(0, 2), @types.Scalar::Int64(30L))
+  assert_eq(r.get(0, 3), @types.Scalar::Int64(2L))
+  match r.get(0, 4) {
+    @types.Float64(v) => assert_true(near(v, 15.0))
+    other => fail("expected float64 avg, got \{other.to_string()}")
+  }
+  // group (1,y): sum 5, count 1
+  assert_eq(r.get(1, 2), @types.Scalar::Int64(5L))
+  assert_eq(r.get(1, 3), @types.Scalar::Int64(1L))
+  // group (2,x): NULL v ignored by sum -> 7, count(*) counts both rows
+  assert_eq(r.get(2, 2), @types.Scalar::Int64(7L))
+  assert_eq(r.get(2, 3), @types.Scalar::Int64(2L))
+}
+
+///|
+test "count(expr) skips NULLs, count(DISTINCT) deduplicates" {
+  let cat = group_catalog()
+  let r = run(
+    "SELECT a, count(v) AS cv, count(DISTINCT b) AS db FROM t GROUP BY a ORDER BY a",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  // group a=1: three non-null v, b values {x,y}
+  assert_eq(r.get(0, 1), @types.Scalar::Int64(3L))
+  assert_eq(r.get(0, 2), @types.Scalar::Int64(2L))
+  // group a=2: one non-null v (NULL skipped), b values {x}
+  assert_eq(r.get(1, 1), @types.Scalar::Int64(1L))
+  assert_eq(r.get(1, 2), @types.Scalar::Int64(1L))
+}
+
+///|
+test "having filters groups after aggregation" {
+  let cat = group_catalog()
+  let r = run(
+    "SELECT a, b, count(*) AS c FROM t GROUP BY a, b HAVING count(*) > 1 ORDER BY a, b",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 1), @types.Scalar::Str("x"))
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1))
+  assert_eq(r.get(1, 0), @types.Scalar::Int32(2))
+}
+
+///|
+test "order by desc with limit keeps the top rows" {
+  let cat = group_catalog()
+  let r = run(
+    "SELECT a, b, sum(v) AS s FROM t GROUP BY a, b ORDER BY s DESC LIMIT 2", cat,
+  )
+  // sums: (1,x)=30, (1,y)=5, (2,x)=7 -> top two are 30 then 7
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 2), @types.Scalar::Int64(30L))
+  assert_eq(r.get(1, 2), @types.Scalar::Int64(7L))
+}
+
+///|
+test "min and max track per-group extrema" {
+  let cat = group_catalog()
+  let r = run(
+    "SELECT a, min(v) AS lo, max(v) AS hi FROM t GROUP BY a ORDER BY a", cat,
+  )
+  // group a=1: v in {10, 20, 5}; group a=2: v in {NULL, 7}
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(5))
+  assert_eq(r.get(0, 2), @types.Scalar::Int32(20))
+  assert_eq(r.get(1, 1), @types.Scalar::Int32(7)) // NULL never becomes min
+  assert_eq(r.get(1, 2), @types.Scalar::Int32(7))
+}
+
+///|
+test "group by over empty input yields zero rows" {
+  let content = "a,v\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "t") catch { e => abort("\{e}") })
+  let r = run("SELECT a, count(*) AS c FROM t GROUP BY a", cat)
+  assert_eq(r.row_count(), 0)
+}
+
+///|
+test "ungrouped column in select is a bind error" {
+  assert_true(
+    run_err("SELECT a, sum(v) AS s FROM t", group_catalog())
+    .to_string()
+    .contains("must appear in GROUP BY"),
+  )
+  assert_true(
+    run_err("SELECT 1 AS x FROM t", group_catalog())
+    .to_string()
+    .contains("aggregate or GROUP BY"),
+  )
+}

@@ -35,6 +35,23 @@ pub fn eval_scalar(
         eval_scalar(r, batch, row),
       )
     NotE(inner) => @types.Scalar::logic_not(eval_scalar(inner, batch, row))
+    LikeE(inner, pattern) =>
+      match eval_scalar(inner, batch, row) {
+        @types.Str(s) => @types.Boolean(like_match(s, pattern))
+        _ => @types.Null
+      } // NULL never matches
+    CaseE(whens, else_, _) => {
+      for when in whens {
+        match eval_scalar(when.0, batch, row) {
+          @types.Boolean(true) => return eval_scalar(when.1, batch, row)
+          _ => ()
+        }
+      }
+      match else_ {
+        Some(e) => eval_scalar(e, batch, row)
+        None => @types.Null
+      }
+    }
   }
 }
 
@@ -61,4 +78,43 @@ fn eval_mask(e : PhysExpr, batch : @types.DataBatch) -> FixedArray[Bool] {
     }
   }
   mask
+}
+
+///|
+/// SQL LIKE with % (any run) and _ (one char); case-sensitive.
+/// Two-pointer backtracking: on a mismatch after %, retry the % runway
+/// one character longer.
+fn like_match(text : String, pattern : String) -> Bool {
+  let t : Array[Char] = []
+  for ch in text {
+    t.push(ch)
+  }
+  let p : Array[Char] = []
+  for ch in pattern {
+    p.push(ch)
+  }
+  let mut i = 0
+  let mut j = 0
+  let mut star = -1
+  let mut mark = 0
+  while i < t.length() {
+    if j < p.length() && (p[j] == '_' || p[j] == t[i]) {
+      i += 1
+      j += 1
+    } else if j < p.length() && p[j] == '%' {
+      star = j
+      mark = i
+      j += 1
+    } else if star >= 0 {
+      j = star + 1
+      mark += 1
+      i = mark
+    } else {
+      return false
+    }
+  }
+  while j < p.length() && p[j] == '%' {
+    j += 1
+  }
+  j == p.length()
 }

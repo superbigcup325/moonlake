@@ -1,6 +1,7 @@
-// Eager execution over materialized batches: filter compacts rows, the
-// final aggregate folds every batch into a single output row (no GROUP
-// BY in v1; SUM without matching rows yields one NULL row, per SQL).
+// Eager execution over materialized batches: filter compacts rows, hash
+// aggregation folds every batch into one row per group (a no-GROUP-BY
+// query is one group; an empty input still yields that single row with
+// NULL/0 aggregates, per SQL), then having, projection, order and limit.
 
 ///|
 fn filter_batches(
@@ -27,99 +28,335 @@ fn compact(
   batch : @types.DataBatch,
   mask : FixedArray[Bool],
 ) -> @types.DataBatch {
-  let mut kept = 0
+  let indices : Array[Int] = []
   for r in 0..<batch.row_count() {
     if mask[r] {
-      kept += 1
+      indices.push(r)
     }
   }
+  take_rows(batch, indices)
+}
+
+///|
+/// Build a new batch holding the selected input rows, preserving order.
+fn take_rows(
+  batch : @types.DataBatch,
+  indices : Array[Int],
+) -> @types.DataBatch {
+  let n = indices.length()
   let columns : Array[@types.ColumnVector] = []
   for src in batch.columns() {
-    let dst = @types.ColumnVector::make(src.dtype(), kept)
-    let mut w = 0
-    for r in 0..<batch.row_count() {
-      if mask[r] {
-        dst.set(w, src.get(r))
-        w += 1
-      }
+    let dst = @types.ColumnVector::make(src.dtype(), n)
+    for w, i in indices {
+      dst.set(w, src.get(i))
     }
     columns.push(dst)
   }
-  @types.DataBatch::new(columns, kept)
+  @types.DataBatch::new(columns, n)
 }
 
 ///|
-priv enum SumAcc {
-  I64(Int64, Bool) // value, has_seen_non_null
-  F64(Double, Bool)
+/// One running accumulator per aggregate spec.
+priv enum Acc {
+  SumI(Int64, Bool) // value, has_seen_non_null
+  SumF(Double, Bool)
+  AvgF(Double, Int64) // sum, count of non-null inputs
+  CountOf(Int64)
+  Distinct(Map[String, Bool])
+  MinMax(@types.Scalar, Bool)
 }
 
 ///|
-fn aggregate(
-  batches : Array[@types.DataBatch],
-  specs : Array[AggSpec],
-) -> @types.DataBatch raise @types.SqlError {
-  let k = specs.length()
-  let accs : Array[SumAcc] = []
-  for i in 0..<k {
-    match specs[i].out_type {
-      @types.Int64 => accs.push(I64(0L, false))
-      @types.Float64 => accs.push(F64(0.0, false))
-      other =>
-        raise @types.SqlError::Execute(
-          "aggregate output type \{other.to_string()} not supported",
-        )
+fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
+  let row : Array[Acc] = []
+  for spec in aggs {
+    row.push(
+      match spec.kind {
+        Sum =>
+          match spec.out_type {
+            @types.Int64 => SumI(0L, false)
+            _ => SumF(0.0, false)
+          }
+        Avg => AvgF(0.0, 0L)
+        Count | CountStar => CountOf(0L)
+        CountDistinct => Distinct({})
+        Min | Max => MinMax(@types.Null, false)
+      },
+    )
+  }
+  row
+}
+
+///|
+fn as_double(v : @types.Scalar) -> Double? {
+  match v {
+    @types.Int32(x) => Some(x.to_double())
+    @types.Int64(x) => Some(x.to_double())
+    @types.Float64(x) => Some(x)
+    _ => None
+  }
+}
+
+///|
+fn acc_step(
+  acc : Acc,
+  spec : AggSpec,
+  batch : @types.DataBatch,
+  r : Int,
+) -> Acc {
+  if spec.kind is CountStar {
+    match acc {
+      CountOf(c) => CountOf(c + 1L)
+      other => other
+    }
+  } else {
+    let input = match spec.input {
+      Some(e) => e
+      None => return acc
+    }
+    match eval_scalar(input, batch, r) {
+      @types.Null => acc // aggregates ignore NULL inputs
+      v =>
+        match acc {
+          SumI(s, _) =>
+            match v {
+              @types.Int32(x) => SumI(s + x.to_int64(), true)
+              @types.Int64(x) => SumI(s + x, true)
+              _ => acc
+            }
+          SumF(s, _) =>
+            match as_double(v) {
+              Some(x) => SumF(s + x, true)
+              None => acc
+            }
+          AvgF(s, c) =>
+            match as_double(v) {
+              Some(x) => AvgF(s + x, c + 1L)
+              None => acc
+            }
+          CountOf(c) => CountOf(c + 1L)
+          Distinct(seen) => {
+            seen[scalar_key(v)] = true
+            acc
+          }
+          MinMax(cur, seen) =>
+            if !seen {
+              MinMax(v, true)
+            } else {
+              match @types.Scalar::compare(v, cur) {
+                Some(c) =>
+                  match spec.kind {
+                    Min => if c < 0 { MinMax(v, true) } else { acc }
+                    Max => if c > 0 { MinMax(v, true) } else { acc }
+                    _ => acc
+                  }
+                None => acc
+              }
+            }
+        }
     }
   }
+}
+
+///|
+fn acc_finish(acc : Acc) -> @types.Scalar {
+  match acc {
+    SumI(s, seen) => if seen { @types.Int64(s) } else { @types.Null }
+    SumF(s, seen) => if seen { @types.Float64(s) } else { @types.Null }
+    AvgF(s, c) =>
+      if c > 0L {
+        @types.Float64(s / c.to_double())
+      } else {
+        @types.Null
+      }
+    CountOf(c) => @types.Int64(c)
+    Distinct(seen) => @types.Int64(seen.length().to_int64())
+    MinMax(v, seen) => if seen { v } else { @types.Null }
+  }
+}
+
+///|
+/// Type-tagged, length-prefixed key text so distinct scalars never
+/// collide across groups or join lookups.
+fn scalar_key(v : @types.Scalar) -> String {
+  let sb = StringBuilder()
+  match v {
+    @types.Null => sb.write_string("0:")
+    @types.Boolean(b) => {
+      sb.write_string("1:")
+      sb.write_string(if b { "T" } else { "F" })
+    }
+    @types.Int32(x) => {
+      sb.write_string("2:")
+      sb.write_string(x.to_string())
+    }
+    @types.Int64(x) => {
+      sb.write_string("3:")
+      sb.write_string(x.to_string())
+    }
+    @types.Float64(x) => {
+      sb.write_string("4:")
+      sb.write_string(x.to_string())
+    }
+    @types.Str(s) => {
+      sb.write_string("5:")
+      sb.write_string(s.length().to_string())
+      sb.write_char(':')
+      sb.write_string(s)
+    }
+    @types.Date(d) => {
+      sb.write_string("6:")
+      sb.write_string(d.to_string())
+    }
+  }
+  sb.to_string()
+}
+
+///|
+fn canonical_key(vals : Array[@types.Scalar]) -> String {
+  let sb = StringBuilder()
+  for v in vals {
+    sb.write_string(scalar_key(v))
+    sb.write_char('\u{0001}')
+  }
+  sb.to_string()
+}
+
+///|
+/// Hash aggregation: one output row per distinct group key (in first-
+/// seen order). With no GROUP BY the result is exactly one row, even for
+/// empty input.
+fn aggregate(
+  batches : Array[@types.DataBatch],
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch {
+  let g = group_exprs.length()
+  let m = aggs.length()
+  let index : Map[String, Int] = Map([])
+  let group_keys : Array[Array[@types.Scalar]] = []
+  let acc_rows : Array[Array[Acc]] = []
   for batch in batches {
     for r in 0..<batch.row_count() {
-      for i in 0..<k {
-        match eval_scalar(specs[i].input, batch, r) {
-          @types.Null => () // SUM ignores NULL inputs
-          @types.Int32(v) =>
-            match accs[i] {
-              I64(acc, _) => accs[i] = I64(acc + v.to_int64(), true)
-              _ => ()
-            }
-          @types.Int64(v) =>
-            match accs[i] {
-              I64(acc, _) => accs[i] = I64(acc + v, true)
-              _ => ()
-            }
-          @types.Float64(v) =>
-            match accs[i] {
-              F64(acc, _) => accs[i] = F64(acc + v, true)
-              _ => ()
-            }
-          _ => ()
+      let kv : Array[@types.Scalar] = []
+      for e in group_exprs {
+        kv.push(eval_scalar(e, batch, r))
+      }
+      let key = canonical_key(kv)
+      let gi = match index.get(key) {
+        Some(i) => i
+        None => {
+          let i = group_keys.length()
+          index[key] = i
+          group_keys.push(kv)
+          acc_rows.push(new_accs(aggs))
+          i
         }
+      }
+      let row = acc_rows[gi]
+      for i in 0..<m {
+        row[i] = acc_step(row[i], aggs[i], batch, r)
       }
     }
   }
+  if g == 0 && group_keys.length() == 0 {
+    // a no-GROUP-BY aggregate over empty input still yields one row
+    group_keys.push([])
+    acc_rows.push(new_accs(aggs))
+  }
+  let n = group_keys.length()
   let columns : Array[@types.ColumnVector] = []
-  for i in 0..<k {
-    let vec = @types.ColumnVector::make(specs[i].out_type, 1)
-    match accs[i] {
-      I64(v, seen) =>
-        vec.set(
-          0,
-          if seen {
-            @types.Scalar::Int64(v)
-          } else {
-            @types.Scalar::Null
-          },
-        )
-      F64(v, seen) =>
-        vec.set(
-          0,
-          if seen {
-            @types.Scalar::Float64(v)
-          } else {
-            @types.Scalar::Null
-          },
-        )
+  for c in 0..<g {
+    let vec = @types.ColumnVector::make(group_types[c], n)
+    for r in 0..<n {
+      vec.set(r, group_keys[r][c])
     }
     columns.push(vec)
   }
-  @types.DataBatch::new(columns, 1)
+  for i in 0..<m {
+    let vec = @types.ColumnVector::make(aggs[i].out_type, n)
+    for r in 0..<n {
+      vec.set(r, acc_finish(acc_rows[r][i]))
+    }
+    columns.push(vec)
+  }
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+/// Evaluate the projection expressions over the post-agg row.
+fn project(
+  batch : @types.DataBatch,
+  out_exprs : Array[PhysExpr],
+  out_types : Array[@types.DataType],
+) -> @types.DataBatch {
+  let n = batch.row_count()
+  let columns : Array[@types.ColumnVector] = []
+  for i, e in out_exprs {
+    let vec = @types.ColumnVector::make(out_types[i], n)
+    for r in 0..<n {
+      vec.set(r, eval_scalar(e, batch, r))
+    }
+    columns.push(vec)
+  }
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+/// Row comparator over the ORDER BY output columns. NULLs sort last
+/// regardless of direction; ties keep input order.
+fn cmp_rows(
+  batch : @types.DataBatch,
+  keys : Array[(Int, Bool)],
+  a : Int,
+  b : Int,
+) -> Int {
+  for kv in keys {
+    let x = batch.columns()[kv.0].get(a)
+    let y = batch.columns()[kv.0].get(b)
+    let ord : Int = match (x, y) {
+      (@types.Null, @types.Null) => 0
+      (@types.Null, _) => 1
+      (_, @types.Null) => -1
+      _ =>
+        match @types.Scalar::compare(x, y) {
+          Some(c) => if kv.1 { -c } else { c }
+          None => 0
+        }
+    }
+    if ord != 0 {
+      return ord
+    }
+  }
+  a - b
+}
+
+///|
+fn order_limit(
+  batch : @types.DataBatch,
+  keys : Array[(Int, Bool)],
+  limit : Int?,
+) -> @types.DataBatch {
+  let n = batch.row_count()
+  let indices : Array[Int] = []
+  for i in 0..<n {
+    indices.push(i)
+  }
+  if keys.length() > 0 {
+    indices.sort_by((a, b) => cmp_rows(batch, keys, a, b))
+  }
+  let sel : Array[Int] = match limit {
+    Some(k) => {
+      let out : Array[Int] = []
+      for i in 0..<n {
+        if i < k {
+          out.push(indices[i])
+        }
+      }
+      out
+    }
+    None => indices
+  }
+  take_rows(batch, sel)
 }

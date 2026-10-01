@@ -1,6 +1,9 @@
 // Binder: resolve column names against the table schema, type-check
-// expressions, insert numeric promotions, and fold BETWEEN into a
-// conjunction of comparisons. Output feeds the evaluator directly.
+// expressions, insert numeric promotions, and lower sugar (BETWEEN, IN).
+// Aggregation splits expressions into two spaces: inputs (over the
+// scanned batch) and outputs (over the post-aggregation row, laid out as
+// group keys first, then aggregate results). Select items, HAVING and
+// ORDER BY bind in the output space.
 
 ///|
 pub(all) enum PhysExpr {
@@ -12,41 +15,80 @@ pub(all) enum PhysExpr {
   AndE(PhysExpr, PhysExpr)
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
+  LikeE(PhysExpr, String) // pattern folded at bind time
+  CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
 } derive(Debug)
 
 ///|
 pub extend PhysExpr with @debug.Debug::{to_repr}
 
 ///|
-/// One aggregate to compute. v1 supports SUM over int32 (into int64),
-/// int64 and float64.
-priv struct AggSpec {
-  input : PhysExpr
-  out_type : @types.DataType
-  name : String
+priv enum AggKind {
+  Sum
+  Avg
+  Count
+  CountStar
+  CountDistinct
+  Min
+  Max
 } derive(Debug)
 
 ///|
-/// The bound query: optional filter plus the aggregate list with output
-/// naming. W1 has no GROUP BY, so the result is a single row.
+priv struct AggSpec {
+  kind : AggKind
+  input : PhysExpr? // None only for CountStar
+  out_type : @types.DataType
+} derive(Debug)
+
+///|
+/// The bound query. Post-agg layout: group keys occupy columns
+/// 0..group_count-1, aggregate outputs group_count..end.
 pub struct BoundQuery {
-  priv aggs : Array[AggSpec]
   priv filter : PhysExpr?
+  priv group_exprs : Array[PhysExpr]
+  priv group_types : Array[@types.DataType]
+  priv aggs : Array[AggSpec]
+  priv having : PhysExpr? // over post-agg layout
+  priv out_exprs : Array[PhysExpr] // over post-agg layout
   priv names : Array[String]
   priv out_types : Array[@types.DataType]
+  priv order_keys : Array[(Int, Bool)] // output column index, desc
+  priv limit : Int?
 } derive(Debug)
 
 ///|
 pub extend BoundQuery with @debug.Debug::{to_repr}
 
 ///|
+priv struct Binder {
+  schema : @catalog.TableSchema
+  group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
+  group_types : Array[@types.DataType]
+  aggs : Array[AggSpec]
+  agg_keys : Array[(AggFn, LExpr?)] // written shape of each spec, for dedup
+}
+
+///|
+priv enum Space {
+  Input
+  AggOut
+}
+
+///|
 pub fn bind_select(
   sel : Select,
   schema : @catalog.TableSchema,
 ) -> BoundQuery raise @types.SqlError {
+  let b : Binder = {
+    schema,
+    group_l: sel.group_by,
+    group_types: [],
+    aggs: [],
+    agg_keys: [],
+  }
   let filter : PhysExpr? = match sel.filter {
     Some(f) =>
-      match bind_expr(f, schema, false) {
+      match b.bind(f, Input) {
         (pe, @types.Bool) => Some(pe)
         (_, other) =>
           raise @types.SqlError::Bind(
@@ -55,83 +97,217 @@ pub fn bind_select(
       }
     None => None
   }
-  let aggs : Array[AggSpec] = []
+  let group_exprs : Array[PhysExpr] = []
+  for g in sel.group_by {
+    let (pe, dt) = b.bind(g, Input)
+    group_exprs.push(pe)
+    b.group_types.push(dt)
+  }
+  let out_exprs : Array[PhysExpr] = []
   let names : Array[String] = []
   let out_types : Array[@types.DataType] = []
   for i, item in sel.items {
-    let dt = match item.expr {
-      Agg(fn_, inner) => bind_agg(fn_, inner, schema, aggs)
-      _ =>
-        // v1: no GROUP BY, so a bare column in SELECT cannot be answered
-        raise @types.SqlError::Bind(
-          "select item \{i + 1} must be an aggregate (GROUP BY is not supported yet)",
-        )
-    }
+    let (pe, dt) = b.bind(item.expr, AggOut)
+    out_exprs.push(pe)
     names.push(
       match item.label {
         Some(a) => a
-        None => default_name("sum", i)
+        None => default_name(item.expr, i)
       },
     )
     out_types.push(dt)
   }
-  if aggs.length() == 0 {
+  let having : PhysExpr? = match sel.having {
+    Some(h) =>
+      match b.bind(h, AggOut) {
+        (pe, @types.Bool) => Some(pe)
+        (_, other) =>
+          raise @types.SqlError::Bind(
+            "HAVING must evaluate to bool, got \{other.to_string()}",
+          )
+      }
+    None => None
+  }
+  let order_keys : Array[(Int, Bool)] = []
+  for item in sel.order_by {
+    let idx : Int? = match item.key {
+      Col(name) => {
+        let mut found = None
+        for i, name2 in names {
+          if name2 == name {
+            found = Some(i)
+          }
+        }
+        found
+      }
+      _ => None
+    }
+    match idx {
+      Some(i) => order_keys.push((i, item.desc))
+      None =>
+        raise @types.SqlError::Bind(
+          "ORDER BY must reference an output column (v1 subset)",
+        )
+    }
+  }
+  if b.aggs.length() == 0 && sel.group_by.length() == 0 {
     raise @types.SqlError::Bind(
-      "query has no aggregate select items (v1 subset)",
+      "query has no aggregate or GROUP BY (v1 subset)",
     )
   }
-  { aggs, filter, names, out_types, }
-}
-
-///|
-fn default_name(fn_name : String, index : Int) -> String {
-  if index == 0 {
-    fn_name
-  } else {
-    "\{fn_name}_\{index + 1}"
+  {
+    filter,
+    group_exprs,
+    group_types: b.group_types,
+    aggs: b.aggs,
+    having,
+    out_exprs,
+    names,
+    out_types,
+    order_keys,
+    limit: sel.limit,
   }
 }
 
 ///|
-fn bind_agg(
+fn default_name(expr : LExpr, index : Int) -> String {
+  match expr {
+    Col(name) => name
+    Agg(fn_, _) => {
+      let label = match fn_ {
+        Sum => "sum"
+        Avg => "avg"
+        Count | CountStar | CountDistinct => "count"
+        Min => "min"
+        Max => "max"
+      }
+      if index == 0 {
+        label
+      } else {
+        "\{label}_\{index + 1}"
+      }
+    }
+    _ => "col_\{index + 1}"
+  }
+}
+
+///|
+/// Bind an aggregate reference in the output space: reuse an existing
+/// spec with the same written shape or create one.
+fn Binder::agg_ref(
+  self : Binder,
   fn_ : AggFn,
-  inner : LExpr,
-  schema : @catalog.TableSchema,
-  aggs : Array[AggSpec],
-) -> @types.DataType raise @types.SqlError {
-  let (pe, dt) = bind_expr(inner, schema, false) // no nested aggregates
-  let out_type = match (fn_, dt) {
-    (Sum, @types.Int32) => @types.DataType::Int64
-    (Sum, @types.Int64) => @types.DataType::Int64
-    (Sum, @types.Float64) => @types.DataType::Float64
-    (Sum, other) =>
-      raise @types.SqlError::Bind(
-        "SUM does not support input type \{other.to_string()}",
-      )
+  inner : LExpr?,
+) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+  for k, key in self.agg_keys {
+    let same_inner = match (key.1, inner) {
+      (None, None) => true
+      (Some(a), Some(c)) => LExpr::equal(a, c)
+      _ => false
+    }
+    if key.0 == fn_ && same_inner {
+      let dt = self.aggs[k].out_type
+      let col = self.group_types.length() + k
+      return (ColRef(col, dt), dt)
+    }
   }
-  aggs.push({ input: pe, out_type, name: "", })
-  out_type
+  let spec = self.bind_agg(fn_, inner)
+  self.aggs.push(spec)
+  self.agg_keys.push((fn_, inner))
+  let col = self.group_types.length() + self.aggs.length() - 1
+  (ColRef(col, spec.out_type), spec.out_type)
 }
 
 ///|
-/// Bind a logical expression to a physical one; returns the physical
-/// expression and its result type. `allow_agg` must be false: aggregates
-/// may only appear as top-level select items (v1).
-fn bind_expr(
+fn Binder::bind_agg(
+  self : Binder,
+  fn_ : AggFn,
+  inner : LExpr?,
+) -> AggSpec raise @types.SqlError {
+  if fn_ is CountStar {
+    return { kind: CountStar, input: None, out_type: @types.Int64, }
+  }
+  let lexpr = match inner {
+    Some(e) => e
+    None =>
+      raise @types.SqlError::Bind("aggregate requires an input expression")
+  }
+  let (pe, dt) = self.bind(lexpr, Input) // no nested aggregates
+  let out_type = match fn_ {
+    Sum =>
+      match dt {
+        @types.Int32 | @types.Int64 => @types.DataType::Int64
+        @types.Float64 => @types.DataType::Float64
+        other =>
+          raise @types.SqlError::Bind(
+            "SUM does not support input type \{other.to_string()}",
+          )
+      }
+    Avg =>
+      match dt {
+        @types.Int32 | @types.Int64 | @types.Float64 => @types.DataType::Float64
+        other =>
+          raise @types.SqlError::Bind(
+            "AVG does not support input type \{other.to_string()}",
+          )
+      }
+    Count | CountDistinct => @types.DataType::Int64
+    Min | Max =>
+      match dt {
+        @types.Bool =>
+          raise @types.SqlError::Bind(
+            "MIN/MAX does not support input type bool",
+          )
+        other => other
+      }
+    CountStar => @types.DataType::Int64 // unreachable: handled above
+  }
+  let kind : AggKind = match fn_ {
+    Sum => Sum
+    Avg => Avg
+    Count => Count
+    CountStar => CountStar
+    CountDistinct => CountDistinct
+    Min => Min
+    Max => Max
+  }
+  { kind, input: Some(pe), out_type, }
+}
+
+///|
+/// Bind a logical expression. In the Input space columns resolve against
+/// the table schema and aggregates are rejected; in the AggOut space
+/// expressions must be built from GROUP BY keys and aggregates.
+fn Binder::bind(
+  self : Binder,
   e : LExpr,
-  schema : @catalog.TableSchema,
-  allow_agg : Bool,
+  space : Space,
 ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+  if space is AggOut {
+    for i, g in self.group_l {
+      if LExpr::equal(e, g) {
+        let dt = self.group_types[i]
+        return (ColRef(i, dt), dt)
+      }
+    }
+  }
   match e {
     Col(name) =>
-      match schema.index_of(name) {
-        Some(i) => {
-          let dt = schema.columns[i].dtype
-          (ColRef(i, dt), dt)
-        }
-        None =>
+      match space {
+        Input =>
+          match self.schema.index_of(name) {
+            Some(i) => {
+              let dt = self.schema.columns[i].dtype
+              (ColRef(i, dt), dt)
+            }
+            None =>
+              raise @types.SqlError::Bind(
+                "unknown column \"\{name}\" in table \"\{self.schema.table}\"",
+              )
+          }
+        AggOut =>
           raise @types.SqlError::Bind(
-            "unknown column \"\{name}\" in table \"\{schema.table}\"",
+            "column \"\{name}\" must appear in GROUP BY or inside an aggregate",
           )
       }
     Lit(s) =>
@@ -143,11 +319,17 @@ fn bind_expr(
           (Const(other), dt)
         }
       }
-    Agg(_, _) =>
-      raise @types.SqlError::Bind("aggregate is only allowed as a select item")
+    Agg(fn_, inner) =>
+      match space {
+        Input =>
+          raise @types.SqlError::Bind(
+            "aggregate is only allowed in SELECT, HAVING or ORDER BY",
+          )
+        AggOut => self.agg_ref(fn_, inner)
+      }
     Arith(op, l, r) => {
-      let (lpe, ldt) = bind_expr(l, schema, allow_agg)
-      let (rpe, rdt) = bind_expr(r, schema, allow_agg)
+      let (lpe, ldt) = self.bind(l, space)
+      let (rpe, rdt) = self.bind(r, space)
       match unify(ldt, rdt) {
         Some(dt) =>
           match dt {
@@ -166,8 +348,8 @@ fn bind_expr(
       }
     }
     Cmp(op, l, r) => {
-      let (lpe, ldt) = bind_expr(l, schema, allow_agg)
-      let (rpe, rdt) = bind_expr(r, schema, allow_agg)
+      let (lpe, ldt) = self.bind(l, space)
+      let (rpe, rdt) = self.bind(r, space)
       match unify(ldt, rdt) {
         Some(dt) => {
           let lp = promote_to(lpe, ldt, dt)
@@ -181,29 +363,39 @@ fn bind_expr(
       }
     }
     And(l, r) => {
-      let (lpe, ldt) = bind_expr(l, schema, allow_agg)
-      let (rpe, rdt) = bind_expr(r, schema, allow_agg)
+      let (lpe, ldt) = self.bind(l, space)
+      let (rpe, rdt) = self.bind(r, space)
       expect_bool(lpe, ldt, "AND")
       expect_bool(rpe, rdt, "AND")
       (AndE(lpe, rpe), @types.Bool)
     }
     Or(l, r) => {
-      let (lpe, ldt) = bind_expr(l, schema, allow_agg)
-      let (rpe, rdt) = bind_expr(r, schema, allow_agg)
+      let (lpe, ldt) = self.bind(l, space)
+      let (rpe, rdt) = self.bind(r, space)
       expect_bool(lpe, ldt, "OR")
       expect_bool(rpe, rdt, "OR")
       (OrE(lpe, rpe), @types.Bool)
     }
     Not(inner) => {
-      let (pe, dt) = bind_expr(inner, schema, allow_agg)
+      let (pe, dt) = self.bind(inner, space)
       expect_bool(pe, dt, "NOT")
       (NotE(pe), @types.Bool)
     }
     Between(v, low, high) => {
       // desugar: v >= low AND v <= high
       let conj = And(Cmp(@types.Ge, v, low), Cmp(@types.Le, v, high))
-      bind_expr(conj, schema, allow_agg)
+      self.bind(conj, space)
     }
+    In(v, items) => {
+      // desugar: v = item1 OR v = item2 ... (empty list: FALSE)
+      let mut acc : LExpr = Lit(@types.Boolean(false))
+      for item in items {
+        acc = Or(Cmp(@types.Eq, v, item), acc)
+      }
+      self.bind(acc, space)
+    }
+    Like(_, _) => raise @types.SqlError::Bind("LIKE is not supported yet")
+    Case(_, _) => raise @types.SqlError::Bind("CASE WHEN is not supported yet")
   }
 }
 

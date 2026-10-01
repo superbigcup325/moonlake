@@ -1,5 +1,6 @@
 // Engine facade: parse, bind and execute a SELECT over a registered
-// catalog. The W1 pipeline is scan -> filter -> final aggregate.
+// catalog. The W2 pipeline is scan -> filter -> hash aggregate ->
+// having -> projection -> order -> limit.
 
 ///|
 pub struct SelectResult {
@@ -50,6 +51,12 @@ pub fn run_select(
   }
   let bq = bind_select(sel, entry.schema)
   let filtered = filter_batches(entry.batches, bq.filter)
-  let batch = aggregate(filtered, bq.aggs)
+  let grouped = aggregate(filtered, bq.group_exprs, bq.group_types, bq.aggs)
+  let kept = match bq.having {
+    Some(h) => compact(grouped, eval_mask(h, grouped))
+    None => grouped
+  }
+  let projected = project(kept, bq.out_exprs, bq.out_types)
+  let batch = order_limit(projected, bq.order_keys, bq.limit)
   { names: bq.names, types: bq.out_types, batch, }
 }

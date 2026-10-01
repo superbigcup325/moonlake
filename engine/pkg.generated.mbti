@@ -21,6 +21,12 @@ pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlErro
 // Types and methods
 pub(all) enum AggFn {
   Sum
+  Avg
+  Count
+  CountStar
+  CountDistinct
+  Min
+  Max
 } derive(Eq, @debug.Debug)
 pub fn AggFn::equal(Self, Self) -> Bool
 pub fn AggFn::not_equal(Self, Self) -> Bool
@@ -40,11 +46,22 @@ pub(all) enum LExpr {
   Or(LExpr, LExpr)
   Not(LExpr)
   Between(LExpr, LExpr, LExpr)
-  Agg(AggFn, LExpr)
+  In(LExpr, Array[LExpr])
+  Like(LExpr, LExpr)
+  Case(Array[(LExpr, LExpr)], LExpr?)
+  Agg(AggFn, LExpr?)
 } derive(Eq, @debug.Debug)
 pub fn LExpr::equal(Self, Self) -> Bool
 pub fn LExpr::not_equal(Self, Self) -> Bool
 pub fn LExpr::to_repr(Self) -> @debug.Repr
+
+pub(all) struct OrderItem {
+  key : LExpr
+  desc : Bool
+} derive(Eq, @debug.Debug)
+pub fn OrderItem::equal(Self, Self) -> Bool
+pub fn OrderItem::not_equal(Self, Self) -> Bool
+pub fn OrderItem::to_repr(Self) -> @debug.Repr
 
 pub(all) enum PhysExpr {
   ColRef(Int, @types.DataType)
@@ -55,13 +72,19 @@ pub(all) enum PhysExpr {
   AndE(PhysExpr, PhysExpr)
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
+  LikeE(PhysExpr, String)
+  CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Select {
   table : String
   filter : LExpr?
+  group_by : Array[LExpr]
+  having : LExpr?
   items : Array[SelectItem]
+  order_by : Array[OrderItem]
+  limit : Int?
 } derive(Eq, @debug.Debug)
 pub fn Select::equal(Self, Self) -> Bool
 pub fn Select::not_equal(Self, Self) -> Bool

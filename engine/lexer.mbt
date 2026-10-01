@@ -31,7 +31,21 @@ priv enum Tok {
   KwNot
   KwBetween
   KwDate
-  KwSum
+  KwGroup
+  KwBy
+  KwHaving
+  KwOrder
+  KwAsc
+  KwDesc
+  KwLimit
+  KwCase
+  KwWhen
+  KwThen
+  KwElse
+  KwEnd
+  KwLike
+  KwIn
+  KwDistinct
   Eof
 } derive(Eq)
 
@@ -186,20 +200,22 @@ fn Lexer::lex_word(self : Lexer) -> String {
 }
 
 ///|
-fn keyword_or_ident(word : String) -> Tok {
-  let lower = {
-    let sb = StringBuilder()
-    for ch in word {
-      let v = ch.to_int()
-      if v >= 65 && v <= 90 {
-        sb.write_char((v + 32).to_char().unwrap())
-      } else {
-        sb.write_char(ch)
-      }
+fn ascii_lower(word : String) -> String {
+  let sb = StringBuilder()
+  for ch in word {
+    let v = ch.to_int()
+    if v >= 65 && v <= 90 {
+      sb.write_char((v + 32).to_char().unwrap())
+    } else {
+      sb.write_char(ch)
     }
-    sb.to_string()
   }
-  match lower {
+  sb.to_string()
+}
+
+///|
+fn keyword_or_ident(word : String) -> Tok {
+  match ascii_lower(word) {
     "select" => KwSelect
     "from" => KwFrom
     "where" => KwWhere
@@ -209,7 +225,21 @@ fn keyword_or_ident(word : String) -> Tok {
     "not" => KwNot
     "between" => KwBetween
     "date" => KwDate
-    "sum" => KwSum
+    "group" => KwGroup
+    "by" => KwBy
+    "having" => KwHaving
+    "order" => KwOrder
+    "asc" => KwAsc
+    "desc" => KwDesc
+    "limit" => KwLimit
+    "case" => KwCase
+    "when" => KwWhen
+    "then" => KwThen
+    "else" => KwElse
+    "end" => KwEnd
+    "like" => KwLike
+    "in" => KwIn
+    "distinct" => KwDistinct
     _ => Ident(word)
   }
 }

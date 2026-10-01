@@ -1,9 +1,15 @@
-// Logical AST produced by the W1 subset parser. The binder lowers this
+// Logical AST produced by the subset parser. The binder lowers this
 // to column-index based physical expressions (see binder.mbt).
 
 ///|
 pub(all) enum AggFn {
   Sum
+  Avg
+  Count // count(expr): counts non-null inputs
+  CountStar // count(*): counts rows
+  CountDistinct
+  Min
+  Max
 } derive(Eq, Debug)
 
 ///|
@@ -22,7 +28,10 @@ pub(all) enum LExpr {
   Or(LExpr, LExpr)
   Not(LExpr)
   Between(LExpr, LExpr, LExpr) // value, low, high (both inclusive)
-  Agg(AggFn, LExpr)
+  In(LExpr, Array[LExpr]) // binder desugars into an OR-chain of equalities
+  Like(LExpr, LExpr) // pattern must fold to a string constant
+  Case(Array[(LExpr, LExpr)], LExpr?) // searched CASE: (when, then)*, else?
+  Agg(AggFn, LExpr?) // None only for count(*)
 } derive(Eq, Debug)
 
 ///|
@@ -44,11 +53,29 @@ pub extend SelectItem with Eq::{equal, not_equal}
 pub extend SelectItem with @debug.Debug::{to_repr}
 
 ///|
-/// W1 subset: one table, optional WHERE, aggregate-only select items.
+pub(all) struct OrderItem {
+  key : LExpr
+  desc : Bool
+} derive(Eq, Debug)
+
+///|
+pub extend OrderItem with Eq::{equal, not_equal}
+
+///|
+pub extend OrderItem with @debug.Debug::{to_repr}
+
+///|
+/// W2 subset: one table, the full select pipeline (WHERE, GROUP BY,
+/// HAVING, projection, ORDER BY, LIMIT). Multi-table FROM arrives with
+/// the join milestone.
 pub(all) struct Select {
   table : String
   filter : LExpr?
+  group_by : Array[LExpr]
+  having : LExpr?
   items : Array[SelectItem]
+  order_by : Array[OrderItem]
+  limit : Int?
 } derive(Eq, Debug)
 
 ///|
