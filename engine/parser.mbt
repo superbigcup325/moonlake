@@ -99,6 +99,10 @@ fn show_tok(t : Tok) -> String {
     KwOuter => "OUTER"
     KwCross => "CROSS"
     KwOn => "ON"
+    KwExtract => "EXTRACT"
+    KwYear => "YEAR"
+    KwMonth => "MONTH"
+    KwDay => "DAY"
     Eof => "end of input"
   }
 }
@@ -478,6 +482,24 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
         }
       }
     KwCase => parse_case(p)
+    KwExtract => {
+      p.expect(LParen)
+      let field = match p.advance() {
+        KwYear => Year
+        KwMonth => Month
+        KwDay => Day
+        other => {
+          let found = show_tok(other)
+          raise @types.SqlError::Parse(
+            "expected YEAR, MONTH or DAY in EXTRACT, found \{found}",
+          )
+        }
+      }
+      p.expect(KwFrom)
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Extract(field, inner)
+    }
     other => {
       let found = show_tok(other)
       raise @types.SqlError::Parse("unexpected \{found} in expression")

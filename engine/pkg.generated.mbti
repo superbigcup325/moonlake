@@ -107,6 +107,7 @@ pub(all) enum PhysExpr {
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
   LikeE(PhysExpr, String)
+  ExtractE(PhysExpr, ExtractField)
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr

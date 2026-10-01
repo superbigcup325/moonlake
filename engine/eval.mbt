@@ -30,6 +30,18 @@ fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
     AndE(l, r) => @types.Scalar::logic_and(eval_with(l, get), eval_with(r, get))
     OrE(l, r) => @types.Scalar::logic_or(eval_with(l, get), eval_with(r, get))
     NotE(inner) => @types.Scalar::logic_not(eval_with(inner, get))
+    ExtractE(inner, field) =>
+      match eval_with(inner, get) {
+        @types.Date(d) =>
+          @types.Int32(
+            match field {
+              Year => @types.epoch_year(d)
+              Month => @types.epoch_month(d)
+              Day => @types.epoch_day(d)
+            },
+          )
+        _ => @types.Null
+      }
     LikeE(inner, pattern) =>
       match eval_with(inner, get) {
         @types.Str(s) => @types.Boolean(like_match(s, pattern))

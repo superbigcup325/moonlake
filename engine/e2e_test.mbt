@@ -444,3 +444,25 @@ test "table alias is a column qualifier" {
     .contains("unknown table or alias"),
   )
 }
+
+///|
+test "extract year/month/day from dates" {
+  let cat = str_catalog("d\n1996-03-13\n1995-01-29\n")
+  let r = run(
+    "SELECT extract(year from d) AS y, extract(month from d) AS m, extract(day from d) AS dd FROM t ORDER BY y, m, dd",
+    cat,
+  )
+  assert_eq(r.types()[0], @types.Int32)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1995))
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(1))
+  assert_eq(r.get(0, 2), @types.Scalar::Int32(29))
+  assert_eq(r.get(1, 0), @types.Scalar::Int32(1996))
+  // an empty cell among date rows is NULL and extracts to NULL
+  let cat2 = str_catalog("d,tag\n,keep\n1996-03-13,keep\n")
+  let r2 = run(
+    "SELECT extract(year from d) AS y FROM t WHERE tag = 'keep' ORDER BY y", cat2,
+  )
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Scalar::Int32(1996)) // NULLS LAST
+  assert_eq(r2.get(1, 0), @types.Scalar::Null)
+}

@@ -24,6 +24,7 @@ pub(all) enum PhysExpr {
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
   LikeE(PhysExpr, String) // pattern folded at bind time
+  ExtractE(PhysExpr, ExtractField)
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
 } derive(Debug)
 
@@ -853,7 +854,15 @@ fn Binder::bind(
       let (pe, dt) = self.bind(Not(In(v, items)), space)
       (pe, dt)
     }
-    Extract(_, _) => raise @types.SqlError::Bind("EXTRACT is not supported yet")
+    Extract(field, inner) => {
+      let (pe, dt) = self.bind(inner, space)
+      if dt != @types.Date {
+        raise @types.SqlError::Bind(
+          "EXTRACT requires a date value, got \{dt.to_string()}",
+        )
+      }
+      (ExtractE(pe, field), @types.Int32)
+    }
     ScalarSub(_) =>
       raise @types.SqlError::Bind("scalar subqueries are not supported yet")
     InSelect(_, _, _) =>

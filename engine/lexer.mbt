@@ -54,6 +54,10 @@ priv enum Tok {
   KwOuter
   KwCross
   KwOn
+  KwExtract
+  KwYear
+  KwMonth
+  KwDay
   Eof
 } derive(Eq)
 
@@ -260,6 +264,10 @@ fn keyword_or_ident(word : String) -> Tok {
     "outer" => KwOuter
     "cross" => KwCross
     "on" => KwOn
+    "extract" => KwExtract
+    "year" => KwYear
+    "month" => KwMonth
+    "day" => KwDay
     _ => Ident(word)
   }
 }
