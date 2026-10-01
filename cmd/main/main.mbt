@@ -77,12 +77,14 @@ fn exec_command(args : Array[String]) -> Unit {
     cat.register(entry)
   }
   if explain {
-    println(@engine.explain(sql, cat) catch {
-      err => {
-        println(err.to_string())
-        return
-      }
-    })
+    println(
+      @engine.explain(sql, cat) catch {
+        err => {
+          println(err.to_string())
+          return
+        }
+      },
+    )
     return
   }
   let result = @moonlake.execute(sql, cat) catch {
