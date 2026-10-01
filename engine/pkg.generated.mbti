@@ -10,6 +10,8 @@ import {
 // Values
 pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar
 
+pub fn explain(String, @catalog.Catalog) -> String raise @types.SqlError
+
 pub fn parse_select(String) -> Select raise @types.SqlError
 
 pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError
