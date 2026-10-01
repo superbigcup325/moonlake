@@ -1,5 +1,8 @@
 import {
   "superbigcup325/moonlake",
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/engine",
+  "superbigcup325/moonlake/sources/csv",
   "moonbitlang/core/env",
 }
 

@@ -1,0 +1,9 @@
+import {
+  "superbigcup325/moonlake/types",
+  "superbigcup325/moonlake/catalog",
+  "moonbitlang/core/debug",
+}
+
+import {
+  "superbigcup325/moonlake/sources/csv",
+} for "test"
