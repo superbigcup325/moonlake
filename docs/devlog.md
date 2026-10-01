@@ -140,3 +140,81 @@ including CSV parsing. **W2 gate passed.**
   classification). Residuals evaluate per candidate pair on a
   materialized flat row — correct but unoptimized, fine at harness
   scale.
+
+## W3 (planned 2026-10-16..22, landed early 2026-10-02): TPC-H 14/22,
+subqueries, CLI surface, golden bench
+
+### Goal
+
+The W3 gate: TPC-H coverage to 10-14 runnable queries, the two promised
+rule-based optimizations, bench numbers, --explain/--json/REPL,
+playground kickoff, and the parquet per-column-read upstream decision.
+
+### What landed
+
+- SQL surface: plain projection (no aggregate), table aliases with
+  qualified columns (n1.n_name), EXTRACT(year/month/day FROM date),
+  derived tables (FROM (SELECT ...) alias, eager recursion at
+  FROM-resolution), NOT LIKE / NOT IN literal lists, non-correlated
+  scalar subqueries (folded to constants through a catalog-backed
+  runner) and non-correlated IN / NOT IN subqueries (folded to
+  canonical key sets with full SQL NULL semantics: NOT IN over a set
+  containing NULL drops every row)
+- Join planning: greedy connected-first ordering for inner-only chains
+  (flat layout follows the JOIN order), LEFT chains keep written order;
+  a disjunction implying the same equi pair in every branch (Q19) yields
+  a hash key with the full OR as residual
+- CLI: --explain (bound plan render: pushdown filters, join keys,
+  build/probe/residual, aggregate, order, limit) and --json (one JSON
+  array line, escaped strings, null for NULL)
+- harness: all eight TPC-H tables, goldens for q5 q7 q8 q10 q12 q13 q19
+  q11 q16 q15r (Q15 rewritten: CTE inlined as a derived table, max as a
+  scalar subquery), check_all.sh at 15 goldens, bench.py (native best-of-
+  3 vs duckdb)
+
+### Result
+
+TPC-H: 14 of 22 runnable — Q1 Q3 Q5 Q6 Q7 Q8 Q10 Q12 Q13 Q14 Q19 direct
+(11, two more than promised) plus Q11 Q15r Q16 (3 rewrites, Q16/Q11 on
+their official texts). Every golden matches duckdb within 1e-9 relative
+tolerance; check_all.sh 15/15. Bench (SF0.01, best of 3): moonlake
+native 0.5-1.0 s vs duckdb 0.7-6 ms per query — recorded as-is; the gap
+is the row-at-a-time evaluator plus eager CSV parsing, exactly the W3
+perf-pass target.
+
+### A real bug found by the gate: string ordering
+
+Q16's 296-row ordering disagreed with duckdb and the chase ended at a
+language trap: MoonBit's `<`/`>` operators on String are not
+lexicographic (they appear to follow literal-pool order), and
+`String::compare` is length-first. SQL ordering now goes through
+`String::lexical_compare`. Two earlier goldens (q1, q13) had passed
+only because their string keys happened to be equal-length — a quiet
+false-pass that the bigger golden surface exposed. A guard test now
+records the trap next to the fix.
+
+### Decisions and edges
+
+- **Derived tables recurse at FROM-resolution time.** The engine is
+  fully eager, so a derived table is just: run the inner select against
+  the catalog, its output becomes a virtual schema + one batch. No
+  planner change. Correlated subqueries stay out of scope (v1).
+- **Join-order flat layout.** Greedy reordering forced the flat column
+  layout to follow the JOIN order rather than FROM order; offsets are
+  assigned after planning. With LEFT JOIN present, written order is
+  kept (row preservation depends on it).
+- **Scalar subqueries fold at bind time.** Non-correlated means the
+  inner select sees only its own FROM; folding to a constant is then
+  sound anywhere an expression binds (WHERE, HAVING, Q11's threshold).
+- **Projection pruning + vectorization deferred, deliberately.** The
+  bench shows time concentrated in row-at-a-time evaluation and eager
+  CSV parsing; pruning decoded columns saves memory but no time until
+  the vectorized evaluator lands. Order of work: vectorize first, prune
+  on top. Both remain promised for v1 and now have a measurable target.
+- **REPL is blocked on upstream**: moonbitlang/x has no stdin API yet;
+  --explain and --json shipped instead. Playground kickoff deferred to
+  the next session (wasm bridge + page is an independent chunk).
+- **Parquet per-column-read upstream PR: evaluated, not pursued.** The
+  adapter consumes read_bytes_columnar; a column-selection read would
+  only pay off after vectorization/pruning exist to exploit it. Whole-
+  file decode stays for v1; revisit post-competition (plan §11).

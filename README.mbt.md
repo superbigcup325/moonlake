@@ -51,6 +51,20 @@ bash harness/check_all.sh                         # q6 q1 q3 q14 q6p: all PASS
 The same chain runs in CI (job `tpch`) after regenerating the data from
 scratch.
 
+**TPC-H scoreboard**: 14 of 22 queries runnable (11 direct + 3 with the
+sanctioned rewrites — derived tables, scalar subqueries), all matching
+DuckDB within 1e-9 relative tolerance on SF0.01.
+
+Informational benchmark (SF0.01, best of 3, reproducible via
+`harness/bench.py`; row-at-a-time evaluation, vectorization pending):
+
+| query | moonlake native | duckdb |
+|---|---|---|
+| q6 | 539 ms | 0.7 ms |
+| q1 | 622 ms | 3.0 ms |
+| q3 | 713 ms | 4.8 ms |
+| q7 | 995 ms | 4.3 ms |
+
 As a library (once published to mooncakes.io):
 
 ```bash
