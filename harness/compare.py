@@ -15,11 +15,14 @@ NULLS = ("", "null")
 
 
 def rows_of(path: str) -> list[list[str]]:
+    # keep blank lines: a single-column all-NULL row IS a blank line
     lines = [
         line.strip()
         for line in pathlib.Path(path).read_text().splitlines()
-        if line.strip()
     ]
+    # drop trailing blank lines (file-ending newline artifacts)
+    while lines and lines[-1] == "":
+        lines.pop()
     if not lines:
         raise SystemExit(f"{path}: no rows (header expected)")
     return [line.split("|") for line in lines[1:]]  # drop the header

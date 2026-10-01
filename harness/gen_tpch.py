@@ -53,7 +53,7 @@ print("lineitem.parquet written")
 
 def fmt(v) -> str:
     if v is None:
-        return ""
+        return "null"  # explicit: a bare empty line would be ambiguous
     if isinstance(v, Decimal):
         v = float(v)
     if isinstance(v, date):

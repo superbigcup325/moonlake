@@ -396,6 +396,85 @@ fn split_and(e : LExpr, out : Array[Conjunct], origin : Int?) -> Unit {
 }
 
 ///|
+/// Top-level OR branches of a conjunct.
+fn or_branches(e : LExpr, out : Array[LExpr]) -> Unit {
+  match e {
+    Or(l, r) => {
+      or_branches(l, out)
+      or_branches(r, out)
+    }
+    other => out.push(other)
+  }
+}
+
+///|
+/// Equality pairs inside a (possibly AND-chained) branch.
+fn and_eqs(e : LExpr, out : Array[(LExpr, LExpr)]) -> Unit {
+  match e {
+    And(l, r) => {
+      and_eqs(l, out)
+      and_eqs(r, out)
+    }
+    Cmp(@types.Eq, l, r) => out.push((l, r))
+    _ => ()
+  }
+}
+
+///|
+/// If every OR branch implies the same equi pair split across the
+/// accumulated row and the joining table, return it (left, right).
+fn Binder::implied_eq(
+  self : Binder,
+  e : LExpr,
+  acc_mask : Int,
+  cur_mask : Int,
+) -> (LExpr, LExpr)? raise @types.SqlError {
+  let disjuncts : Array[LExpr] = []
+  or_branches(e, disjuncts)
+  if disjuncts.length() < 2 {
+    return None
+  }
+  let first : Array[(LExpr, LExpr)] = []
+  and_eqs(disjuncts[0], first)
+  let mut common : (LExpr, LExpr)? = None
+  for cand in first {
+    let mut all = true
+    for k in 1..<disjuncts.length() {
+      let eqs : Array[(LExpr, LExpr)] = []
+      and_eqs(disjuncts[k], eqs)
+      let mut found = false
+      for pair in eqs {
+        if (LExpr::equal(cand.0, pair.0) && LExpr::equal(cand.1, pair.1)) ||
+          (LExpr::equal(cand.0, pair.1) && LExpr::equal(cand.1, pair.0)) {
+          found = true
+        }
+      }
+      if !found {
+        all = false
+      }
+    }
+    if all {
+      common = Some(cand)
+      break
+    }
+  }
+  match common {
+    Some((l, r)) => {
+      let lm = self.col_mask(l)
+      let rm = self.col_mask(r)
+      if (lm & acc_mask.lnot()) == 0 && lm != 0 && rm == cur_mask {
+        Some((l, r))
+      } else if (rm & acc_mask.lnot()) == 0 && rm != 0 && lm == cur_mask {
+        Some((r, l))
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+///|
 /// Plan the join chain and bind every classified conjunct. Chains with
 /// any LEFT JOIN keep written order (LEFT fixes row preservation);
 /// inner-only chains join greedily connected-first so a written order
@@ -614,16 +693,34 @@ fn Binder::plan_step(
         }
         _ => false
       }
-      if !key {
-        // residual per candidate pair; at a LEFT step only ON conjuncts
-        // may act as residuals (WHERE keeps SQL semantics: filter the
-        // join output, never change NULL-extension)
-        if item.join is Left && cj.origin is None {
-          let _ = m // stay unconsumed; deferred below
-        } else {
-          residual_l.push(cj.lexpr)
-          consumed[j] = true
+      if !key && (m & both_masks.lnot()) == 0 {
+        // a disjunction may imply an equality: Q19-style OR branches that
+        // all contain the same equi pair (e.g. p_partkey = l_partkey)
+        // yield a hash key while the full OR stays as the residual
+        let implied : (LExpr, LExpr)? = match cj.lexpr {
+          Or(_, _) => self.implied_eq(cj.lexpr, acc_mask, cur_mask)
+          _ => None
         }
+        match implied {
+          Some((l, r)) => {
+            key_l.push(l)
+            key_r.push(r)
+            residual_l.push(cj.lexpr)
+            consumed[j] = true
+          }
+          None =>
+            // residual per candidate pair; at a LEFT step only ON
+            // conjuncts may act as residuals (WHERE keeps SQL semantics:
+            // filter the join output, never change NULL-extension)
+            if item.join is Left && cj.origin is None {
+              let _ = m // stay unconsumed; deferred below
+            } else {
+              residual_l.push(cj.lexpr)
+              consumed[j] = true
+            }
+        }
+      } else if !key {
+        let _ = m // conjunct references tables joined later
       }
     }
     // else: references tables joined later; leave in the pool
