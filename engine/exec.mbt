@@ -360,3 +360,151 @@ fn order_limit(
   }
   take_rows(batch, sel)
 }
+
+///|
+/// Execute the planned join chain left-deep over the FROM tables.
+fn exec_joins(
+  tables : Array[Array[@types.DataBatch]],
+  steps : Array[JoinStep],
+  deferred : PhysExpr?,
+) -> Array[@types.DataBatch] {
+  let mut acc = tables[0]
+  for i, step in steps {
+    if i == 0 {
+      acc = filter_batches(acc, step.build_filter)
+    } else {
+      acc = filter_batches(acc, step.probe_filter)
+      let right = filter_batches(tables[step.table], step.build_filter)
+      acc = [join_step(acc, right, step)]
+    }
+  }
+  filter_batches(acc, deferred)
+}
+
+///|
+fn concat_rows(
+  a : Array[@types.Scalar],
+  b : Array[@types.Scalar],
+) -> Array[@types.Scalar] {
+  let out : Array[@types.Scalar] = []
+  for x in a {
+    out.push(x)
+  }
+  for x in b {
+    out.push(x)
+  }
+  out
+}
+
+///|
+fn null_row(width : Int) -> Array[@types.Scalar] {
+  let row : Array[@types.Scalar] = []
+  for _ in 0..<width {
+    row.push(@types.Null)
+  }
+  row
+}
+
+///|
+fn key_has_null(vals : Array[@types.Scalar]) -> Bool {
+  for v in vals {
+    if v is @types.Null {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Turn row arrays into a columnar batch (join output).
+fn columnarize(
+  dtypes : Array[@types.DataType],
+  rows : Array[Array[@types.Scalar]],
+) -> @types.DataBatch {
+  let n = rows.length()
+  let columns : Array[@types.ColumnVector] = []
+  for c, dt in dtypes {
+    let vec = @types.ColumnVector::make(dt, n)
+    for r in 0..<n {
+      vec.set(r, rows[r][c])
+    }
+    columns.push(vec)
+  }
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+/// One hash join: build a key -> rows map on the (filtered) right table,
+/// probe with every accumulated row. NULL keys never match; LEFT keeps
+/// unmatched probe rows with a NULL right side; the residual filters
+/// candidate pairs before the match counts (so LEFT NULL-extension sees
+/// the post-residual match set, per ON semantics).
+fn join_step(
+  acc : Array[@types.DataBatch],
+  right : Array[@types.DataBatch],
+  step : JoinStep,
+) -> @types.DataBatch {
+  let right_width = step.right_width
+  // build
+  let build_rows : Array[Array[@types.Scalar]] = []
+  let map : Map[String, Array[Int]] = Map([])
+  for rb in right {
+    for r in 0..<rb.row_count() {
+      let row : Array[@types.Scalar] = []
+      for c in 0..<rb.columns().length() {
+        row.push(rb.columns()[c].get(r))
+      }
+      let kv : Array[@types.Scalar] = []
+      for e in step.keys_r {
+        kv.push(eval_row(e, row))
+      }
+      if key_has_null(kv) {
+        continue // NULL join keys never match
+      }
+      let key = canonical_key(kv)
+      match map.get(key) {
+        Some(ids) => ids.push(build_rows.length())
+        None => map[key] = [build_rows.length()]
+      }
+      build_rows.push(row)
+    }
+  }
+  // probe
+  let out : Array[Array[@types.Scalar]] = []
+  for ab in acc {
+    for r in 0..<ab.row_count() {
+      let lrow : Array[@types.Scalar] = []
+      for c in 0..<ab.columns().length() {
+        lrow.push(ab.columns()[c].get(r))
+      }
+      let kv : Array[@types.Scalar] = []
+      for e in step.keys_l {
+        kv.push(eval_row(e, lrow))
+      }
+      let mut matched = false
+      if !key_has_null(kv) {
+        match map.get(canonical_key(kv)) {
+          Some(ids) =>
+            for id in ids {
+              let combined = concat_rows(lrow, build_rows[id])
+              let pass = match step.residual {
+                Some(re) => eval_row(re, combined) is @types.Boolean(true)
+                None => true
+              }
+              if pass {
+                out.push(combined)
+                matched = true
+              }
+            }
+          None => ()
+        }
+      }
+      if !matched {
+        if step.kind is Left {
+          out.push(concat_rows(lrow, null_row(right_width)))
+        }
+      }
+    }
+  }
+  columnarize(step.out_dtypes, out)
+}

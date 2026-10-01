@@ -65,11 +65,39 @@ pub extend OrderItem with Eq::{equal, not_equal}
 pub extend OrderItem with @debug.Debug::{to_repr}
 
 ///|
-/// W2 subset: one table, the full select pipeline (WHERE, GROUP BY,
-/// HAVING, projection, ORDER BY, LIMIT). Multi-table FROM arrives with
-/// the join milestone.
-pub(all) struct Select {
+/// How a FROM item attaches to the accumulated rows before it. The
+/// first item's kind is meaningless (Inner, ignored).
+pub(all) enum JoinKind {
+  Inner // comma lists and JOIN ... ON
+  Left // LEFT [OUTER] JOIN ... ON
+  Cross // CROSS JOIN
+} derive(Eq, Debug)
+
+///|
+pub extend JoinKind with Eq::{equal, not_equal}
+
+///|
+pub extend JoinKind with @debug.Debug::{to_repr}
+
+///|
+pub(all) struct FromItem {
   table : String
+  join : JoinKind
+  on : LExpr? // ON condition for explicit joins
+} derive(Eq, Debug)
+
+///|
+pub extend FromItem with Eq::{equal, not_equal}
+
+///|
+pub extend FromItem with @debug.Debug::{to_repr}
+
+///|
+/// W2 subset: the full select pipeline over a FROM chain joined in
+/// written order (left-deep; comma lists behave as INNER joins with the
+/// join conditions supplied by WHERE).
+pub(all) struct Select {
+  from : Array[FromItem]
   filter : LExpr?
   group_by : Array[LExpr]
   having : LExpr?

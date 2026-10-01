@@ -1,5 +1,6 @@
-// Row-at-a-time scalar evaluation over batches. Vectorized evaluation is
-// a W3 optimization pass; Q6-scale data runs fine through this path.
+// Scalar evaluation over two row contexts: a DataBatch row (batches,
+// filters, aggregation inputs) and a flat joined row (join residuals).
+// Both delegate to eval_with with a column getter.
 
 ///|
 pub fn eval_scalar(
@@ -7,48 +8,42 @@ pub fn eval_scalar(
   batch : @types.DataBatch,
   row : Int,
 ) -> @types.Scalar {
+  eval_with(e, fn(i) { batch.columns()[i].get(row) })
+}
+
+///|
+/// Evaluate against a fully materialized flat row (index = column).
+fn eval_row(e : PhysExpr, row : Array[@types.Scalar]) -> @types.Scalar {
+  eval_with(e, fn(i) { row[i] })
+}
+
+///|
+fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
   match e {
-    ColRef(i, _) => batch.columns()[i].get(row)
+    ColRef(i, _) => get(i)
     Const(v) => v
-    Promote(inner, dt) => promote(eval_scalar(inner, batch, row), dt)
+    Promote(inner, dt) => promote(eval_with(inner, get), dt)
     ArithE(op, l, r, _) =>
-      @types.Scalar::arith(
-        op,
-        eval_scalar(l, batch, row),
-        eval_scalar(r, batch, row),
-      )
+      @types.Scalar::arith(op, eval_with(l, get), eval_with(r, get))
     CmpE(op, l, r) =>
-      op.apply(
-        @types.Scalar::compare(
-          eval_scalar(l, batch, row),
-          eval_scalar(r, batch, row),
-        ),
-      )
-    AndE(l, r) =>
-      @types.Scalar::logic_and(
-        eval_scalar(l, batch, row),
-        eval_scalar(r, batch, row),
-      )
-    OrE(l, r) =>
-      @types.Scalar::logic_or(
-        eval_scalar(l, batch, row),
-        eval_scalar(r, batch, row),
-      )
-    NotE(inner) => @types.Scalar::logic_not(eval_scalar(inner, batch, row))
+      op.apply(@types.Scalar::compare(eval_with(l, get), eval_with(r, get)))
+    AndE(l, r) => @types.Scalar::logic_and(eval_with(l, get), eval_with(r, get))
+    OrE(l, r) => @types.Scalar::logic_or(eval_with(l, get), eval_with(r, get))
+    NotE(inner) => @types.Scalar::logic_not(eval_with(inner, get))
     LikeE(inner, pattern) =>
-      match eval_scalar(inner, batch, row) {
+      match eval_with(inner, get) {
         @types.Str(s) => @types.Boolean(like_match(s, pattern))
         _ => @types.Null
       } // NULL never matches
     CaseE(whens, else_, _) => {
       for when in whens {
-        match eval_scalar(when.0, batch, row) {
-          @types.Boolean(true) => return eval_scalar(when.1, batch, row)
+        match eval_with(when.0, get) {
+          @types.Boolean(true) => return eval_with(when.1, get)
           _ => ()
         }
       }
       match else_ {
-        Some(e) => eval_scalar(e, batch, row)
+        Some(e) => eval_with(e, get)
         None => @types.Null
       }
     }

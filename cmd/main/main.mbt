@@ -16,19 +16,15 @@ fn main {
 
 ///|
 fn exec_command(args : Array[String]) -> Unit {
-  // expected shape: exec --csv <path> <sql words...>
-  let mut csv_path = ""
+  // expected shape: exec (--csv <path>)+ <sql words...>
+  let paths : Array[String] = []
   let mut i = 2
   let n = args.length()
-  while i < n {
-    if args[i] == "--csv" && i + 1 < n {
-      csv_path = args[i + 1]
-      i += 2
-    } else {
-      break
-    }
+  while i < n && args[i] == "--csv" && i + 1 < n {
+    paths.push(args[i + 1])
+    i += 2
   }
-  if csv_path == "" || i >= n {
+  if paths.length() == 0 || i >= n {
     println(exec_usage())
     return
   }
@@ -40,14 +36,16 @@ fn exec_command(args : Array[String]) -> Unit {
     sb.write_string(args[j])
   }
   let sql = sb.to_string()
-  let entry = @csv.scan_file(csv_path, table_stem(csv_path)) catch {
-    err => {
-      println(err.to_string())
-      return
-    }
-  }
   let cat = @catalog.Catalog::new()
-  cat.register(entry)
+  for path in paths {
+    let entry = @csv.scan_file(path, table_stem(path)) catch {
+      err => {
+        println(err.to_string())
+        return
+      }
+    }
+    cat.register(entry)
+  }
   let result = @moonlake.execute(sql, cat) catch {
     err => {
       println(err.to_string())
@@ -105,11 +103,14 @@ fn table_stem(path : String) -> String {
 ///|
 fn exec_usage() -> String {
   (
-    #|usage: moonlake exec --csv <file.csv> <sql>
+    #|usage: moonlake exec (--csv <file.csv>)+ <sql>
     #|
-    #|The first CSV row is the header; column types are inferred.
+    #|Each CSV's first row is the header and column types are inferred;
+    #|the file stem becomes the table name. Joins read FROM several
+    #|tables by passing --csv once per file.
     #|Example:
-    #|  moonlake exec --csv lineitem.csv "SELECT sum(x) AS s FROM lineitem WHERE x > 1"
+    #|  moonlake exec --csv lineitem.csv \
+    #|    "SELECT sum(x) AS s FROM lineitem WHERE x > 1"
   )
 }
 

@@ -8,7 +8,7 @@ import {
 }
 
 // Values
-pub fn bind_select(Select, @catalog.TableSchema) -> BoundQuery raise @types.SqlError
+pub fn bind_select(Select, Array[@catalog.TableSchema]) -> BoundQuery raise @types.SqlError
 
 pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar
 
@@ -36,6 +36,24 @@ pub struct BoundQuery {
   // private fields
 } derive(@debug.Debug)
 pub fn BoundQuery::to_repr(Self) -> @debug.Repr
+
+pub(all) struct FromItem {
+  table : String
+  join : JoinKind
+  on : LExpr?
+} derive(Eq, @debug.Debug)
+pub fn FromItem::equal(Self, Self) -> Bool
+pub fn FromItem::not_equal(Self, Self) -> Bool
+pub fn FromItem::to_repr(Self) -> @debug.Repr
+
+pub(all) enum JoinKind {
+  Inner
+  Left
+  Cross
+} derive(Eq, @debug.Debug)
+pub fn JoinKind::equal(Self, Self) -> Bool
+pub fn JoinKind::not_equal(Self, Self) -> Bool
+pub fn JoinKind::to_repr(Self) -> @debug.Repr
 
 pub(all) enum LExpr {
   Col(String)
@@ -78,7 +96,7 @@ pub(all) enum PhysExpr {
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Select {
-  table : String
+  from : Array[FromItem]
   filter : LExpr?
   group_by : Array[LExpr]
   having : LExpr?

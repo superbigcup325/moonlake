@@ -47,6 +47,12 @@ priv enum Tok {
   KwLike
   KwIn
   KwDistinct
+  KwJoin
+  KwInner
+  KwLeft
+  KwOuter
+  KwCross
+  KwOn
   Eof
 } derive(Eq)
 
@@ -243,6 +249,12 @@ fn keyword_or_ident(word : String) -> Tok {
     "distinct" => KwDistinct
     "true" => BoolLit(true)
     "false" => BoolLit(false)
+    "join" => KwJoin
+    "inner" => KwInner
+    "left" => KwLeft
+    "outer" => KwOuter
+    "cross" => KwCross
+    "on" => KwOn
     _ => Ident(word)
   }
 }

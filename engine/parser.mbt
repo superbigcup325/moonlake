@@ -92,6 +92,12 @@ fn show_tok(t : Tok) -> String {
     KwLike => "LIKE"
     KwIn => "IN"
     KwDistinct => "DISTINCT"
+    KwJoin => "JOIN"
+    KwInner => "INNER"
+    KwLeft => "LEFT"
+    KwOuter => "OUTER"
+    KwCross => "CROSS"
+    KwOn => "ON"
     Eof => "end of input"
   }
 }
@@ -109,13 +115,18 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
     items.push(parse_item(p))
   }
   p.expect(KwFrom)
-  let table = match p.advance() {
-    Ident(name) => name
-    other => {
-      let found = show_tok(other)
-      raise @types.SqlError::Parse(
-        "expected table name after FROM, found \{found}",
-      )
+  let from : Array[FromItem] = []
+  from.push(parse_table_item(p))
+  let mut joining = true
+  while joining {
+    if p.eat(Comma) {
+      from.push(parse_table_item(p))
+    } else {
+      let item = parse_join_item(p)
+      match item {
+        Some(it) => from.push(it)
+        None => joining = false
+      }
     }
   }
   let filter = if p.eat(KwWhere) { Some(parse_or(p)) } else { None }
@@ -146,7 +157,58 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
     None
   }
   p.expect(Eof)
-  { table, filter, group_by, having, items, order_by, limit, }
+  { from, filter, group_by, having, items, order_by, limit, }
+}
+
+///|
+fn parse_table_name(p : Parser) -> String raise @types.SqlError {
+  match p.advance() {
+    Ident(name) => name
+    other => {
+      let found = show_tok(other)
+      raise @types.SqlError::Parse(
+        "expected table name after FROM, found \{found}",
+      )
+    }
+  }
+}
+
+///|
+fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
+  let table = parse_table_name(p)
+  { table, join: Inner, on: None, }
+}
+
+///|
+/// Parse one explicit join clause; None when the next token does not
+/// start a join (caller falls through to the following clause).
+fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
+  let kind : JoinKind = if p.eat(KwJoin) {
+    Inner
+  } else if p.peek() is KwInner {
+    let _ = p.advance()
+    p.expect(KwJoin)
+    Inner
+  } else if p.peek() is KwLeft {
+    let _ = p.advance()
+    let _ = p.eat(KwOuter)
+    p.expect(KwJoin)
+    Left
+  } else if p.peek() is KwCross {
+    let _ = p.advance()
+    p.expect(KwJoin)
+    Cross
+  } else {
+    return None
+  }
+  let table = parse_table_name(p)
+  let on : LExpr? = if kind is Cross {
+    None
+  } else {
+    p.expect(KwOn)
+    Some(parse_or(p))
+  }
+  Some({ table, join: kind, on, })
 }
 
 ///|

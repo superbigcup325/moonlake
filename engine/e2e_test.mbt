@@ -293,3 +293,110 @@ test "in list desugars into an equality chain" {
     @types.Scalar::Int64(0L),
   )
 }
+
+///|
+fn join_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("cid,seg\n1,a\n2,b\n3,a\n", "customers") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(
+      "oid,custkey,amount\n100,1,10\n101,1,20\n102,3,5\n103,,7\n", "orders",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "inner join via comma list with WHERE equality" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT count(*) AS c FROM customers, orders WHERE cid = custkey", cat,
+  )
+  // order 103 has NULL custkey: never matches
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(3L))
+  // single-table conjuncts push to the probe/build sides
+  let r2 = run(
+    "SELECT count(*) AS c FROM customers, orders WHERE cid = custkey AND seg = 'a'",
+    cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Scalar::Int64(3L))
+  let r3 = run(
+    "SELECT count(*) AS c FROM customers, orders WHERE cid = custkey AND seg = 'b'",
+    cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Scalar::Int64(0L)) // customer 2 has no orders
+}
+
+///|
+test "join ON syntax matches the comma form" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT count(*) AS c FROM customers JOIN orders ON cid = custkey", cat,
+  )
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(3L))
+}
+
+///|
+test "aggregation over a join with group/order/limit" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT seg, sum(amount) AS s FROM customers, orders WHERE cid = custkey GROUP BY seg ORDER BY s DESC LIMIT 1",
+    cat,
+  )
+  assert_eq(r.row_count(), 1) // seg b drops out: no matching orders
+  assert_eq(r.get(0, 0), @types.Scalar::Str("a"))
+  assert_eq(r.get(0, 1), @types.Scalar::Int64(35L)) // 10 + 20 + 5
+}
+
+///|
+test "left join keeps unmatched probe rows with NULL right side" {
+  let cat = join_catalog()
+  // count(oid) counts non-null values: the NULL-extended row counts 0,
+  // and max(oid) over it is NULL
+  let r = run(
+    "SELECT cid, count(oid) AS c, max(oid) AS m FROM customers LEFT JOIN orders ON cid = custkey GROUP BY cid ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1))
+  assert_eq(r.get(0, 1), @types.Scalar::Int64(2L))
+  assert_eq(r.get(0, 2), @types.Scalar::Int32(101))
+  assert_eq(r.get(1, 0), @types.Scalar::Int32(2))
+  assert_eq(r.get(1, 1), @types.Scalar::Int64(0L))
+  assert_eq(r.get(1, 2), @types.Scalar::Null)
+  assert_eq(r.get(2, 0), @types.Scalar::Int32(3))
+  assert_eq(r.get(2, 1), @types.Scalar::Int64(1L))
+}
+
+///|
+test "cross join multiplies row counts" {
+  let cat = join_catalog()
+  let r = run("SELECT count(*) AS c FROM customers CROSS JOIN orders", cat)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(12L))
+}
+
+///|
+test "duplicate column names across FROM tables are ambiguous" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("id,x\n1,2\n", "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("id,y\n3,4\n", "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  assert_true(
+    run_err("SELECT count(*) AS c FROM t1, t2 WHERE id = id", cat)
+    .to_string()
+    .contains("ambiguous"),
+  )
+}

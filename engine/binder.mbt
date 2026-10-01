@@ -1,9 +1,17 @@
-// Binder: resolve column names against the table schema, type-check
+// Binder: resolve column names against the FROM tables, type-check
 // expressions, insert numeric promotions, and lower sugar (BETWEEN, IN).
-// Aggregation splits expressions into two spaces: inputs (over the
-// scanned batch) and outputs (over the post-aggregation row, laid out as
-// group keys first, then aggregate results). Select items, HAVING and
-// ORDER BY bind in the output space.
+// Three binding spaces:
+//   Flat    - over the joined row: all FROM tables concatenated in FROM
+//             order (WHERE, GROUP BY, aggregate inputs)
+//   Slot k - over table k's own columns (build-side filters, right
+//             join keys)
+//   AggOut  - over the post-aggregation row: group keys first, then
+//             aggregate results (SELECT items, HAVING, ORDER BY)
+// The join plan is a left-deep chain in FROM order (reordering is out of
+// v1 scope). Conjuncts from WHERE and ON are classified per step:
+// single-table ones become build/probe filters, equalities spanning the
+// accumulated row and the new table become hash keys, everything else
+// spanning both sides is a per-pair residual.
 
 ///|
 pub(all) enum PhysExpr {
@@ -41,10 +49,27 @@ priv struct AggSpec {
 } derive(Debug)
 
 ///|
-/// The bound query. Post-agg layout: group keys occupy columns
-/// 0..group_count-1, aggregate outputs group_count..end.
+/// One hash-join step: table `table` joins the accumulated row. keys_l
+/// are Flat refs, keys_r Slot refs into the joining table; both are
+/// promoted to a common type so canonical keys match.
+priv struct JoinStep {
+  table : Int
+  kind : JoinKind
+  keys_l : Array[PhysExpr]
+  keys_r : Array[PhysExpr]
+  build_filter : PhysExpr? // Slot refs, applied to the joining table
+  probe_filter : PhysExpr? // Flat refs, applied to accumulated rows
+  residual : PhysExpr? // Flat refs, applied per candidate pair
+  right_offset : Int // flat offset of the joining table's first column
+  right_width : Int // column count of the joining table
+  out_dtypes : Array[@types.DataType] // combined row layout after the step
+} derive(Debug)
+
+///|
+/// The bound query, ready for the executor.
 pub struct BoundQuery {
-  priv filter : PhysExpr?
+  priv steps : Array[JoinStep]
+  priv deferred : PhysExpr? // Flat refs applied after all joins
   priv group_exprs : Array[PhysExpr]
   priv group_types : Array[@types.DataType]
   priv aggs : Array[AggSpec]
@@ -61,7 +86,8 @@ pub extend BoundQuery with @debug.Debug::{to_repr}
 
 ///|
 priv struct Binder {
-  schema : @catalog.TableSchema
+  slots : Array[@catalog.TableSchema] // FROM order
+  offsets : Array[Int] // flat offset of each table's first column
   group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
   group_types : Array[@types.DataType]
   aggs : Array[AggSpec]
@@ -70,36 +96,43 @@ priv struct Binder {
 
 ///|
 priv enum Space {
-  Input
+  Flat
+  Slot(Int)
   AggOut
+}
+
+///|
+priv struct Conjunct {
+  lexpr : LExpr
+  origin : Int? // Some(item index) for ON conjuncts, None for WHERE
 }
 
 ///|
 pub fn bind_select(
   sel : Select,
-  schema : @catalog.TableSchema,
+  schemas : Array[@catalog.TableSchema],
 ) -> BoundQuery raise @types.SqlError {
+  if schemas.length() > 30 {
+    raise @types.SqlError::Bind("too many tables in FROM (max 30)")
+  }
+  let offsets : Array[Int] = []
+  let mut off = 0
+  for s in schemas {
+    offsets.push(off)
+    off += s.columns.length()
+  }
   let b : Binder = {
-    schema,
+    slots: schemas,
+    offsets,
     group_l: sel.group_by,
     group_types: [],
     aggs: [],
     agg_keys: [],
   }
-  let filter : PhysExpr? = match sel.filter {
-    Some(f) =>
-      match b.bind(f, Input) {
-        (pe, @types.Bool) => Some(pe)
-        (_, other) =>
-          raise @types.SqlError::Bind(
-            "WHERE must evaluate to bool, got \{other.to_string()}",
-          )
-      }
-    None => None
-  }
+  let (steps, deferred) = b.plan_joins(sel)
   let group_exprs : Array[PhysExpr] = []
   for g in sel.group_by {
-    let (pe, dt) = b.bind(g, Input)
+    let (pe, dt) = b.bind(g, Flat)
     group_exprs.push(pe)
     b.group_types.push(dt)
   }
@@ -156,7 +189,8 @@ pub fn bind_select(
     )
   }
   {
-    filter,
+    steps,
+    deferred,
     group_exprs,
     group_types: b.group_types,
     aggs: b.aggs,
@@ -188,6 +222,278 @@ fn default_name(expr : LExpr, index : Int) -> String {
       }
     }
     _ => "col_\{index + 1}"
+  }
+}
+
+///|
+/// Resolve a column name to its table slot; ambiguity and unknown names
+/// are bind errors (TPC-H tables use globally unique column names).
+fn Binder::lookup_slot(
+  self : Binder,
+  name : String,
+) -> Int raise @types.SqlError {
+  let mut hit : Int? = None
+  let mut dup = false
+  for k, s in self.slots {
+    if s.index_of(name) is Some(_) {
+      match hit {
+        Some(_) => dup = true
+        None => hit = Some(k)
+      }
+    }
+  }
+  match (hit, dup) {
+    (Some(k), false) => k
+    (_, true) =>
+      raise @types.SqlError::Bind("ambiguous column \"\{name}\" in FROM")
+    (None, _) =>
+      raise @types.SqlError::Bind("unknown column \"\{name}\" in FROM")
+  }
+}
+
+///|
+/// Table mask of every column an expression references, resolved before
+/// binding (drives join conjunct classification).
+fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
+  match e {
+    Col(name) => 1 << self.lookup_slot(name)
+    Lit(_) => 0
+    Arith(_, l, r) => self.col_mask(l) | self.col_mask(r)
+    Cmp(_, l, r) => self.col_mask(l) | self.col_mask(r)
+    And(l, r) => self.col_mask(l) | self.col_mask(r)
+    Or(l, r) => self.col_mask(l) | self.col_mask(r)
+    Not(x) => self.col_mask(x)
+    Between(v, lo, hi) =>
+      self.col_mask(v) | self.col_mask(lo) | self.col_mask(hi)
+    In(v, items) => {
+      let mut m = self.col_mask(v)
+      for item in items {
+        m = m | self.col_mask(item)
+      }
+      m
+    }
+    Like(v, _) => self.col_mask(v)
+    Case(whens, else_) => {
+      let mut m = 0
+      for when in whens {
+        m = m | self.col_mask(when.0) | self.col_mask(when.1)
+      }
+      match else_ {
+        Some(e) => m | self.col_mask(e)
+        None => m
+      }
+    }
+    Agg(_, _) =>
+      raise @types.SqlError::Bind("aggregate not allowed in a join condition")
+  }
+}
+
+///|
+fn split_and(e : LExpr, out : Array[Conjunct], origin : Int?) -> Unit {
+  match e {
+    And(l, r) => {
+      split_and(l, out, origin)
+      split_and(r, out, origin)
+    }
+    other => out.push({ lexpr: other, origin, })
+  }
+}
+
+///|
+/// Plan the left-deep join chain in FROM order and bind every classified
+/// conjunct. WHERE conjuncts that span tables but never become keys or
+/// residuals (possible at LEFT JOIN steps) come back as a deferred
+/// post-join filter.
+fn Binder::plan_joins(
+  self : Binder,
+  sel : Select,
+) -> (Array[JoinStep], PhysExpr?) raise @types.SqlError {
+  let pool : Array[Conjunct] = []
+  match sel.filter {
+    Some(f) => split_and(f, pool, None)
+    None => ()
+  }
+  for i, item in sel.from {
+    match item.on {
+      Some(on) => split_and(on, pool, Some(i))
+      None => ()
+    }
+  }
+  let consumed : Array[Bool] = []
+  for _ in 0..<pool.length() {
+    consumed.push(false)
+  }
+  let steps : Array[JoinStep] = []
+  let mut acc_mask = 0
+  for i, item in sel.from {
+    steps.push(self.plan_step(i, item, acc_mask, pool, consumed))
+    acc_mask = acc_mask | (1 << i)
+  }
+  let leftover : Array[LExpr] = []
+  for j, c in pool {
+    if !consumed[j] {
+      leftover.push(c.lexpr)
+    }
+  }
+  let deferred : PhysExpr? = if leftover.length() == 0 {
+    None
+  } else {
+    let mut acc : LExpr = leftover[0]
+    for j in 1..<leftover.length() {
+      acc = And(acc, leftover[j])
+    }
+    match self.bind(acc, Flat) {
+      (pe, @types.Bool) => Some(pe)
+      (_, other) =>
+        raise @types.SqlError::Bind(
+          "filter must evaluate to bool, got \{other.to_string()}",
+        )
+    }
+  }
+  (steps, deferred)
+}
+
+///|
+fn Binder::plan_step(
+  self : Binder,
+  i : Int,
+  item : FromItem,
+  acc_mask : Int,
+  pool : Array[Conjunct],
+  consumed : Array[Bool],
+) -> JoinStep raise @types.SqlError {
+  let cur_mask = 1 << i
+  let both_masks = acc_mask | cur_mask
+  let build_l : Array[LExpr] = []
+  let probe_l : Array[LExpr] = []
+  let key_l : Array[LExpr] = []
+  let key_r : Array[LExpr] = []
+  let residual_l : Array[LExpr] = []
+  for j, cj in pool {
+    if consumed[j] {
+      continue
+    }
+    // ON conjuncts belong to their own step only
+    match cj.origin {
+      Some(o) => if o != i { continue }
+      None => ()
+    }
+    let m = self.col_mask(cj.lexpr)
+    if m == cur_mask {
+      build_l.push(cj.lexpr)
+      consumed[j] = true
+    } else if m == 0 {
+      // constant predicate: probe side from step 1 on, build at step 0
+      if i == 0 {
+        build_l.push(cj.lexpr)
+      } else {
+        probe_l.push(cj.lexpr)
+      }
+      consumed[j] = true
+    } else if (m & both_masks.lnot()) == 0 && (m & cur_mask) == 0 {
+      // references only accumulated tables; at a LEFT step this is a
+      // WHERE pushdown, still sound
+      probe_l.push(cj.lexpr)
+      consumed[j] = true
+    } else if (m & both_masks.lnot()) == 0 && (m & cur_mask) != 0 {
+      // spans the accumulated row and the joining table
+      let key = match cj.lexpr {
+        Cmp(@types.Eq, l, r) => {
+          let lm = self.col_mask(l)
+          let rm = self.col_mask(r)
+          if (lm & acc_mask.lnot()) == 0 && lm != 0 && rm == cur_mask {
+            key_l.push(l)
+            key_r.push(r)
+            consumed[j] = true
+            true
+          } else if (rm & acc_mask.lnot()) == 0 && rm != 0 && lm == cur_mask {
+            key_l.push(r)
+            key_r.push(l)
+            consumed[j] = true
+            true
+          } else {
+            false
+          }
+        }
+        _ => false
+      }
+      if !key {
+        // residual per candidate pair; at a LEFT step only ON conjuncts
+        // may act as residuals (WHERE keeps SQL semantics: filter the
+        // join output, never change NULL-extension)
+        if item.join is Left && cj.origin is None {
+          let _ = m // stay unconsumed; deferred below
+        } else {
+          residual_l.push(cj.lexpr)
+          consumed[j] = true
+        }
+      }
+    }
+    // else: references tables joined later; leave in the pool
+  }
+  let step = i
+  let build_filter = self.conjoin_bind(build_l, Slot(step), "build filter")
+  let probe_filter = self.conjoin_bind(probe_l, Flat, "probe filter")
+  let residual = self.conjoin_bind(residual_l, Flat, "join residual")
+  let keys_l : Array[PhysExpr] = []
+  let keys_r : Array[PhysExpr] = []
+  for k in 0..<key_l.length() {
+    let (lpe, ldt) = self.bind(key_l[k], Flat)
+    let (rpe, rdt) = self.bind(key_r[k], Slot(step))
+    match unify(ldt, rdt) {
+      Some(dt) => {
+        keys_l.push(promote_to(lpe, ldt, dt))
+        keys_r.push(promote_to(rpe, rdt, dt))
+      }
+      None =>
+        raise @types.SqlError::Bind(
+          "join key type mismatch: \{ldt.to_string()} vs \{rdt.to_string()}",
+        )
+    }
+  }
+  let out_dtypes : Array[@types.DataType] = []
+  for k in 0..<i {
+    for c in self.slots[k].columns {
+      out_dtypes.push(c.dtype)
+    }
+  }
+  for c in self.slots[i].columns {
+    out_dtypes.push(c.dtype)
+  }
+  {
+    table: i,
+    kind: item.join,
+    keys_l,
+    keys_r,
+    build_filter,
+    probe_filter,
+    residual,
+    right_offset: self.offsets[i],
+    right_width: self.slots[i].columns.length(),
+    out_dtypes,
+  }
+}
+
+///|
+fn Binder::conjoin_bind(
+  self : Binder,
+  lexprs : Array[LExpr],
+  space : Space,
+  what : String,
+) -> PhysExpr? raise @types.SqlError {
+  if lexprs.length() == 0 {
+    return None
+  }
+  let mut acc : LExpr = lexprs[0]
+  for j in 1..<lexprs.length() {
+    acc = And(acc, lexprs[j])
+  }
+  match self.bind(acc, space) {
+    (pe, @types.Bool) => Some(pe)
+    (_, other) =>
+      raise @types.SqlError::Bind(
+        "\{what} must evaluate to bool, got \{other.to_string()}",
+      )
   }
 }
 
@@ -232,7 +538,7 @@ fn Binder::bind_agg(
     None =>
       raise @types.SqlError::Bind("aggregate requires an input expression")
   }
-  let (pe, dt) = self.bind(lexpr, Input) // no nested aggregates
+  let (pe, dt) = self.bind(lexpr, Flat) // no nested aggregates
   let out_type = match fn_ {
     Sum =>
       match dt {
@@ -275,9 +581,7 @@ fn Binder::bind_agg(
 }
 
 ///|
-/// Bind a logical expression. In the Input space columns resolve against
-/// the table schema and aggregates are rejected; in the AggOut space
-/// expressions must be built from GROUP BY keys and aggregates.
+/// Bind a logical expression in the given space.
 fn Binder::bind(
   self : Binder,
   e : LExpr,
@@ -294,15 +598,21 @@ fn Binder::bind(
   match e {
     Col(name) =>
       match space {
-        Input =>
-          match self.schema.index_of(name) {
-            Some(i) => {
-              let dt = self.schema.columns[i].dtype
-              (ColRef(i, dt), dt)
+        Flat => {
+          let k = self.lookup_slot(name)
+          let col_idx = self.slots[k].index_of(name).unwrap()
+          let dt = self.slots[k].columns[col_idx].dtype
+          (ColRef(self.offsets[k] + col_idx, dt), dt)
+        }
+        Slot(k) =>
+          match self.slots[k].index_of(name) {
+            Some(col_idx) => {
+              let dt = self.slots[k].columns[col_idx].dtype
+              (ColRef(col_idx, dt), dt)
             }
             None =>
               raise @types.SqlError::Bind(
-                "unknown column \"\{name}\" in table \"\{self.schema.table}\"",
+                "unknown column \"\{name}\" in table \"\{self.slots[k].table}\"",
               )
           }
         AggOut =>
@@ -321,11 +631,11 @@ fn Binder::bind(
       }
     Agg(fn_, inner) =>
       match space {
-        Input =>
+        AggOut => self.agg_ref(fn_, inner)
+        _ =>
           raise @types.SqlError::Bind(
             "aggregate is only allowed in SELECT, HAVING or ORDER BY",
           )
-        AggOut => self.agg_ref(fn_, inner)
       }
     Arith(op, l, r) => {
       let (lpe, ldt) = self.bind(l, space)

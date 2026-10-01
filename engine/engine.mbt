@@ -45,13 +45,20 @@ pub fn run_select(
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
   let sel = parse_select(sql)
-  let entry = match catalog.lookup(sel.table) {
-    Some(entry) => entry
-    None => raise @types.SqlError::Bind("unknown table \"\{sel.table}\"")
+  let schemas : Array[@catalog.TableSchema] = []
+  let tables : Array[Array[@types.DataBatch]] = []
+  for item in sel.from {
+    match catalog.lookup(item.table) {
+      Some(entry) => {
+        schemas.push(entry.schema)
+        tables.push(entry.batches)
+      }
+      None => raise @types.SqlError::Bind("unknown table \"\{item.table}\"")
+    }
   }
-  let bq = bind_select(sel, entry.schema)
-  let filtered = filter_batches(entry.batches, bq.filter)
-  let grouped = aggregate(filtered, bq.group_exprs, bq.group_types, bq.aggs)
+  let bq = bind_select(sel, schemas)
+  let joined = exec_joins(tables, bq.steps, bq.deferred)
+  let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
   let kept = match bq.having {
     Some(h) => compact(grouped, eval_mask(h, grouped))
     None => grouped
