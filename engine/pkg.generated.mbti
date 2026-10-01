@@ -47,7 +47,7 @@ pub fn ExtractField::not_equal(Self, Self) -> Bool
 pub fn ExtractField::to_repr(Self) -> @debug.Repr
 
 pub(all) struct FromItem {
-  table : String
+  table : TableRef
   tbl_alias : String?
   join : JoinKind
   on : LExpr?
@@ -141,6 +141,14 @@ pub fn SelectResult::get(Self, Int, Int) -> @types.Scalar
 pub fn SelectResult::names(Self) -> Array[String]
 pub fn SelectResult::row_count(Self) -> Int
 pub fn SelectResult::types(Self) -> Array[@types.DataType]
+
+pub(all) enum TableRef {
+  Named(String)
+  Sub(Select)
+} derive(Eq, @debug.Debug)
+pub fn TableRef::equal(Self, Self) -> Bool
+pub fn TableRef::not_equal(Self, Self) -> Bool
+pub fn TableRef::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

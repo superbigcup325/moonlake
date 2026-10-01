@@ -99,8 +99,20 @@ pub extend JoinKind with Eq::{equal, not_equal}
 pub extend JoinKind with @debug.Debug::{to_repr}
 
 ///|
+pub(all) enum TableRef {
+  Named(String) // catalog table
+  Sub(Select) // derived table: FROM ( SELECT ... ) AS alias
+} derive(Eq, Debug)
+
+///|
+pub extend TableRef with Eq::{equal, not_equal}
+
+///|
+pub extend TableRef with @debug.Debug::{to_repr}
+
+///|
 pub(all) struct FromItem {
-  table : String
+  table : TableRef
   tbl_alias : String? // `tbl name` / `tbl AS name`; column qualifier
   join : JoinKind
   on : LExpr? // ON condition for explicit joins

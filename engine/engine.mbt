@@ -45,15 +45,51 @@ pub fn run_select(
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
   let sel = parse_select(sql)
+  run_parsed(sel, catalog)
+}
+
+///|
+/// Execute a parsed select. FROM items resolve to schemas and batches —
+/// base tables come from the catalog, derived tables recurse and
+/// materialize (everything in the engine is eager, so this is direct).
+fn run_parsed(
+  sel : Select,
+  catalog : @catalog.Catalog,
+) -> SelectResult raise @types.SqlError {
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   for item in sel.from {
-    match catalog.lookup(item.table) {
-      Some(entry) => {
-        schemas.push(entry.schema)
-        tables.push(entry.batches)
+    match item.table {
+      Named(name) =>
+        match catalog.lookup(name) {
+          Some(entry) => {
+            schemas.push(entry.schema)
+            tables.push(entry.batches)
+          }
+          None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
+        }
+      Sub(inner) => {
+        let r = run_parsed(inner, catalog)
+        let names = r.names()
+        let types = r.types()
+        let columns : Array[@catalog.Column] = []
+        for i, name in names {
+          for j in 0..<i {
+            if names[j] == name {
+              raise @types.SqlError::Bind(
+                "duplicate column \"\{name}\" in derived table",
+              )
+            }
+          }
+          columns.push({ name, dtype: types[i], })
+        }
+        let tname = match item.tbl_alias {
+          Some(a) => a
+          None => "_subquery"
+        }
+        schemas.push({ table: tname, columns, })
+        tables.push([r.batch()])
       }
-      None => raise @types.SqlError::Bind("unknown table \"\{item.table}\"")
     }
   }
   let bq = bind_select(sel, schemas)

@@ -111,6 +111,15 @@ fn show_tok(t : Tok) -> String {
 pub fn parse_select(sql : String) -> Select raise @types.SqlError {
   let p : Parser = { toks: lex_sql(sql), pos: 0, }
   p.expect(KwSelect)
+  let sel = parse_select_body(p)
+  p.expect(Eof)
+  sel
+}
+
+///|
+/// Parse everything after SELECT (no Eof check — the caller may be
+/// inside a derived table).
+fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   if p.eat(KwDistinct) {
     raise @types.SqlError::Parse("SELECT DISTINCT is not supported yet")
   }
@@ -161,7 +170,6 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
   } else {
     None
   }
-  p.expect(Eof)
   { from, filter, group_by, having, items, order_by, limit, }
 }
 
@@ -180,7 +188,15 @@ fn parse_table_name(p : Parser) -> String raise @types.SqlError {
 
 ///|
 fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
-  let table = parse_table_name(p)
+  let table : TableRef = if p.peek() is LParen {
+    let _ = p.advance()
+    p.expect(KwSelect)
+    let inner = parse_select_body(p)
+    p.expect(RParen)
+    Sub(inner)
+  } else {
+    Named(parse_table_name(p))
+  }
   let tbl_alias = parse_alias_opt(p)
   { table, tbl_alias, join: Inner, on: None, }
 }
@@ -229,7 +245,7 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
   } else {
     return None
   }
-  let table = parse_table_name(p)
+  let table : TableRef = Named(parse_table_name(p))
   let tbl_alias = parse_alias_opt(p)
   let on : LExpr? = if kind is Cross {
     None

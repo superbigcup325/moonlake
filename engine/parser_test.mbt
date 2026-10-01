@@ -45,7 +45,7 @@ test "arithmetic precedence: multiplication binds tighter" {
 ///|
 test "case insensitive keywords" {
   let sel = @engine.parse_select("select SUM(a) revenue from t where x <> 1")
-  assert_eq(sel.from[0].table, "t")
+  assert_eq(sel.from[0].table, Named("t"))
   assert_eq(sel.items[0].label, Some("revenue")) // bare alias (no AS)
   match sel.filter {
     Some(Cmp(@types.Neq, Col("x"), _)) => ()

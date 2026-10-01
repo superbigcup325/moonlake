@@ -129,7 +129,11 @@ pub fn bind_select(
     quals.push(
       match item.tbl_alias {
         Some(a) => a
-        None => item.table
+        None =>
+          match item.table {
+            Named(n) => n
+            Sub(_) => "_subquery"
+          }
       },
     )
   }
