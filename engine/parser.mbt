@@ -18,6 +18,16 @@ fn Parser::peek(self : Parser) -> Tok {
 }
 
 ///|
+fn Parser::peek_at(self : Parser, off : Int) -> Tok {
+  let i = self.pos + off
+  if i < self.toks.length() {
+    self.toks[i]
+  } else {
+    Eof
+  }
+}
+
+///|
 fn Parser::advance(self : Parser) -> Tok {
   let t = self.toks[self.pos]
   if t is Eof {
@@ -388,6 +398,18 @@ fn parse_predicate(p : Parser) -> LExpr raise @types.SqlError {
         let list = parse_expr_list(p)
         p.expect(RParen)
         In(left, list)
+      } else if p.peek() is KwNot && p.peek_at(1) is KwLike {
+        // postfix NOT LIKE (prefix NOT is handled by parse_not)
+        let _ = p.advance()
+        let _ = p.advance()
+        NotLike(left, parse_add(p))
+      } else if p.peek() is KwNot && p.peek_at(1) is KwIn {
+        let _ = p.advance()
+        let _ = p.advance()
+        p.expect(LParen)
+        let list = parse_expr_list(p)
+        p.expect(RParen)
+        NotIn(left, list)
       } else {
         left
       }

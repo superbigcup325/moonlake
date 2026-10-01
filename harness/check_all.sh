@@ -29,4 +29,5 @@ check q10 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv" --csv "$DATA/linei
 check q12 --csv "$DATA/orders.csv" --csv "$DATA/lineitem.csv"
 check q7 --csv "$DATA/supplier.csv" --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --csv "$DATA/customer.csv" --csv "$DATA/nation.csv" --csv "$DATA/nation.csv"
 check q8 --csv "$DATA/part.csv" --csv "$DATA/supplier.csv" --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --csv "$DATA/customer.csv" --csv "$DATA/nation.csv" --csv "$DATA/nation.csv" --csv "$DATA/region.csv"
+check q13 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv"
 echo "all golden queries pass"

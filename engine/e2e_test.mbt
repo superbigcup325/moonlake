@@ -466,3 +466,22 @@ test "extract year/month/day from dates" {
   assert_eq(r2.get(0, 0), @types.Scalar::Int32(1996)) // NULLS LAST
   assert_eq(r2.get(1, 0), @types.Scalar::Null)
 }
+
+///|
+test "not like and not in filter correctly with NULLs" {
+  let cat = str_catalog("s,n\nalpha,1\nbeta,2\ngamma,3\n")
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s NOT LIKE 'a%'", cat).get(0, 0),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE n NOT IN (1, 3)", cat).get(0, 0),
+    @types.Scalar::Int64(1L),
+  )
+  // NULL never passes NOT LIKE in either direction
+  let cat2 = str_catalog("s,x\nalpha,1\n,2\nbeta,3\n")
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s NOT LIKE 'a%'", cat2).get(0, 0),
+    @types.Scalar::Int64(1L),
+  )
+}
