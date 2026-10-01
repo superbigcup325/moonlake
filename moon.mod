@@ -27,4 +27,5 @@ import {
   "moonbit-community/sqlparser@0.5.1",
   "moonbit-community/NyaCSV@0.3.3",
   "moonbitlang/x@0.5.5",
+  "mizchi/parquet@0.2.2",
 }

@@ -16,13 +16,25 @@ fn main {
 
 ///|
 fn exec_command(args : Array[String]) -> Unit {
-  // expected shape: exec (--csv <path>)+ <sql words...>
-  let paths : Array[String] = []
+  // expected shape: exec (--csv <path> | --parquet <path> | --date-col <c>)* <sql words...>
+  let paths : Array[(String, String)] = [] // (kind, path)
+  let date_cols : Array[String] = []
   let mut i = 2
   let n = args.length()
-  while i < n && args[i] == "--csv" && i + 1 < n {
-    paths.push(args[i + 1])
-    i += 2
+  let mut reading = true
+  while reading && i + 1 < n {
+    if args[i] == "--csv" {
+      paths.push(("csv", args[i + 1]))
+      i += 2
+    } else if args[i] == "--parquet" {
+      paths.push(("parquet", args[i + 1]))
+      i += 2
+    } else if args[i] == "--date-col" {
+      date_cols.push(args[i + 1])
+      i += 2
+    } else {
+      reading = false
+    }
   }
   if paths.length() == 0 || i >= n {
     println(exec_usage())
@@ -37,12 +49,22 @@ fn exec_command(args : Array[String]) -> Unit {
   }
   let sql = sb.to_string()
   let cat = @catalog.Catalog::new()
-  for path in paths {
-    let entry = @csv.scan_file(path, table_stem(path)) catch {
-      err => {
-        println(err.to_string())
-        return
-      }
+  for pair in paths {
+    let entry = match pair.0 {
+      "parquet" =>
+        @pq.scan_file(pair.1, table_stem(pair.1), date_cols) catch {
+          err => {
+            println(err.to_string())
+            return
+          }
+        }
+      _ =>
+        @csv.scan_file(pair.1, table_stem(pair.1)) catch {
+          err => {
+            println(err.to_string())
+            return
+          }
+        }
     }
     cat.register(entry)
   }
@@ -84,7 +106,7 @@ fn join_row(result : @engine.SelectResult, r : Int) -> String {
 }
 
 ///|
-/// File stem: strip directories and a trailing ".csv".
+/// File stem: strip directories and a trailing ".csv" or ".parquet".
 fn table_stem(path : String) -> String {
   let mut start = 0
   for i, ch in path {
@@ -93,9 +115,10 @@ fn table_stem(path : String) -> String {
     }
   }
   let base = path[start:].to_owned()
-  let suffix = ".csv"
-  if base.length() > suffix.length() && base.has_suffix(suffix) {
-    return base[:base.length() - suffix.length()].to_owned()
+  for suffix in [".csv", ".parquet"] {
+    if base.length() > suffix.length() && base.has_suffix(suffix) {
+      return base[:base.length() - suffix.length()].to_owned()
+    }
   }
   base
 }
@@ -103,11 +126,11 @@ fn table_stem(path : String) -> String {
 ///|
 fn exec_usage() -> String {
   (
-    #|usage: moonlake exec (--csv <file.csv>)+ <sql>
+    #|usage: moonlake exec (--csv <file> | --parquet <file> | --date-col <c>)+ <sql>
     #|
-    #|Each CSV's first row is the header and column types are inferred;
-    #|the file stem becomes the table name. Joins read FROM several
-    #|tables by passing --csv once per file.
+    #|CSV: first row is the header, types inferred. Parquet: DATE columns
+    #|are declared with --date-col (epoch-day int32). File stems become
+    #|table names; pass one --csv/--parquet per joined table.
     #|Example:
     #|  moonlake exec --csv lineitem.csv \
     #|    "SELECT sum(x) AS s FROM lineitem WHERE x > 1"

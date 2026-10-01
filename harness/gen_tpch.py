@@ -25,6 +25,23 @@ for table in ["customer", "orders", "lineitem", "part"]:
     rows = con.execute(f"SELECT count(*) FROM {table}").fetchone()
     print(f"{table} rows: {rows[0]}")
 
+# Parquet export of lineitem for the parquet scan adapter. Decimals cast
+# to DOUBLE (the upstream writer/reader surface the engine maps);
+# dates keep the parquet DATE logical type, which the reader surfaces as
+# int32 epoch days and moonlake lifts via --date-col.
+CASTS = """SELECT
+    l_orderkey, l_partkey, l_suppkey, l_linenumber,
+    CAST(l_quantity AS DOUBLE) AS l_quantity,
+    CAST(l_extendedprice AS DOUBLE) AS l_extendedprice,
+    CAST(l_discount AS DOUBLE) AS l_discount,
+    CAST(l_tax AS DOUBLE) AS l_tax,
+    l_returnflag, l_linestatus,
+    l_shipdate, l_commitdate, l_receiptdate,
+    l_shipinstruct, l_shipmode, l_comment
+FROM lineitem"""
+con.execute(f"COPY ({CASTS}) TO '{out / 'lineitem.parquet'}' (FORMAT PARQUET)")
+print("lineitem.parquet written")
+
 
 def fmt(v) -> str:
     if v is None:
@@ -122,3 +139,10 @@ golden("q6", Q6)
 golden("q1", Q1)
 golden("q3", Q3)
 golden("q14", Q14)
+
+# Q6 over the parquet-shaped lineitem (doubles instead of decimals):
+# the golden for the parquet scan adapter chain. The CASTS subquery is
+# byte-identical to the exported parquet, so duckdb computes the same
+# numbers moonlake will see.
+Q6P = Q6.replace("from lineitem", f"from ({CASTS}) as li")
+golden("q6p", Q6P)
