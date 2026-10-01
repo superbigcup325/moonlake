@@ -14,16 +14,24 @@ uv run --with duckdb python harness/gen_tpch.py 0.01     # explicit SF
 
 Outputs land in `harness/data/sf<sf>/`:
 
-- `lineitem.csv` (W1 scans this table only)
-- `q6_golden.txt` — duckdb's revenue for the Q6 query
+- `customer.csv` / `orders.csv` / `lineitem.csv` / `part.csv` — the
+  tables the golden queries scan
+- `q6_golden.txt`, `q1_golden.txt`, `q3_golden.txt`, `q14_golden.txt` —
+  duckdb's answers, pipe-separated with a header line (same shape as
+  the moonlake CLI output)
 
 ## Compare
 
+`compare.py` skips the header (engines label columns differently) and
+compares cells in order: floats with a 1e-9 relative tolerance,
+everything else exact; empty and "null" both count as SQL NULL.
+
 ```bash
 moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
-  "$(cat harness/queries/q6.sql)"
-python3 harness/compare.py harness/data/sf001/q6_golden.txt <moonlake-output>
+  "$(cat harness/queries/q6.sql)" > /tmp/out.txt
+python3 harness/compare.py harness/data/sf001/q6_golden.txt /tmp/out.txt
 ```
 
-`compare.py` reads the second line of the moonlake output (header is
-the first line) and the golden value, applying the tolerance above.
+`check_all.sh` runs every golden query through the CLI and diffs each
+against its golden file; multi-table queries pass one `--csv` per
+table.
