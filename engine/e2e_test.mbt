@@ -217,3 +217,79 @@ test "ungrouped column in select is a bind error" {
     .contains("aggregate or GROUP BY"),
   )
 }
+
+///|
+fn str_catalog(content : String) -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "t") catch { e => abort("\{e}") })
+  cat
+}
+
+///|
+test "like matches prefix, suffix and underscore, case-sensitively" {
+  let cat = str_catalog("s\nPROMO x\nECONOMY x\nPROMO\npromo y\n")
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s LIKE 'PROMO%'", cat).get(0, 0),
+    @types.Scalar::Int64(2L), // 'promo y' differs in case
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s LIKE '%x%'", cat).get(0, 0),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s LIKE 'PROMO'", cat).get(0, 0),
+    @types.Scalar::Int64(1L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s LIKE '_CONO%'", cat).get(0, 0),
+    @types.Scalar::Int64(1L), // _ eats 'E', % eats "MY x"
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s LIKE 'ECONOM_ x'", cat).get(0, 0),
+    @types.Scalar::Int64(1L),
+  )
+}
+
+///|
+test "case when picks branches and unifies numeric types" {
+  let cat = str_catalog("v\n1\n2\n3\n")
+  // v*10 (int) and v+100 (int) unify; sum widens to int64
+  let r = run(
+    "SELECT sum(CASE WHEN v <= 1 THEN v * 10 ELSE v + 100 END) AS s FROM t", cat,
+  )
+  assert_eq(r.types()[0], @types.Int64)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(215L)) // 10 + 102 + 103
+  // missing ELSE yields NULL, which the comparison drops
+  assert_eq(
+    run(
+      "SELECT count(*) AS c FROM t WHERE CASE WHEN v > 2 THEN true END = true", cat,
+    ).get(0, 0),
+    @types.Scalar::Int64(1L),
+  )
+  // mixed int/float branches promote to float64
+  let r2 = run(
+    "SELECT sum(CASE WHEN v <= 1 THEN 0.5 ELSE v END) AS s FROM t", cat,
+  )
+  assert_eq(r2.types()[0], @types.Float64)
+  match r2.get(0, 0) {
+    @types.Float64(v) => assert_true(near(v, 5.5))
+    other => fail("expected float64 sum, got \{other.to_string()}")
+  }
+}
+
+///|
+test "in list desugars into an equality chain" {
+  let cat = str_catalog("v,s\n1,a\n2,b\n3,c\n,~\n")
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE v IN (1, 3)", cat).get(0, 0),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE s IN ('a', 'c')", cat).get(0, 0),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE v IN (9)", cat).get(0, 0),
+    @types.Scalar::Int64(0L),
+  )
+}

@@ -8,6 +8,7 @@ priv enum Tok {
   IntLit(Int)
   DoubleLit(Double)
   StrLit(String)
+  BoolLit(Bool)
   LParen
   RParen
   Comma
@@ -240,6 +241,8 @@ fn keyword_or_ident(word : String) -> Tok {
     "like" => KwLike
     "in" => KwIn
     "distinct" => KwDistinct
+    "true" => BoolLit(true)
+    "false" => BoolLit(false)
     _ => Ident(word)
   }
 }

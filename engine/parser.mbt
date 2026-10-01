@@ -53,6 +53,7 @@ fn show_tok(t : Tok) -> String {
     IntLit(v) => "number \{v}"
     DoubleLit(v) => "number \{v}"
     StrLit(_) => "string literal"
+    BoolLit(_) => "boolean literal"
     LParen => "'('"
     RParen => "')'"
     Comma => "','"
@@ -355,6 +356,7 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
     IntLit(v) => Lit(@types.Scalar::Int32(v))
     DoubleLit(v) => Lit(@types.Scalar::Float64(v))
     StrLit(s) => Lit(@types.Scalar::Str(s))
+    BoolLit(b) => Lit(@types.Scalar::Boolean(b))
     LParen => {
       let e = parse_or(p)
       p.expect(RParen)

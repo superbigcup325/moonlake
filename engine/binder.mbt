@@ -394,8 +394,79 @@ fn Binder::bind(
       }
       self.bind(acc, space)
     }
-    Like(_, _) => raise @types.SqlError::Bind("LIKE is not supported yet")
-    Case(_, _) => raise @types.SqlError::Bind("CASE WHEN is not supported yet")
+    Like(v, pat) => {
+      let (vpe, vdt) = self.bind(v, space)
+      if vdt != @types.Str {
+        raise @types.SqlError::Bind(
+          "LIKE requires a string value, got \{vdt.to_string()}",
+        )
+      }
+      let pattern : String = match pat {
+        Lit(@types.Str(s)) => s
+        _ =>
+          raise @types.SqlError::Bind(
+            "LIKE pattern must be a string literal (v1 subset)",
+          )
+      }
+      (LikeE(vpe, pattern), @types.Bool)
+    }
+    Case(whens, else_) => {
+      let bound : Array[(PhysExpr, @types.DataType)] = []
+      let conds : Array[PhysExpr] = []
+      let mut dt : @types.DataType? = None
+      for when in whens {
+        let (cond, cond_dt) = self.bind(when.0, space)
+        expect_bool(cond, cond_dt, "CASE WHEN")
+        let (res, res_dt) = self.bind(when.1, space)
+        match dt {
+          None => dt = Some(res_dt)
+          Some(prev) =>
+            dt = match unify(prev, res_dt) {
+              Some(u) => Some(u)
+              None =>
+                raise @types.SqlError::Bind(
+                  "CASE branches disagree: \{prev.to_string()} vs \{res_dt.to_string()}",
+                )
+            }
+        }
+        conds.push(cond)
+        bound.push((res, res_dt))
+      }
+      if bound.length() == 0 {
+        raise @types.SqlError::Bind("CASE requires a WHEN branch")
+      }
+      let out_dt = match dt {
+        Some(d) => d
+        None => raise @types.SqlError::Bind("CASE requires a WHEN branch")
+      }
+      let bound_else : (PhysExpr, @types.DataType)? = match else_ {
+        Some(e) => {
+          let (epe, edt) = self.bind(e, space)
+          Some((epe, edt))
+        }
+        None => None
+      }
+      let out_dt = match bound_else {
+        Some((_, edt)) =>
+          match unify(out_dt, edt) {
+            Some(u) => u
+            None =>
+              raise @types.SqlError::Bind(
+                "CASE ELSE disagrees with branches: \{out_dt.to_string()} vs \{edt.to_string()}",
+              )
+          }
+        None => out_dt
+      }
+      let whens_p : Array[(PhysExpr, PhysExpr)] = []
+      for i in 0..<bound.length() {
+        whens_p.push((conds[i], promote_to(bound[i].0, bound[i].1, out_dt)))
+      }
+      let else_p : PhysExpr? = match bound_else {
+        Some((epe, edt)) => Some(promote_to(epe, edt, out_dt))
+        None => None
+      }
+      (CaseE(whens_p, else_p, out_dt), out_dt)
+    }
   }
 }
 
