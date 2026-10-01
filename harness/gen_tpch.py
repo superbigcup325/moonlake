@@ -18,9 +18,17 @@ out.mkdir(parents=True, exist_ok=True)
 con = duckdb.connect()
 con.execute("CALL dbgen(sf = ?)", [float(sf)])
 
-# Tables moonlake scans: Q1 (lineitem), Q3 (customer/orders/lineitem),
-# Q14 (part/lineitem).
-for table in ["customer", "orders", "lineitem", "part"]:
+# All tables the golden queries scan.
+for table in [
+    "customer",
+    "orders",
+    "lineitem",
+    "part",
+    "supplier",
+    "nation",
+    "region",
+    "partsupp",
+]:
     con.execute(f"COPY {table} TO '{out / f'{table}.csv'}' (HEADER, DELIMITER ',')")
     rows = con.execute(f"SELECT count(*) FROM {table}").fetchone()
     print(f"{table} rows: {rows[0]}")
@@ -65,7 +73,8 @@ def golden(name: str, sql: str) -> None:
     print(f"{name} golden rows: {len(rows)}")
 
 
-Q6 = """
+QUERIES = {
+    "q6": """
 select sum(l_extendedprice * l_discount) as revenue
 from lineitem
 where
@@ -73,9 +82,8 @@ where
     and l_shipdate < date '1995-01-01'
     and l_discount between 0.02 and 0.04
     and l_quantity < 24
-"""
-
-Q1 = """
+""",
+    "q1": """
 select
     l_returnflag,
     l_linestatus,
@@ -91,9 +99,8 @@ from lineitem
 where l_shipdate <= date '1998-09-02'
 group by l_returnflag, l_linestatus
 order by l_returnflag, l_linestatus
-"""
-
-Q3 = """
+""",
+    "q3": """
 select
     l_orderkey,
     sum(l_extendedprice * (1 - l_discount)) as revenue,
@@ -117,9 +124,8 @@ order by
     revenue desc,
     l_orderkey
 limit 10
-"""
-
-Q14 = """
+""",
+    "q14": """
 select
     100.00 * sum(case
         when p_type like 'PROMO%'
@@ -133,16 +139,348 @@ where
     l_partkey = p_partkey
     and l_shipdate >= date '1995-09-01'
     and l_shipdate < date '1995-10-01'
-"""
+""",
+    "q5": """
+select
+    n_name,
+    sum(l_extendedprice * (1 - l_discount)) as revenue
+from
+    customer,
+    orders,
+    lineitem,
+    supplier,
+    nation,
+    region
+where
+    c_custkey = o_custkey
+    and l_orderkey = o_orderkey
+    and l_suppkey = s_suppkey
+    and c_nationkey = n_nationkey
+    and n_regionkey = r_regionkey
+    and r_name = 'ASIA'
+    and s_nationkey = n_nationkey
+    and o_orderdate >= date '1994-01-01'
+    and o_orderdate < date '1995-01-01'
+group by
+    n_name
+order by
+    revenue desc
+""",
+    "q7": """
+select
+    supp_nation,
+    cust_nation,
+    l_year,
+    sum(volume) as revenue
+from
+    (
+        select
+            n1.n_name as supp_nation,
+            n2.n_name as cust_nation,
+            extract(year from l_shipdate) as l_year,
+            l_extendedprice * (1 - l_discount) as volume
+        from
+            supplier,
+            lineitem,
+            orders,
+            customer,
+            nation n1,
+            nation n2
+        where
+            s_suppkey = l_suppkey
+            and o_orderkey = l_orderkey
+            and c_custkey = o_custkey
+            and s_nationkey = n1.n_nationkey
+            and c_nationkey = n2.n_nationkey
+            and (
+                (n1.n_name = 'FRANCE' and n2.n_name = 'GERMANY')
+                or (n1.n_name = 'GERMANY' and n2.n_name = 'FRANCE')
+            )
+            and l_shipdate between date '1995-01-01' and date '1996-12-31'
+    ) as shipping
+group by
+    supp_nation,
+    cust_nation,
+    l_year
+order by
+    supp_nation,
+    cust_nation,
+    l_year
+""",
+    "q8": """
+select
+    o_year,
+    sum(case
+        when nation = 'BRAZIL' then volume
+        else 0
+    end) / sum(volume) as mkt_share
+from
+    (
+        select
+            extract(year from o_orderdate) as o_year,
+            l_extendedprice * (1 - l_discount) as volume,
+            n2.n_name as nation
+        from
+            part,
+            supplier,
+            lineitem,
+            orders,
+            customer,
+            nation n1,
+            nation n2,
+            region
+        where
+            p_partkey = l_partkey
+            and s_suppkey = l_suppkey
+            and l_orderkey = o_orderkey
+            and o_custkey = c_custkey
+            and c_nationkey = n1.n_nationkey
+            and n1.n_regionkey = r_regionkey
+            and r_name = 'AMERICA'
+            and s_nationkey = n2.n_nationkey
+            and n2.n_name = 'BRAZIL'
+            and o_orderdate between date '1995-01-01' and date '1996-12-31'
+            and p_type = 'ECONOMY ANODIZED STEEL'
+    ) as all_nations
+group by
+    o_year
+order by
+    o_year
+""",
+    "q10": """
+select
+    c_custkey,
+    c_name,
+    sum(l_extendedprice * (1 - l_discount)) as revenue,
+    c_acctbal,
+    n_name,
+    c_address,
+    c_phone,
+    c_comment
+from
+    customer,
+    orders,
+    lineitem,
+    nation
+where
+    c_custkey = o_custkey
+    and l_orderkey = o_orderkey
+    and o_orderdate >= date '1993-10-01'
+    and o_orderdate < date '1994-01-01'
+    and l_returnflag = 'R'
+    and c_nationkey = n_nationkey
+group by
+    c_custkey,
+    c_name,
+    c_acctbal,
+    c_phone,
+    n_name,
+    c_address,
+    c_comment
+order by
+    revenue desc
+limit 20
+""",
+    "q12": """
+select
+    l_shipmode,
+    sum(case
+        when o_orderpriority = '1-URGENT'
+            or o_orderpriority = '2-HIGH'
+            then 1
+        else 0
+    end) as high_line_count,
+    sum(case
+        when o_orderpriority <> '1-URGENT'
+            and o_orderpriority <> '2-HIGH'
+            then 1
+        else 0
+    end) as low_line_count
+from
+    orders,
+    lineitem
+where
+    o_orderkey = l_orderkey
+    and l_shipmode in ('MAIL', 'SHIP')
+    and l_commitdate < l_receiptdate
+    and l_shipdate < l_commitdate
+    and l_receiptdate >= date '1994-01-01'
+    and l_receiptdate < date '1995-01-01'
+group by
+    l_shipmode
+order by
+    l_shipmode
+""",
+    "q13": """
+select
+    c_count,
+    count(*) as custdist
+from
+    (
+        select
+            c_custkey,
+            count(o_orderkey) as c_count
+        from
+            customer
+            left outer join orders on
+                c_custkey = o_custkey
+                and o_comment not like '%special%requests%'
+        group by
+            c_custkey
+    ) as c_orders
+group by
+    c_count
+order by
+    custdist desc,
+    c_count asc
+""",
+    "q19": """
+select
+    sum(l_extendedprice * (1 - l_discount)) as revenue
+from
+    lineitem,
+    part
+where
+    (
+        p_partkey = l_partkey
+        and p_brand = 'Brand#12'
+        and p_container in ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+        and l_quantity >= 1
+        and l_quantity <= 11
+        and p_size between 1 and 5
+        and l_shipmode in ('AIR', 'AIR REG')
+        and l_shipinstruct = 'DELIVER IN PERSON'
+    )
+    or (
+        p_partkey = l_partkey
+        and p_brand = 'Brand#23'
+        and p_container in ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')
+        and l_quantity >= 10
+        and l_quantity <= 20
+        and p_size between 1 and 10
+        and l_shipmode in ('AIR', 'AIR REG')
+        and l_shipinstruct = 'DELIVER IN PERSON'
+    )
+    or (
+        p_partkey = l_partkey
+        and p_brand = 'Brand#34'
+        and p_container in ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+        and l_quantity >= 20
+        and l_quantity <= 30
+        and p_size between 1 and 15
+        and l_shipmode in ('AIR', 'AIR REG')
+        and l_shipinstruct = 'DELIVER IN PERSON'
+    )
+""",
+    "q11": """
+select
+    ps_partkey,
+    sum(ps_supplycost * ps_availqty) as value
+from
+    partsupp,
+    supplier,
+    nation
+where
+    ps_suppkey = s_suppkey
+    and s_nationkey = n_nationkey
+    and n_name = 'GERMANY'
+group by
+    ps_partkey
+having
+    sum(ps_supplycost * ps_availqty) > (
+        select
+            sum(ps_supplycost * ps_availqty) * 0.0001
+        from
+            partsupp,
+            supplier,
+            nation
+        where
+            ps_suppkey = s_suppkey
+            and s_nationkey = n_nationkey
+            and n_name = 'GERMANY'
+    )
+order by
+    value desc
+""",
+    "q16": """
+select
+    p_brand,
+    p_type,
+    p_size,
+    count(distinct ps_suppkey) as supplier_cnt
+from
+    partsupp,
+    part
+where
+    p_partkey = ps_partkey
+    and p_brand <> 'Brand#45'
+    and p_type not like 'MEDIUM POLISHED%'
+    and p_size in (49, 14, 23, 45, 19, 3, 36, 9)
+    and ps_suppkey not in (
+        select
+            s_suppkey
+        from
+            supplier
+        where
+            s_comment = '%Customer%Complaints%'
+    )
+group by
+    p_brand,
+    p_type,
+    p_size
+order by
+    supplier_cnt desc,
+    p_brand,
+    p_type,
+    p_size
+""",
+    # Q15 rewritten for the moonlake subset: the CTE is inlined as a
+    # derived table (twice) and the max becomes a scalar subquery over
+    # the second copy. Same numbers as the official WITH form.
+    "q15r": """
+select
+    s_suppkey,
+    s_name,
+    s_address,
+    s_phone,
+    total_revenue
+from
+    supplier,
+    (
+        select
+            l_suppkey as supplier_no,
+            sum(l_extendedprice * (1 - l_discount)) as total_revenue
+        from
+            lineitem
+        where
+            l_shipdate >= date '1996-01-01'
+            and l_shipdate < date '1996-04-01'
+        group by
+            l_suppkey
+    ) as revenue0
+where
+    s_suppkey = supplier_no
+    and total_revenue = (
+        select
+            max(total_revenue)
+        from
+            (
+                select
+                    l_suppkey as supplier_no,
+                    sum(l_extendedprice * (1 - l_discount)) as total_revenue
+                from
+                    lineitem
+                where
+                    l_shipdate >= date '1996-01-01'
+                    and l_shipdate < date '1996-04-01'
+                group by
+                    l_suppkey
+            ) as revenue0
+    )
+order by
+    s_suppkey
+""",
+}
 
-golden("q6", Q6)
-golden("q1", Q1)
-golden("q3", Q3)
-golden("q14", Q14)
-
-# Q6 over the parquet-shaped lineitem (doubles instead of decimals):
-# the golden for the parquet scan adapter chain. The CASTS subquery is
-# byte-identical to the exported parquet, so duckdb computes the same
-# numbers moonlake will see.
-Q6P = Q6.replace("from lineitem", f"from ({CASTS}) as li")
-golden("q6p", Q6P)
+for name, sql in QUERIES.items():
+    golden(name, sql)

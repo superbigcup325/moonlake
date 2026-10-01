@@ -24,4 +24,7 @@ check q1 --csv "$DATA/lineitem.csv"
 check q3 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv" --csv "$DATA/lineitem.csv"
 check q14 --csv "$DATA/lineitem.csv" --csv "$DATA/part.csv"
 check q6p --parquet "$DATA/lineitem.parquet" --date-col l_shipdate --date-col l_commitdate --date-col l_receiptdate
+check q5 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv" --csv "$DATA/lineitem.csv" --csv "$DATA/supplier.csv" --csv "$DATA/nation.csv" --csv "$DATA/region.csv"
+check q10 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv" --csv "$DATA/lineitem.csv" --csv "$DATA/nation.csv"
+check q12 --csv "$DATA/orders.csv" --csv "$DATA/lineitem.csv"
 echo "all golden queries pass"
