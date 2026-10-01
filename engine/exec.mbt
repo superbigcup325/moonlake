@@ -368,7 +368,7 @@ fn exec_joins(
   steps : Array[JoinStep],
   deferred : PhysExpr?,
 ) -> Array[@types.DataBatch] {
-  let mut acc = tables[0]
+  let mut acc = tables[steps[0].table]
   for i, step in steps {
     if i == 0 {
       acc = filter_batches(acc, step.build_filter)

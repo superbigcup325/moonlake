@@ -90,7 +90,7 @@ pub extend BoundQuery with @debug.Debug::{to_repr}
 priv struct Binder {
   slots : Array[@catalog.TableSchema] // FROM order
   quals : Array[String] // alias (or table name) per slot, for ColQ lookup
-  offsets : Array[Int] // flat offset of each table's first column
+  mut offsets : Array[Int] // flat offset of each slot in JOIN order (set by plan_joins)
   group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
   group_types : Array[@types.DataType]
   aggs : Array[AggSpec]
@@ -118,12 +118,6 @@ pub fn bind_select(
   if schemas.length() > 30 {
     raise @types.SqlError::Bind("too many tables in FROM (max 30)")
   }
-  let offsets : Array[Int] = []
-  let mut off = 0
-  for s in schemas {
-    offsets.push(off)
-    off += s.columns.length()
-  }
   let quals : Array[String] = []
   for item in sel.from {
     quals.push(
@@ -140,7 +134,7 @@ pub fn bind_select(
   let b : Binder = {
     slots: schemas,
     quals,
-    offsets,
+    offsets: [],
     group_l: sel.group_by,
     group_types: [],
     aggs: [],
@@ -402,10 +396,14 @@ fn split_and(e : LExpr, out : Array[Conjunct], origin : Int?) -> Unit {
 }
 
 ///|
-/// Plan the left-deep join chain in FROM order and bind every classified
-/// conjunct. WHERE conjuncts that span tables but never become keys or
-/// residuals (possible at LEFT JOIN steps) come back as a deferred
-/// post-join filter.
+/// Plan the join chain and bind every classified conjunct. Chains with
+/// any LEFT JOIN keep written order (LEFT fixes row preservation);
+/// inner-only chains join greedily connected-first so a written order
+/// like `part, supplier, lineitem, ...` does not cross-product early.
+/// The flat column layout follows the JOIN order (that is how the
+/// executor accumulates rows). WHERE conjuncts that span tables but
+/// never become keys or residuals (possible at LEFT JOIN steps) come
+/// back as a deferred post-join filter.
 fn Binder::plan_joins(
   self : Binder,
   sel : Select,
@@ -425,10 +423,70 @@ fn Binder::plan_joins(
   for _ in 0..<pool.length() {
     consumed.push(false)
   }
+  // join order
+  let order : Array[Int] = []
+  let mut has_left = false
+  for item in sel.from {
+    if item.join is Left {
+      has_left = true
+    }
+  }
+  if has_left {
+    for i in 0..<sel.from.length() {
+      order.push(i)
+    }
+  } else {
+    let remaining : Array[Int] = []
+    for i in 0..<sel.from.length() {
+      remaining.push(i)
+    }
+    let mut acc_mask = 0
+    while remaining.length() > 0 {
+      // first remaining table with an equi conjunct into the accumulated
+      // row; written order breaks ties; no connection -> cross with the
+      // first remaining table
+      let mut pick = remaining[0]
+      let mut connected = false
+      for t in remaining {
+        if self.connects(t, acc_mask, pool, consumed) {
+          pick = t
+          connected = true
+          break
+        }
+      }
+      if !connected {
+        pick = remaining[0]
+      }
+      order.push(pick)
+      acc_mask = acc_mask | (1 << pick)
+      let mut idx = 0
+      for k, t in remaining {
+        if t == pick {
+          idx = k
+        }
+      }
+      let _ = remaining.remove(idx)
+    }
+  }
+  // flat layout follows the join order
+  let offsets : Array[Int] = []
+  for _ in 0..<sel.from.length() {
+    offsets.push(0)
+  }
+  let mut off = 0
+  for t in order {
+    offsets[t] = off
+    off += self.slots[t].columns.length()
+  }
+  self.offsets = offsets
   let steps : Array[JoinStep] = []
+  let acc_tables : Array[Int] = []
   let mut acc_mask = 0
-  for i, item in sel.from {
-    steps.push(self.plan_step(i, item, acc_mask, pool, consumed))
+  for i in order {
+    steps.push(
+      self.plan_step(i, sel.from[i], acc_tables, acc_mask, pool, consumed),
+    )
+    acc_tables.push(i)
     acc_mask = acc_mask | (1 << i)
   }
   let leftover : Array[LExpr] = []
@@ -456,10 +514,47 @@ fn Binder::plan_joins(
 }
 
 ///|
+/// Is there an unconsumed conjunct whose equality sides split exactly
+/// across the accumulated row and table t?
+fn Binder::connects(
+  self : Binder,
+  t : Int,
+  acc_mask : Int,
+  pool : Array[Conjunct],
+  consumed : Array[Bool],
+) -> Bool raise @types.SqlError {
+  let cur = 1 << t
+  for j, cj in pool {
+    if consumed[j] {
+      continue
+    }
+    match cj.origin {
+      Some(o) => if o != t { continue }
+      None => ()
+    }
+    match cj.lexpr {
+      Cmp(@types.Eq, l, r) => {
+        let lm = self.col_mask(l)
+        let rm = self.col_mask(r)
+        if (lm & acc_mask.lnot()) == 0 && lm != 0 && rm == cur {
+          return true
+        }
+        if (rm & acc_mask.lnot()) == 0 && rm != 0 && lm == cur {
+          return true
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 fn Binder::plan_step(
   self : Binder,
   i : Int,
   item : FromItem,
+  acc_tables : Array[Int], // slots joined so far, in join order
   acc_mask : Int,
   pool : Array[Conjunct],
   consumed : Array[Bool],
@@ -554,7 +649,7 @@ fn Binder::plan_step(
     }
   }
   let out_dtypes : Array[@types.DataType] = []
-  for k in 0..<i {
+  for k in acc_tables {
     for c in self.slots[k].columns {
       out_dtypes.push(c.dtype)
     }
