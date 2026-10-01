@@ -16,22 +16,30 @@ fn main {
 
 ///|
 fn exec_command(args : Array[String]) -> Unit {
-  // expected shape: exec (--csv <path> | --parquet <path> | --date-col <c>)* <sql words...>
+  // expected shape: exec [flags] (--csv <path> | --parquet <path> | --date-col <c>)* <sql words...>
   let paths : Array[(String, String)] = [] // (kind, path)
   let date_cols : Array[String] = []
+  let mut explain = false
+  let mut json = false
   let mut i = 2
   let n = args.length()
   let mut reading = true
-  while reading && i + 1 < n {
-    if args[i] == "--csv" {
+  while reading && i < n {
+    if args[i] == "--csv" && i + 1 < n {
       paths.push(("csv", args[i + 1]))
       i += 2
-    } else if args[i] == "--parquet" {
+    } else if args[i] == "--parquet" && i + 1 < n {
       paths.push(("parquet", args[i + 1]))
       i += 2
-    } else if args[i] == "--date-col" {
+    } else if args[i] == "--date-col" && i + 1 < n {
       date_cols.push(args[i + 1])
       i += 2
+    } else if args[i] == "--explain" {
+      explain = true
+      i += 1
+    } else if args[i] == "--json" {
+      json = true
+      i += 1
     } else {
       reading = false
     }
@@ -68,17 +76,80 @@ fn exec_command(args : Array[String]) -> Unit {
     }
     cat.register(entry)
   }
+  if explain {
+    println(@engine.explain(sql, cat) catch {
+      err => {
+        println(err.to_string())
+        return
+      }
+    })
+    return
+  }
   let result = @moonlake.execute(sql, cat) catch {
     err => {
       println(err.to_string())
       return
     }
   }
-  // pipe-friendly output: header row, then '|' separated values
-  println(join_names(result.names()))
-  for r in 0..<result.row_count() {
-    println(join_row(result, r))
+  if json {
+    println(join_json(result))
+  } else {
+    // pipe-friendly output: header row, then '|' separated values
+    println(join_names(result.names()))
+    for r in 0..<result.row_count() {
+      println(join_row(result, r))
+    }
   }
+}
+
+///|
+/// Whole result as one JSON array line. Strings are escaped; NULL
+/// becomes null.
+fn join_json(result : @engine.SelectResult) -> String {
+  let sb = StringBuilder()
+  sb.write_char('[')
+  for r in 0..<result.row_count() {
+    if r > 0 {
+      sb.write_char(',')
+    }
+    sb.write_char('{')
+    for c in 0..<result.names().length() {
+      if c > 0 {
+        sb.write_char(',')
+      }
+      sb.write_char('"')
+      sb.write_string(json_escape(result.names()[c]))
+      sb.write_string("\":")
+      match result.get(r, c) {
+        @types.Null => sb.write_string("null")
+        @types.Str(v) => {
+          sb.write_char('"')
+          sb.write_string(json_escape(v))
+          sb.write_char('"')
+        }
+        other => sb.write_string(other.to_string())
+      }
+    }
+    sb.write_char('}')
+  }
+  sb.write_char(']')
+  sb.to_string()
+}
+
+///|
+fn json_escape(s : String) -> String {
+  let sb = StringBuilder()
+  for ch in s {
+    match ch {
+      '"' => sb.write_string("\\\"")
+      '\\' => sb.write_string("\\\\")
+      '\n' => sb.write_string("\\n")
+      '\r' => sb.write_string("\\r")
+      '\t' => sb.write_string("\\t")
+      _ => sb.write_char(ch)
+    }
+  }
+  sb.to_string()
 }
 
 ///|
