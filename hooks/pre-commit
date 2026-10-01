@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Pre-commit gate: generated-interface freshness, formatting, type check
+# with warnings denied, and the test suite. The interface check is the
+# one that matters: `moon info` regenerates the .mbti files and fails
+# the commit if they drift from the code (CI runs the same gate, but
+# catching it here saves a push round-trip).
+#
+# One-shot install (per clone):
+#   git config core.hooksPath hooks
+#
+# Note: moon info and moon fmt read the working tree, so this assumes
+# the usual commit flow where the tree matches the index.
+
+set -euo pipefail
+
+if git diff --cached --quiet; then
+  exit 0 # nothing staged
+fi
+
+# 1. generated interfaces must match the code
+moon info
+if ! git diff --exit-code -- '*.mbti' >/dev/null; then
+  echo "pre-commit: generated interfaces are stale — run 'moon info' and stage the .mbti changes:" >&2
+  git --no-pager diff --stat -- '*.mbti' >&2
+  exit 1
+fi
+
+# 2. formatting: apply it, then re-stage only files that were already
+#    staged (moon fmt formats the whole tree; unrelated files stay out)
+staged_mbt=$(git diff --cached --name-only -- '*.mbt')
+if [ -n "$staged_mbt" ]; then
+  moon fmt
+  for f in $staged_mbt; do
+    if ! git diff --quiet -- "$f"; then
+      git add -- "$f"
+      echo "pre-commit: moon fmt reformatted $f (re-staged)"
+    fi
+  done
+fi
+
+# 3. type check, warnings denied
+moon check --deny-warn >/dev/null
+
+# 4. tests (native; wasm-gc / js and the golden chain run in CI)
+moon test >/dev/null
+
+echo "pre-commit: ok (info fresh, formatted, check clean, tests pass)"

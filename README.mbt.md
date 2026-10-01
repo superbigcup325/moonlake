@@ -78,7 +78,12 @@ moon check           # type-check
 moon test            # run tests
 moon fmt             # format
 moon run cmd/main    # run the CLI
+git config core.hooksPath hooks   # once per clone: pre-commit gate
 ```
+
+The pre-commit hook re-runs interface freshness (`moon info`),
+formatting, `moon check --deny-warn` and the tests before every
+commit — the same gates CI runs.
 
 ## Acknowledgements
 
