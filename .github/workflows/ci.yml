@@ -60,3 +60,28 @@ jobs:
           moon install
       - name: Test (${{ matrix.target }})
         run: moon test --target ${{ matrix.target }}
+
+  tpch:
+    # Full-chain cross-validation: regenerate TPC-H data and duckdb's
+    # answers from scratch in CI, then diff moonlake output per query.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Verify pinned toolchain version
+        run: |
+          moon version --all
+          moon version | grep -F "${{ env.MOONBIT_VERSION }}"
+      - name: Fetch dependencies
+        run: |
+          moon update
+          moon install
+      - name: Install duckdb
+        run: python3 -m pip install --quiet duckdb
+      - name: Generate TPC-H data and golden answers
+        run: python3 harness/gen_tpch.py
+      - name: Cross-validate golden queries
+        run: bash harness/check_all.sh
