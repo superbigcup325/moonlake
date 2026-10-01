@@ -92,7 +92,8 @@ fn run_parsed(
       }
     }
   }
-  let bq = bind_select(sel, schemas)
+  let runner : SubqueryRunner = { catalog, }
+  let bq = bind_select(sel, schemas, runner)
   let joined = exec_joins(tables, bq.steps, bq.deferred)
   let kept : Array[@types.DataBatch] = if bq.aggregate {
     let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)

@@ -395,9 +395,16 @@ fn parse_predicate(p : Parser) -> LExpr raise @types.SqlError {
         Like(left, parse_add(p))
       } else if p.eat(KwIn) {
         p.expect(LParen)
-        let list = parse_expr_list(p)
-        p.expect(RParen)
-        In(left, list)
+        if p.peek() is KwSelect {
+          let _ = p.advance()
+          let sub = parse_select_body(p)
+          p.expect(RParen)
+          InSelect(left, sub, false)
+        } else {
+          let list = parse_expr_list(p)
+          p.expect(RParen)
+          In(left, list)
+        }
       } else if p.peek() is KwNot && p.peek_at(1) is KwLike {
         // postfix NOT LIKE (prefix NOT is handled by parse_not)
         let _ = p.advance()
@@ -407,9 +414,16 @@ fn parse_predicate(p : Parser) -> LExpr raise @types.SqlError {
         let _ = p.advance()
         let _ = p.advance()
         p.expect(LParen)
-        let list = parse_expr_list(p)
-        p.expect(RParen)
-        NotIn(left, list)
+        if p.peek() is KwSelect {
+          let _ = p.advance()
+          let sub = parse_select_body(p)
+          p.expect(RParen)
+          InSelect(left, sub, true)
+        } else {
+          let list = parse_expr_list(p)
+          p.expect(RParen)
+          NotIn(left, list)
+        }
       } else {
         left
       }

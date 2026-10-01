@@ -42,6 +42,22 @@ fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
           )
         _ => @types.Null
       }
+    InSetE(inner, set, negated, right_has_null) =>
+      match eval_with(inner, get) {
+        @types.Null => @types.Null // NULL never matches, either direction
+        v => {
+          let in_set = set.contains(scalar_key(v))
+          if in_set {
+            @types.Boolean(!negated)
+          } else if negated && right_has_null {
+            @types.Null
+          } else {
+            @types.Boolean( // NOT IN against a set containing NULL: unknown
+              negated,
+            )
+          }
+        }
+      }
     LikeE(inner, pattern) =>
       match eval_with(inner, get) {
         @types.Str(s) => @types.Boolean(like_match(s, pattern))

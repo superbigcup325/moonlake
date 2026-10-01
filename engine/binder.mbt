@@ -25,6 +25,7 @@ pub(all) enum PhysExpr {
   NotE(PhysExpr)
   LikeE(PhysExpr, String) // pattern folded at bind time
   ExtractE(PhysExpr, ExtractField)
+  InSetE(PhysExpr, Map[String, Bool], Bool, Bool) // value, folded key set, negated, right side had NULL
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
 } derive(Debug)
 
@@ -91,6 +92,7 @@ priv struct Binder {
   slots : Array[@catalog.TableSchema] // FROM order
   quals : Array[String] // alias (or table name) per slot, for ColQ lookup
   mut offsets : Array[Int] // flat offset of each slot in JOIN order (set by plan_joins)
+  runner : SubqueryRunner // executes non-correlated subqueries during binding
   group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
   group_types : Array[@types.DataType]
   aggs : Array[AggSpec]
@@ -111,9 +113,54 @@ priv struct Conjunct {
 }
 
 ///|
-pub fn bind_select(
+/// Executes non-correlated subqueries during binding. Everything in the
+/// engine is eager, so folding them to constants / key sets is direct.
+/// Correlation is not supported: an inner select can only see its own
+/// FROM tables (an outer name resolves as an error or an inner column,
+/// never as the outer row).
+priv struct SubqueryRunner {
+  catalog : @catalog.Catalog
+}
+
+///|
+fn SubqueryRunner::run_scalar(
+  self : SubqueryRunner,
+  sel : Select,
+) -> (@types.Scalar, @types.DataType) raise @types.SqlError {
+  let r = run_parsed(sel, self.catalog)
+  if r.row_count() != 1 || r.names().length() != 1 {
+    raise @types.SqlError::Bind(
+      "scalar subquery must return exactly one row and one column",
+    )
+  }
+  (r.get(0, 0), r.types()[0])
+}
+
+///|
+fn SubqueryRunner::run_key_set(
+  self : SubqueryRunner,
+  sel : Select,
+) -> (Map[String, Bool], Bool, @types.DataType) raise @types.SqlError {
+  let r = run_parsed(sel, self.catalog)
+  if r.names().length() != 1 {
+    raise @types.SqlError::Bind("IN subquery must return exactly one column")
+  }
+  let set : Map[String, Bool] = Map([])
+  let mut has_null = false
+  for row in 0..<r.row_count() {
+    match r.get(row, 0) {
+      @types.Null => has_null = true
+      v => set[scalar_key(v)] = true
+    }
+  }
+  (set, has_null, r.types()[0])
+}
+
+///|
+fn bind_select(
   sel : Select,
   schemas : Array[@catalog.TableSchema],
+  runner : SubqueryRunner,
 ) -> BoundQuery raise @types.SqlError {
   if schemas.length() > 30 {
     raise @types.SqlError::Bind("too many tables in FROM (max 30)")
@@ -135,6 +182,7 @@ pub fn bind_select(
     slots: schemas,
     quals,
     offsets: [],
+    runner,
     group_l: sel.group_by,
     group_types: [],
     aggs: [],
@@ -1059,10 +1107,20 @@ fn Binder::bind(
       }
       (ExtractE(pe, field), @types.Int32)
     }
-    ScalarSub(_) =>
-      raise @types.SqlError::Bind("scalar subqueries are not supported yet")
-    InSelect(_, _, _) =>
-      raise @types.SqlError::Bind("IN (SELECT ...) is not supported yet")
+    ScalarSub(sub) => {
+      let (value, dt) = self.runner.run_scalar(sub)
+      (Const(value), dt)
+    }
+    InSelect(v, sub, negated) => {
+      let (vpe, vdt) = self.bind(v, space)
+      let (set, has_null, sub_dt) = self.runner.run_key_set(sub)
+      if sub_dt != vdt {
+        raise @types.SqlError::Bind(
+          "IN subquery column type mismatch: \{vdt.to_string()} vs \{sub_dt.to_string()}",
+        )
+      }
+      (InSetE(vpe, set, negated, has_null), @types.Bool)
+    }
     Case(whens, else_) => {
       let bound : Array[(PhysExpr, @types.DataType)] = []
       let conds : Array[PhysExpr] = []

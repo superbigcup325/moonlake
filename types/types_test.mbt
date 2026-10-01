@@ -125,3 +125,24 @@ test "vector get set and validity" {
     @types.Scalar::Date(@types.parse_date("1994-01-01").unwrap()),
   )
 }
+
+///|
+/// MoonBit's `<`/`>` operators on String are NOT lexicographic (they
+/// appear to follow literal-pool order); dictionary comparison must go
+/// through String::compare. Scalar ordering depends on this.
+test "scalar string comparison is lexicographic" {
+  assert_eq(
+    @types.Scalar::compare(@types.Str("apple"), @types.Str("pear")),
+    Some(-1),
+  )
+  assert_eq(
+    @types.Scalar::compare(@types.Str("pear"), @types.Str("apple")),
+    Some(1),
+  )
+  assert_eq(
+    @types.Scalar::compare(@types.Str("same"), @types.Str("same")),
+    Some(0),
+  )
+  // the operators are not: document the trap right next to the fix
+  assert_false("apple" < "pear")
+}

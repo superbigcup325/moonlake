@@ -24,14 +24,7 @@ pub fn Scalar::compare(a : Scalar, b : Scalar) -> Int? {
         Some(0)
       }
     (Date(x), Date(y)) => Some(cmp_i(x, y))
-    (Str(x), Str(y)) =>
-      if x < y {
-        Some(-1)
-      } else if x > y {
-        Some(1)
-      } else {
-        Some(0)
-      }
+    (Str(x), Str(y)) => Some(String::lexical_compare(x, y)) // dictionary order (String::compare is length-first)
     (Boolean(x), Boolean(y)) =>
       match (x, y) {
         (false, true) => Some(-1)
