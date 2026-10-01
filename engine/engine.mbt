@@ -58,12 +58,18 @@ pub fn run_select(
   }
   let bq = bind_select(sel, schemas)
   let joined = exec_joins(tables, bq.steps, bq.deferred)
-  let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
-  let kept = match bq.having {
-    Some(h) => compact(grouped, eval_mask(h, grouped))
-    None => grouped
+  let kept : Array[@types.DataBatch] = if bq.aggregate {
+    let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
+    [
+      match bq.having {
+        Some(h) => compact(grouped, eval_mask(h, grouped))
+        None => grouped
+      },
+    ]
+  } else {
+    joined
   }
-  let projected = project(kept, bq.out_exprs, bq.out_types)
+  let projected = project(concat_batches(kept), bq.out_exprs, bq.out_types)
   let batch = order_limit(projected, bq.order_keys, bq.limit)
   { names: bq.names, types: bq.out_types, batch, }
 }

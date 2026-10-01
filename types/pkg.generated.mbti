@@ -10,7 +10,13 @@ pub fn civil_from_days(Int) -> (Int, Int, Int)
 
 pub fn days_from_civil(Int, Int, Int) -> Int
 
+pub fn epoch_day(Int) -> Int
+
+pub fn epoch_month(Int) -> Int
+
 pub fn epoch_to_string(Int) -> String
+
+pub fn epoch_year(Int) -> Int
 
 pub fn parse_bool(String) -> Bool?
 

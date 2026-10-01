@@ -508,3 +508,34 @@ fn join_step(
   }
   columnarize(step.out_dtypes, out)
 }
+
+///|
+/// Columnar concatenation of batches sharing one layout.
+fn concat_batches(batches : Array[@types.DataBatch]) -> @types.DataBatch {
+  if batches.length() == 1 {
+    return batches[0]
+  }
+  if batches.length() == 0 {
+    return @types.DataBatch::new([], 0)
+  }
+  let mut total = 0
+  for b in batches {
+    total += b.row_count()
+  }
+  let ncols = batches[0].columns().length()
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<ncols {
+    let dt = batches[0].columns()[c].dtype()
+    let dst = @types.ColumnVector::make(dt, total)
+    let mut w = 0
+    for b in batches {
+      let src = b.columns()[c]
+      for r in 0..<b.row_count() {
+        dst.set(w, src.get(r))
+        w += 1
+      }
+    }
+    columns.push(dst)
+  }
+  @types.DataBatch::new(columns, total)
+}

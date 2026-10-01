@@ -127,3 +127,22 @@ pub fn epoch_to_string(days : Int) -> String {
   sb.write_string(d.to_string())
   sb.to_string()
 }
+
+///|
+/// Calendar field extraction from epoch days (EXTRACT support).
+pub fn epoch_year(days : Int) -> Int {
+  let (y, _, _) = civil_from_days(days)
+  y
+}
+
+///|
+pub fn epoch_month(days : Int) -> Int {
+  let (_, m, _) = civil_from_days(days)
+  m
+}
+
+///|
+pub fn epoch_day(days : Int) -> Int {
+  let (_, _, d) = civil_from_days(days)
+  d
+}

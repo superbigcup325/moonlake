@@ -37,8 +37,18 @@ pub struct BoundQuery {
 } derive(@debug.Debug)
 pub fn BoundQuery::to_repr(Self) -> @debug.Repr
 
+pub(all) enum ExtractField {
+  Year
+  Month
+  Day
+} derive(Eq, @debug.Debug)
+pub fn ExtractField::equal(Self, Self) -> Bool
+pub fn ExtractField::not_equal(Self, Self) -> Bool
+pub fn ExtractField::to_repr(Self) -> @debug.Repr
+
 pub(all) struct FromItem {
   table : String
+  tbl_alias : String?
   join : JoinKind
   on : LExpr?
 } derive(Eq, @debug.Debug)
@@ -57,6 +67,7 @@ pub fn JoinKind::to_repr(Self) -> @debug.Repr
 
 pub(all) enum LExpr {
   Col(String)
+  ColQ(String, String)
   Lit(@types.Scalar)
   Arith(@types.ArithOp, LExpr, LExpr)
   Cmp(@types.CmpOp, LExpr, LExpr)
@@ -65,9 +76,14 @@ pub(all) enum LExpr {
   Not(LExpr)
   Between(LExpr, LExpr, LExpr)
   In(LExpr, Array[LExpr])
+  NotIn(LExpr, Array[LExpr])
   Like(LExpr, LExpr)
+  NotLike(LExpr, LExpr)
+  Extract(ExtractField, LExpr)
   Case(Array[(LExpr, LExpr)], LExpr?)
   Agg(AggFn, LExpr?)
+  ScalarSub(Select)
+  InSelect(LExpr, Select, Bool)
 } derive(Eq, @debug.Debug)
 pub fn LExpr::equal(Self, Self) -> Bool
 pub fn LExpr::not_equal(Self, Self) -> Bool

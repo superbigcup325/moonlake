@@ -57,6 +57,7 @@ fn show_tok(t : Tok) -> String {
     LParen => "'('"
     RParen => "')'"
     Comma => "','"
+    Dot => "'.'"
     Star => "'*'"
     Plus => "'+'"
     Minus => "'-'"
@@ -176,7 +177,30 @@ fn parse_table_name(p : Parser) -> String raise @types.SqlError {
 ///|
 fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
   let table = parse_table_name(p)
-  { table, join: Inner, on: None, }
+  let tbl_alias = parse_alias_opt(p)
+  { table, tbl_alias, join: Inner, on: None, }
+}
+
+///|
+/// Optional table alias: `tbl alias` or `tbl AS alias`. Only a plain
+/// identifier counts (keywords tokenize as their own tokens).
+fn parse_alias_opt(p : Parser) -> String? raise @types.SqlError {
+  if p.eat(KwAs) {
+    match p.advance() {
+      Ident(name) => return Some(name)
+      other => {
+        let found = show_tok(other)
+        raise @types.SqlError::Parse("expected alias after AS, found \{found}")
+      }
+    }
+  }
+  match p.peek() {
+    Ident(name) => {
+      let _ = p.advance()
+      Some(name)
+    }
+    _ => None
+  }
 }
 
 ///|
@@ -202,13 +226,14 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
     return None
   }
   let table = parse_table_name(p)
+  let tbl_alias = parse_alias_opt(p)
   let on : LExpr? = if kind is Cross {
     None
   } else {
     p.expect(KwOn)
     Some(parse_or(p))
   }
-  Some({ table, join: kind, on, })
+  Some({ table, tbl_alias, join: kind, on, })
 }
 
 ///|
@@ -412,6 +437,17 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
     Ident(name) =>
       if p.peek() is LParen {
         parse_function(p, name)
+      } else if p.peek() is Dot {
+        let _ = p.advance()
+        match p.advance() {
+          Ident(col) => ColQ(name, col)
+          other => {
+            let found = show_tok(other)
+            raise @types.SqlError::Parse(
+              "expected column name after '.', found \{found}",
+            )
+          }
+        }
       } else {
         Col(name)
       }

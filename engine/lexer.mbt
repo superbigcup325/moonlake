@@ -12,6 +12,7 @@ priv enum Tok {
   LParen
   RParen
   Comma
+  Dot
   Star
   Plus
   Minus
@@ -112,6 +113,10 @@ fn lex_sql(sql : String) -> Array[Tok] raise @types.SqlError {
       }
       ',' => {
         toks.push(Comma)
+        lx.pos += 1
+      }
+      '.' => {
+        toks.push(Dot)
         lx.pos += 1
       }
       '*' => {

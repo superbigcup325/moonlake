@@ -205,16 +205,16 @@ test "group by over empty input yields zero rows" {
 }
 
 ///|
-test "ungrouped column in select is a bind error" {
+test "ungrouped column next to an aggregate is a bind error" {
   assert_true(
     run_err("SELECT a, sum(v) AS s FROM t", group_catalog())
     .to_string()
     .contains("must appear in GROUP BY"),
   )
   assert_true(
-    run_err("SELECT 1 AS x FROM t", group_catalog())
+    run_err("SELECT a FROM t HAVING count(*) > 0", group_catalog())
     .to_string()
-    .contains("aggregate or GROUP BY"),
+    .contains("must appear in GROUP BY"),
   )
 }
 
@@ -398,5 +398,49 @@ test "duplicate column names across FROM tables are ambiguous" {
     run_err("SELECT count(*) AS c FROM t1, t2 WHERE id = id", cat)
     .to_string()
     .contains("ambiguous"),
+  )
+}
+
+///|
+test "plain projection returns rows without aggregation" {
+  let cat = str_catalog("a,v\nb,1\na,5\nb,3\n")
+  let r = run("SELECT a, v FROM t WHERE v > 1 ORDER BY a, v", cat)
+  assert_eq(r.names(), ["a", "v"])
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Scalar::Str("a"))
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(5))
+  assert_eq(r.get(1, 0), @types.Scalar::Str("b"))
+  assert_eq(r.get(1, 1), @types.Scalar::Int32(3))
+  // with limit
+  let r2 = run("SELECT a FROM t ORDER BY a LIMIT 2", cat)
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Scalar::Str("a"))
+  assert_eq(r2.get(1, 0), @types.Scalar::Str("b"))
+}
+
+///|
+test "table alias is a column qualifier" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("id,x\n1,10\n2,20\n", "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("id,tx\n1,7\n2,9\n", "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r = run(
+    "SELECT a.id, b.tx FROM t1 a, t2 b WHERE a.id = b.id ORDER BY a.id", cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1))
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(7))
+  assert_eq(r.get(1, 1), @types.Scalar::Int32(9))
+  assert_true(
+    run_err("SELECT zzz.id FROM t1 a", cat)
+    .to_string()
+    .contains("unknown table or alias"),
   )
 }

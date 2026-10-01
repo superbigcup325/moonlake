@@ -19,8 +19,22 @@ pub extend AggFn with Eq::{equal, not_equal}
 pub extend AggFn with @debug.Debug::{to_repr}
 
 ///|
+pub(all) enum ExtractField {
+  Year
+  Month
+  Day
+} derive(Eq, Debug)
+
+///|
+pub extend ExtractField with Eq::{equal, not_equal}
+
+///|
+pub extend ExtractField with @debug.Debug::{to_repr}
+
+///|
 pub(all) enum LExpr {
   Col(String)
+  ColQ(String, String) // qualifier.name (table name or alias)
   Lit(@types.Scalar)
   Arith(@types.ArithOp, LExpr, LExpr)
   Cmp(@types.CmpOp, LExpr, LExpr)
@@ -29,9 +43,14 @@ pub(all) enum LExpr {
   Not(LExpr)
   Between(LExpr, LExpr, LExpr) // value, low, high (both inclusive)
   In(LExpr, Array[LExpr]) // binder desugars into an OR-chain of equalities
+  NotIn(LExpr, Array[LExpr]) // desugars into NOT of the In chain
   Like(LExpr, LExpr) // pattern must fold to a string constant
+  NotLike(LExpr, LExpr) // pattern must fold to a string constant
+  Extract(ExtractField, LExpr) // EXTRACT(year|month|day FROM date)
   Case(Array[(LExpr, LExpr)], LExpr?) // searched CASE: (when, then)*, else?
   Agg(AggFn, LExpr?) // None only for count(*)
+  ScalarSub(Select) // non-correlated scalar subquery, folded to a constant
+  InSelect(LExpr, Select, Bool) // value IN / NOT IN (SELECT ...), non-correlated
 } derive(Eq, Debug)
 
 ///|
@@ -82,6 +101,7 @@ pub extend JoinKind with @debug.Debug::{to_repr}
 ///|
 pub(all) struct FromItem {
   table : String
+  tbl_alias : String? // `tbl name` / `tbl AS name`; column qualifier
   join : JoinKind
   on : LExpr? // ON condition for explicit joins
 } derive(Eq, Debug)

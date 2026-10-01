@@ -69,7 +69,8 @@ priv struct JoinStep {
 /// The bound query, ready for the executor.
 pub struct BoundQuery {
   priv steps : Array[JoinStep]
-  priv deferred : PhysExpr? // Flat refs applied after all joins
+  priv deferred : PhysExpr?
+  priv aggregate : Bool // false: plain projection over the joined rows
   priv group_exprs : Array[PhysExpr]
   priv group_types : Array[@types.DataType]
   priv aggs : Array[AggSpec]
@@ -87,6 +88,7 @@ pub extend BoundQuery with @debug.Debug::{to_repr}
 ///|
 priv struct Binder {
   slots : Array[@catalog.TableSchema] // FROM order
+  quals : Array[String] // alias (or table name) per slot, for ColQ lookup
   offsets : Array[Int] // flat offset of each table's first column
   group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
   group_types : Array[@types.DataType]
@@ -121,8 +123,18 @@ pub fn bind_select(
     offsets.push(off)
     off += s.columns.length()
   }
+  let quals : Array[String] = []
+  for item in sel.from {
+    quals.push(
+      match item.tbl_alias {
+        Some(a) => a
+        None => item.table
+      },
+    )
+  }
   let b : Binder = {
     slots: schemas,
+    quals,
     offsets,
     group_l: sel.group_by,
     group_types: [],
@@ -136,11 +148,29 @@ pub fn bind_select(
     group_exprs.push(pe)
     b.group_types.push(dt)
   }
+  // A query aggregates when it has GROUP BY, an aggregate anywhere in
+  // the select list, or an aggregate in HAVING; otherwise it is a plain
+  // projection over the joined rows.
+  let mut agg_mode = sel.group_by.length() > 0
+  if !agg_mode {
+    for item in sel.items {
+      if contains_agg(item.expr) {
+        agg_mode = true
+      }
+    }
+    if !agg_mode {
+      match sel.having {
+        Some(h) => if contains_agg(h) { agg_mode = true }
+        None => ()
+      }
+    }
+  }
+  let item_space : Space = if agg_mode { AggOut } else { Flat }
   let out_exprs : Array[PhysExpr] = []
   let names : Array[String] = []
   let out_types : Array[@types.DataType] = []
   for i, item in sel.items {
-    let (pe, dt) = b.bind(item.expr, AggOut)
+    let (pe, dt) = b.bind(item.expr, item_space)
     out_exprs.push(pe)
     names.push(
       match item.label {
@@ -151,7 +181,12 @@ pub fn bind_select(
     out_types.push(dt)
   }
   let having : PhysExpr? = match sel.having {
-    Some(h) =>
+    Some(h) => {
+      if !agg_mode {
+        raise @types.SqlError::Bind(
+          "HAVING requires GROUP BY or an aggregate (v1 subset)",
+        )
+      }
       match b.bind(h, AggOut) {
         (pe, @types.Bool) => Some(pe)
         (_, other) =>
@@ -159,12 +194,20 @@ pub fn bind_select(
             "HAVING must evaluate to bool, got \{other.to_string()}",
           )
       }
+    }
     None => None
   }
   let order_keys : Array[(Int, Bool)] = []
   for item in sel.order_by {
-    let idx : Int? = match item.key {
-      Col(name) => {
+    // ORDER BY references output columns by name; a qualifier is accepted
+    // and ignored (it can only name the query's own output).
+    let key_name : String? = match item.key {
+      Col(name) => Some(name)
+      ColQ(_, name) => Some(name)
+      _ => None
+    }
+    let idx : Int? = match key_name {
+      Some(name) => {
         let mut found = None
         for i, name2 in names {
           if name2 == name {
@@ -173,7 +216,7 @@ pub fn bind_select(
         }
         found
       }
-      _ => None
+      None => None
     }
     match idx {
       Some(i) => order_keys.push((i, item.desc))
@@ -183,14 +226,10 @@ pub fn bind_select(
         )
     }
   }
-  if b.aggs.length() == 0 && sel.group_by.length() == 0 {
-    raise @types.SqlError::Bind(
-      "query has no aggregate or GROUP BY (v1 subset)",
-    )
-  }
   {
     steps,
     deferred,
+    aggregate: agg_mode,
     group_exprs,
     group_types: b.group_types,
     aggs: b.aggs,
@@ -204,9 +243,48 @@ pub fn bind_select(
 }
 
 ///|
+fn contains_agg(e : LExpr) -> Bool {
+  match e {
+    Col(_) | ColQ(_, _) | Lit(_) => ()
+    Agg(_, _) => return true
+    Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
+      return contains_agg(l) || contains_agg(r)
+    Not(x) => return contains_agg(x)
+    Between(v, lo, hi) =>
+      return contains_agg(v) || contains_agg(lo) || contains_agg(hi)
+    In(v, items) | NotIn(v, items) => {
+      let mut found = contains_agg(v)
+      for item in items {
+        if contains_agg(item) {
+          found = true
+        }
+      }
+      return found
+    }
+    Like(v, _) | NotLike(v, _) => return contains_agg(v)
+    Extract(_, x) => return contains_agg(x)
+    Case(whens, else_) => {
+      let mut found = false
+      for when in whens {
+        if contains_agg(when.0) || contains_agg(when.1) {
+          found = true
+        }
+      }
+      match else_ {
+        Some(e) => return found || contains_agg(e)
+        None => return found
+      }
+    }
+    ScalarSub(_) | InSelect(_, _, _) => return false // inner query aggregates are its own
+  }
+  false
+}
+
+///|
 fn default_name(expr : LExpr, index : Int) -> String {
   match expr {
     Col(name) => name
+    ColQ(_, name) => name
     Agg(fn_, _) => {
       let label = match fn_ {
         Sum => "sum"
@@ -252,11 +330,26 @@ fn Binder::lookup_slot(
 }
 
 ///|
+/// Resolve a FROM qualifier (alias or table name) to its slot.
+fn Binder::lookup_slot_by_qual(
+  self : Binder,
+  q : String,
+) -> Int raise @types.SqlError {
+  for k, s in self.slots {
+    if self.quals[k] == q || s.table == q {
+      return k
+    }
+  }
+  raise @types.SqlError::Bind("unknown table or alias \"\{q}\" in FROM")
+}
+
+///|
 /// Table mask of every column an expression references, resolved before
 /// binding (drives join conjunct classification).
 fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
   match e {
     Col(name) => 1 << self.lookup_slot(name)
+    ColQ(q, _) => 1 << self.lookup_slot_by_qual(q)
     Lit(_) => 0
     Arith(_, l, r) => self.col_mask(l) | self.col_mask(r)
     Cmp(_, l, r) => self.col_mask(l) | self.col_mask(r)
@@ -265,14 +358,15 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
     Not(x) => self.col_mask(x)
     Between(v, lo, hi) =>
       self.col_mask(v) | self.col_mask(lo) | self.col_mask(hi)
-    In(v, items) => {
+    In(v, items) | NotIn(v, items) => {
       let mut m = self.col_mask(v)
       for item in items {
         m = m | self.col_mask(item)
       }
       m
     }
-    Like(v, _) => self.col_mask(v)
+    Like(v, _) | NotLike(v, _) => self.col_mask(v)
+    Extract(_, x) => self.col_mask(x)
     Case(whens, else_) => {
       let mut m = 0
       for when in whens {
@@ -283,6 +377,9 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
         None => m
       }
     }
+    // subqueries are self-contained: only the outer value expression counts
+    ScalarSub(_) => 0
+    InSelect(v, _, _) => self.col_mask(v)
     Agg(_, _) =>
       raise @types.SqlError::Bind("aggregate not allowed in a join condition")
   }
@@ -620,6 +717,32 @@ fn Binder::bind(
             "column \"\{name}\" must appear in GROUP BY or inside an aggregate",
           )
       }
+    ColQ(q, name) =>
+      match space {
+        AggOut =>
+          raise @types.SqlError::Bind(
+            "column \"\{q}.\{name}\" must appear in GROUP BY or inside an aggregate",
+          )
+        _ => {
+          let k = self.lookup_slot_by_qual(q)
+          let col_idx : Int? = self.slots[k].index_of(name)
+          match col_idx {
+            Some(col_idx) => {
+              let dt = self.slots[k].columns[col_idx].dtype
+              let base = match space {
+                Flat => self.offsets[k]
+                Slot(_) => 0 // local refs index the table itself
+                AggOut => 0 // unreachable: handled above
+              }
+              (ColRef(base + col_idx, dt), dt)
+            }
+            None =>
+              raise @types.SqlError::Bind(
+                "unknown column \"\{name}\" in table \"\{self.slots[k].table}\"",
+              )
+          }
+        }
+      }
     Lit(s) =>
       match s {
         @types.Null =>
@@ -720,6 +843,21 @@ fn Binder::bind(
       }
       (LikeE(vpe, pattern), @types.Bool)
     }
+    NotLike(v, pat) => {
+      // desugar: NOT (v LIKE pat) — three-valued NOT keeps NULL semantics
+      let (pe, dt) = self.bind(Not(Like(v, pat)), space)
+      (pe, dt)
+    }
+    NotIn(v, items) => {
+      // desugar: NOT (v IN (item1, item2 ...))
+      let (pe, dt) = self.bind(Not(In(v, items)), space)
+      (pe, dt)
+    }
+    Extract(_, _) => raise @types.SqlError::Bind("EXTRACT is not supported yet")
+    ScalarSub(_) =>
+      raise @types.SqlError::Bind("scalar subqueries are not supported yet")
+    InSelect(_, _, _) =>
+      raise @types.SqlError::Bind("IN (SELECT ...) is not supported yet")
     Case(whens, else_) => {
       let bound : Array[(PhysExpr, @types.DataType)] = []
       let conds : Array[PhysExpr] = []
