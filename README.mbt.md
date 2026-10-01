@@ -12,7 +12,10 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - Ships as a native single binary for ad-hoc command-line analysis, embeddable as a MoonBit library, and compiles to WebAssembly (GC) to run in the browser.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory.
 
-Planned v1 scope:
+Planned v1 scope (landing milestone by milestone — GROUP BY /
+HAVING / ORDER BY / LIMIT, all v1 aggregates, CASE WHEN / IN / LIKE,
+INNER / LEFT / CROSS hash joins over multi-table FROM, and the Parquet
+scan already work; see CHANGELOG):
 
 - `SELECT` / `FROM` / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
 - `INNER` / `LEFT` / `CROSS` joins (hash join)
@@ -27,13 +30,26 @@ SQL correctness is validated by differential testing against DuckDB over TPC-H b
 
 ## Quickstart
 
-Work in progress — SQL execution arrives with the first engine milestones.
+```bash
+git clone https://github.com/superbigcup325/moonlake && cd moonlake
+moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
+  "SELECT l_returnflag, sum(l_extendedprice) FROM lineitem WHERE l_shipdate <= date '1998-09-02' GROUP BY l_returnflag ORDER BY l_returnflag"
+# l_returnflag|sum_2
+# A|532348211.6499983
+# ...
+```
+
+Joins take one `--csv` per table; `--parquet` scans Parquet files
+(declare epoch-day DATE columns with `--date-col`). Every golden query
+is cross-validated against DuckDB (python3 + duckdb, or uv):
 
 ```bash
-# CLI (native build, planned)
-moonlake exec --csv lineitem.csv \
-  "SELECT l_returnflag, sum(l_extendedprice) FROM lineitem GROUP BY l_returnflag"
+uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
+bash harness/check_all.sh                         # q6 q1 q3 q14 q6p: all PASS
 ```
+
+The same chain runs in CI (job `tpch`) after regenerating the data from
+scratch.
 
 As a library (once published to mooncakes.io):
 

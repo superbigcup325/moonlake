@@ -63,3 +63,80 @@ error ~4e-16. **W1 gate passed.**
 - **Quality boundaries**: no correlated subqueries, no GROUP BY yet,
   aggregates only at the top level of select items, untyped NULL
   literals rejected by the binder. All intentional v1 scope cuts.
+
+## W2 (planned 2026-10-09..15, landed early 2026-10-02): joins, group/order/having, parquet, golden CI
+
+### Goal
+
+The W2 gate: TPC-H Q1, Q3 and Q14 end to end against duckdb goldens,
+plus the parquet scan adapter and the golden chain running in CI.
+
+### What landed
+
+- `engine`: hash aggregation with GROUP BY (type-tagged canonical
+  group keys), the full v1 aggregate set (sum with int widening, avg in
+  float, count / count(*) / count(distinct), min/max), HAVING over the
+  post-aggregation row, ORDER BY (NULLS LAST, stable) and LIMIT
+- `engine`: CASE WHEN (branch type unification), LIKE (case-sensitive,
+  % and _ by backtracking) and IN (equality OR-chain); TRUE/FALSE
+  literals
+- `engine`: multi-table FROM joined left-deep in written order — comma
+  lists, `JOIN ... ON`, `LEFT [OUTER] JOIN`, `CROSS JOIN`. WHERE and ON
+  conjuncts classify per step: single-table ones become build/probe
+  filters (pushdown), equalities spanning both sides become hash keys
+  (NULL keys never match, key sides promoted to a common type), other
+  spanning conjuncts are per-pair residuals evaluated before a match
+  counts — so a LEFT JOIN's NULL-extension sees the post-residual match
+  set, which is the ON semantics. WHERE conjuncts stranded at LEFT
+  steps defer to a post-join filter
+- `sources/parquet`: adapter over mizchi/parquet's
+  `read_bytes_columnar` — typed arrays map directly, nullable variants
+  become validity slots, Float upcasts, timestamp/binary/repeated
+  rejected at registration; parquet DATE (int32 epoch days) lifts to
+  DATE via an explicit `date_columns` list at registration
+- CLI: `--csv` repeatable, `--parquet`, `--date-col`
+- harness: customer/orders/part CSVs, lineitem.parquet (decimals cast
+  to double), q1/q3/q14 goldens plus q6p (Q6 over the parquet-shaped
+  table), `check_all.sh`; CI job `tpch` regenerates data + goldens from
+  scratch and runs the whole chain
+
+### Result
+
+`harness/check_all.sh`: q6, q1 (4 groups), q3 (10 rows, revenue-desc
+order + limit), q14, q6p — all PASS against duckdb within 1e-9 relative
+tolerance. Q3 runs the full 3-table hash-join chain in ~1.3s at SF0.01
+including CSV parsing. **W2 gate passed.**
+
+### Decisions and edges
+
+- **Join order is FROM order, left-deep.** Reordering is not in the v1
+  scope list (only predicate pushdown and projection pruning are), and
+  at SF0.01 the written order already connects stepwise for Q3/Q14. A
+  disconnected FROM (no equi conjunct between adjacent tables)
+  degenerates to a cross-join filtered afterwards — correct, just slow.
+- **In-house parser keeps growing.** Re-probed sqlparser 0.5.1 before
+  starting: `SetExpr`/`SelectStmt` are opaque cross-package (`type`,
+  not `pub(all)`), so the W1 finding stands. The subset parser gained
+  the full clause surface instead; the upstream visibility PR remains
+  the eventual front-end swap.
+- **Plain projection is still out of subset.** `SELECT col FROM t`
+  without an aggregate or GROUP BY is a bind error by design — every
+  target TPC-H query aggregates; the error message says so.
+- **Aggregation binds in two spaces.** Input expressions evaluate over
+  the joined batch; select items, HAVING and ORDER BY evaluate over the
+  post-aggregation row (group keys, then aggregate outputs). Structural
+  matching against GROUP BY exprs decides what is a key; aggregates
+  dedupe by written shape.
+- **Parquet adapter stays eager.** Per the plan's §3.9 finding:
+  mizchi/parquet decodes whole files, so per-column pruning cannot pay
+  off yet; correctness first, the upstream per-column-read PR is the
+  post-gate evaluation. DATE has no logical-type exposure upstream, so
+  the caller declares date columns at registration instead of the
+  adapter guessing.
+- **Quality boundaries**: no NOT IN / NOT LIKE / IS NULL, no SELECT
+  DISTINCT, ORDER BY only accepts output column names, join keys hash
+  floats through their string form (join keys in the targets are
+  integers), multi-table FROM capped at 30 tables (bitmask
+  classification). Residuals evaluate per candidate pair on a
+  materialized flat row — correct but unoptimized, fine at harness
+  scale.
