@@ -1,0 +1,45 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "superbigcup325/moonlake/catalog"
+
+import {
+  "moonbitlang/core/debug",
+  "superbigcup325/moonlake/types",
+}
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct Catalog {
+  tables : Map[String, TableEntry]
+}
+pub fn Catalog::lookup(Self, String) -> TableEntry?
+pub fn Catalog::new() -> Self
+pub fn Catalog::register(Self, TableEntry) -> Unit
+
+pub(all) struct Column {
+  name : String
+  dtype : @types.DataType
+} derive(Eq, @debug.Debug)
+pub fn Column::equal(Self, Self) -> Bool
+pub fn Column::not_equal(Self, Self) -> Bool
+pub fn Column::to_repr(Self) -> @debug.Repr
+
+pub(all) struct TableEntry {
+  schema : TableSchema
+  batches : Array[@types.DataBatch]
+}
+
+pub(all) struct TableSchema {
+  table : String
+  columns : Array[Column]
+} derive(Eq, @debug.Debug)
+pub fn TableSchema::equal(Self, Self) -> Bool
+pub fn TableSchema::index_of(Self, String) -> Int?
+pub fn TableSchema::not_equal(Self, Self) -> Bool
+pub fn TableSchema::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits

@@ -1,0 +1,89 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "superbigcup325/moonlake/engine"
+
+import {
+  "moonbitlang/core/debug",
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/types",
+}
+
+// Values
+pub fn bind_select(Select, @catalog.TableSchema) -> BoundQuery raise @types.SqlError
+
+pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar
+
+pub fn parse_select(String) -> Select raise @types.SqlError
+
+pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError
+
+// Errors
+
+// Types and methods
+pub(all) enum AggFn {
+  Sum
+} derive(Eq, @debug.Debug)
+pub fn AggFn::equal(Self, Self) -> Bool
+pub fn AggFn::not_equal(Self, Self) -> Bool
+pub fn AggFn::to_repr(Self) -> @debug.Repr
+
+pub struct BoundQuery {
+  // private fields
+} derive(@debug.Debug)
+pub fn BoundQuery::to_repr(Self) -> @debug.Repr
+
+pub(all) enum LExpr {
+  Col(String)
+  Lit(@types.Scalar)
+  Arith(@types.ArithOp, LExpr, LExpr)
+  Cmp(@types.CmpOp, LExpr, LExpr)
+  And(LExpr, LExpr)
+  Or(LExpr, LExpr)
+  Not(LExpr)
+  Between(LExpr, LExpr, LExpr)
+  Agg(AggFn, LExpr)
+} derive(Eq, @debug.Debug)
+pub fn LExpr::equal(Self, Self) -> Bool
+pub fn LExpr::not_equal(Self, Self) -> Bool
+pub fn LExpr::to_repr(Self) -> @debug.Repr
+
+pub(all) enum PhysExpr {
+  ColRef(Int, @types.DataType)
+  Const(@types.Scalar)
+  Promote(PhysExpr, @types.DataType)
+  ArithE(@types.ArithOp, PhysExpr, PhysExpr, @types.DataType)
+  CmpE(@types.CmpOp, PhysExpr, PhysExpr)
+  AndE(PhysExpr, PhysExpr)
+  OrE(PhysExpr, PhysExpr)
+  NotE(PhysExpr)
+} derive(@debug.Debug)
+pub fn PhysExpr::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Select {
+  table : String
+  filter : LExpr?
+  items : Array[SelectItem]
+} derive(Eq, @debug.Debug)
+pub fn Select::equal(Self, Self) -> Bool
+pub fn Select::not_equal(Self, Self) -> Bool
+pub fn Select::to_repr(Self) -> @debug.Repr
+
+pub(all) struct SelectItem {
+  expr : LExpr
+  label : String?
+} derive(Eq, @debug.Debug)
+pub fn SelectItem::equal(Self, Self) -> Bool
+pub fn SelectItem::not_equal(Self, Self) -> Bool
+pub fn SelectItem::to_repr(Self) -> @debug.Repr
+
+pub struct SelectResult {
+  // private fields
+}
+pub fn SelectResult::batch(Self) -> @types.DataBatch
+pub fn SelectResult::get(Self, Int, Int) -> @types.Scalar
+pub fn SelectResult::names(Self) -> Array[String]
+pub fn SelectResult::row_count(Self) -> Int
+pub fn SelectResult::types(Self) -> Array[@types.DataType]
+
+// Type aliases
+
+// Traits

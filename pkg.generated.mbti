@@ -1,10 +1,18 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "superbigcup325/moonlake"
 
+import {
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/engine",
+  "superbigcup325/moonlake/types",
+}
+
 // Values
 pub const DESCRIPTION : String = "Embeddable analytical query engine for MoonBit"
 
 pub const VERSION : String = "0.1.0"
+
+pub fn execute(String, @catalog.Catalog) -> @engine.SelectResult raise @types.SqlError
 
 pub fn version() -> String
 

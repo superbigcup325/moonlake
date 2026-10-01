@@ -27,7 +27,9 @@ pub fn civil_from_days(z : Int) -> (Int, Int, Int) {
 }
 
 ///|
-fn is_leap(y : Int) -> Bool { (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
+fn is_leap(y : Int) -> Bool {
+  (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
 
 ///|
 fn days_in_month(y : Int, m : Int) -> Int {
@@ -92,8 +94,10 @@ fn digit(ch : Char) -> Int? {
 
 ///|
 fn parse_digits4(cs : Array[Char], off : Int) -> Int? {
-  match (digit(cs[off]), digit(cs[off + 1]), digit(cs[off + 2]), digit(cs[off + 3])) {
-    (Some(a), Some(b), Some(c), Some(dd)) => Some(a * 1000 + b * 100 + c * 10 + dd)
+  match
+    (digit(cs[off]), digit(cs[off + 1]), digit(cs[off + 2]), digit(cs[off + 3])) {
+    (Some(a), Some(b), Some(c), Some(dd)) =>
+      Some(a * 1000 + b * 100 + c * 10 + dd)
     _ => None
   }
 }

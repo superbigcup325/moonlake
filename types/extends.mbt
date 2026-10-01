@@ -32,3 +32,6 @@ pub extend CmpOp with Eq::{equal, not_equal}
 
 ///|
 pub extend CmpOp with @debug.Debug::{to_repr}
+
+///|
+pub extend SqlError with Show::{output}

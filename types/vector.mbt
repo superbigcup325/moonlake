@@ -103,14 +103,15 @@ pub fn ColumnVector::set(self : ColumnVector, i : Int, v : Scalar) -> Unit {
       d[i] = x
       valid[i] = true
     }
-    (_, Null) => match self {
-      I32(_, valid) => valid[i] = false
-      I64(_, valid) => valid[i] = false
-      F64(_, valid) => valid[i] = false
-      BoolV(_, valid) => valid[i] = false
-      StrV(_, valid) => valid[i] = false
-      DateV(_, valid) => valid[i] = false
-    }
+    (_, Null) =>
+      match self {
+        I32(_, valid) => valid[i] = false
+        I64(_, valid) => valid[i] = false
+        F64(_, valid) => valid[i] = false
+        BoolV(_, valid) => valid[i] = false
+        StrV(_, valid) => valid[i] = false
+        DateV(_, valid) => valid[i] = false
+      }
     _ => () // type mismatch: unreachable from binder-checked paths
   }
 }
@@ -133,6 +134,9 @@ pub fn DataBatch::row_count(self : DataBatch) -> Int {
 }
 
 ///|
-pub fn DataBatch::new(columns : Array[ColumnVector], row_count : Int) -> DataBatch {
-  { columns, row_count }
+pub fn DataBatch::new(
+  columns : Array[ColumnVector],
+  row_count : Int,
+) -> DataBatch {
+  { columns, row_count, }
 }

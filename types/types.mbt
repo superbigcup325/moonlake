@@ -51,18 +51,40 @@ pub fn Scalar::to_string(self : Scalar) -> String {
 }
 
 ///|
-/// Structured error carrying the pipeline stage it originated from.
-pub struct SqlError {
-  stage : String // "parse" | "bind" | "scan" | "execute"
-  message : String
+/// Structured error: one variant per pipeline stage carrying the reason.
+pub(all) suberror SqlError {
+  Parse(String)
+  Bind(String)
+  Scan(String)
+  Execute(String)
 } derive(Eq, Debug)
 
 ///|
-pub fn SqlError::to_string(self : SqlError) -> String {
-  "sql error (\{self.stage}): \{self.message}"
+pub fn SqlError::stage(self : SqlError) -> String {
+  match self {
+    Parse(_) => "parse"
+    Bind(_) => "bind"
+    Scan(_) => "scan"
+    Execute(_) => "execute"
+  }
 }
 
 ///|
-pub fn SqlError::new(stage : String, message : String) -> SqlError {
-  { stage, message }
+pub fn SqlError::message(self : SqlError) -> String {
+  match self {
+    Parse(m) => m
+    Bind(m) => m
+    Scan(m) => m
+    Execute(m) => m
+  }
+}
+
+///|
+pub fn SqlError::to_string(self : SqlError) -> String {
+  "sql error (\{self.stage()}): \{self.message()}"
+}
+
+///|
+pub impl Show for SqlError with fn output(self, logger) {
+  logger.write_string(self.to_string())
 }

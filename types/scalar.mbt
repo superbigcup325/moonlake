@@ -71,7 +71,12 @@ pub fn Scalar::arith(op : ArithOp, a : Scalar, b : Scalar) -> Scalar {
     (Add, Float64(x), Float64(y)) => Float64(x + y)
     (Sub, Float64(x), Float64(y)) => Float64(x - y)
     (Mul, Float64(x), Float64(y)) => Float64(x * y)
-    (Div, Float64(x), Float64(y)) => if y == 0.0 { Null } else { Float64(x / y) }
+    (Div, Float64(x), Float64(y)) =>
+      if y == 0.0 {
+        Null
+      } else {
+        Float64(x / y)
+      }
     (Mod, Float64(x), Float64(y)) =>
       if y == 0.0 {
         Null
