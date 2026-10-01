@@ -485,3 +485,75 @@ test "not like and not in filter correctly with NULLs" {
     @types.Scalar::Int64(1L),
   )
 }
+
+///|
+test "in and not in subqueries fold to sets" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k,v\n1,a\n2,b\n3,c\n", "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("k\n1\n3\n5\n", "u") catch {
+      e => abort("\{e}")
+    },
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE k IN (SELECT k FROM u)", cat).get(
+      0, 0,
+    ),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE k NOT IN (SELECT k FROM u)", cat).get(
+      0, 0,
+    ),
+    @types.Scalar::Int64(1L),
+  )
+  // a NULL in the subquery result makes NOT IN drop every row (SQL
+  // three-valued semantics); IN is unaffected
+  let cat2 = @catalog.Catalog::new()
+  cat2.register(
+    @csv.scan_string("k,v\n1,a\n2,b\n3,c\n", "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat2.register(
+    @csv.scan_string("k,tag\n1,x\n3,x\n,x\n5,x\n", "u") catch {
+      e => abort("\{e}")
+    },
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE k IN (SELECT k FROM u)", cat2).get(
+      0, 0,
+    ),
+    @types.Scalar::Int64(2L),
+  )
+  assert_eq(
+    run("SELECT count(*) AS c FROM t WHERE k NOT IN (SELECT k FROM u)", cat2).get(
+      0, 0,
+    ),
+    @types.Scalar::Int64(0L),
+  )
+}
+
+///|
+test "scalar subquery folds to a constant" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k,v\n1,10\n2,20\n3,30\n", "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r = run("SELECT k, v FROM t WHERE v = (SELECT max(v) FROM t)", cat)
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(3))
+  // in HAVING with aggregation
+  let r2 = run(
+    "SELECT k, count(*) AS c FROM t GROUP BY k HAVING sum(v) > (SELECT sum(v) FROM t) - 35",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Scalar::Int32(3))
+}

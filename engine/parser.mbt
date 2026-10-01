@@ -511,11 +511,18 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
     DoubleLit(v) => Lit(@types.Scalar::Float64(v))
     StrLit(s) => Lit(@types.Scalar::Str(s))
     BoolLit(b) => Lit(@types.Scalar::Boolean(b))
-    LParen => {
-      let e = parse_or(p)
-      p.expect(RParen)
-      e
-    }
+    LParen =>
+      // ( SELECT ... ) is a scalar subquery; anything else is a grouping
+      if p.peek() is KwSelect {
+        let _ = p.advance()
+        let sub = parse_select_body(p)
+        p.expect(RParen)
+        ScalarSub(sub)
+      } else {
+        let e = parse_or(p)
+        p.expect(RParen)
+        e
+      }
     KwDate =>
       match p.advance() {
         StrLit(s) =>
