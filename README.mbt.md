@@ -1,32 +1,54 @@
 # moonlake
 
+[![CI](https://github.com/superbigcup325/moonlake/actions/workflows/ci.yml/badge.svg)](https://github.com/superbigcup325/moonlake/actions/workflows/ci.yml)
+
 Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet files in-process, with native and WebAssembly builds from one codebase.
 
-> **Status: early development.** The engine is under active construction; APIs will change.
+> **Status: v1 SQL surface complete, under acceptance hardening.** Projection pruning and the vectorized evaluator are the remaining v1 items; APIs may still change.
 
 ## What it is
 
 moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) workloads:
 
 - Register CSV/Parquet files as tables, run SQL, get columnar result batches.
-- Ships as a native single binary for ad-hoc command-line analysis, embeddable as a MoonBit library, and compiles to WebAssembly (GC) to run in the browser.
+- Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory.
 
-Planned v1 scope (landing milestone by milestone — GROUP BY /
-HAVING / ORDER BY / LIMIT, all v1 aggregates, CASE WHEN / IN / LIKE,
-INNER / LEFT / CROSS hash joins over multi-table FROM, and the Parquet
-scan already work; see CHANGELOG):
+### v1 SQL surface
 
-- `SELECT` / `FROM` / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
-- `INNER` / `LEFT` / `CROSS` joins (hash join)
-- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `BETWEEN`, `LIKE`, string & math functions, `DATE` literals
-- Aggregates: `sum` / `min` / `max` / `count` / `count(DISTINCT)` / `avg`
-- Derived tables in `FROM`, non-correlated `IN` subqueries
-- Rule-based optimizations: predicate pushdown, projection pruning
+- `SELECT` / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
+- `INNER` / `LEFT` / `CROSS` joins (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
+- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `NOT LIKE`, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout
+- Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
+- Derived tables (`FROM (SELECT ...) AS t`), non-correlated scalar subqueries and `IN` / `NOT IN (SELECT ...)`
+- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions
 
-Out of scope for v1: writes (`INSERT`/`UPDATE`/DDL), persistence, transactions, indexes, correlated subqueries, window functions.
+Out of scope for v1: writes (`INSERT`/`UPDATE`/DDL), persistence, transactions, indexes, correlated subqueries, window functions, cost-based optimization.
 
-SQL correctness is validated by differential testing against DuckDB over TPC-H benchmark queries.
+### TPC-H cross-validation
+
+SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **14 of the 22 queries run** — 11 on their official text, 3 with the sanctioned rewrites (derived tables instead of the CTE, a scalar subquery for the max) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01:
+
+| direct | rewritten |
+|---|---|
+| Q1 Q3 Q5 Q6 Q7 Q8 Q10 Q11 Q12 Q13 Q14 Q16 Q19 | Q15 (CTE inlined as a derived table) |
+
+The whole chain is reproducible and runs in CI (job `tpch` regenerates the data and DuckDB's answers from scratch, then diffs every query):
+
+```bash
+uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
+bash harness/check_all.sh                         # 15 goldens: all PASS
+```
+
+Informational benchmark (SF0.01, best of 3, via `harness/bench.py`;
+row-at-a-time evaluation — vectorization is the declared next step):
+
+| query | moonlake native | duckdb |
+|---|---|---|
+| Q6 | 539 ms | 0.7 ms |
+| Q1 | 622 ms | 3.0 ms |
+| Q3 | 713 ms | 4.8 ms |
+| Q7 | 995 ms | 4.3 ms |
 
 ## Quickstart
 
@@ -39,37 +61,36 @@ moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
 # ...
 ```
 
-Joins take one `--csv` per table; `--parquet` scans Parquet files
-(declare epoch-day DATE columns with `--date-col`). Every golden query
-is cross-validated against DuckDB (python3 + duckdb, or uv):
+Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns with `--date-col`); `--explain` prints the physical plan; `--json` emits machine-readable output.
 
-```bash
-uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
-bash harness/check_all.sh                         # q6 q1 q3 q14 q6p: all PASS
-```
-
-The same chain runs in CI (job `tpch`) after regenerating the data from
-scratch.
-
-**TPC-H scoreboard**: 14 of 22 queries runnable (11 direct + 3 with the
-sanctioned rewrites — derived tables, scalar subqueries), all matching
-DuckDB within 1e-9 relative tolerance on SF0.01.
-
-Informational benchmark (SF0.01, best of 3, reproducible via
-`harness/bench.py`; row-at-a-time evaluation, vectorization pending):
-
-| query | moonlake native | duckdb |
-|---|---|---|
-| q6 | 539 ms | 0.7 ms |
-| q1 | 622 ms | 3.0 ms |
-| q3 | 713 ms | 4.8 ms |
-| q7 | 995 ms | 4.3 ms |
-
-As a library (once published to mooncakes.io):
+As a library:
 
 ```bash
 moon add superbigcup325/moonlake
 ```
+
+```moonbit
+// register tables, run SQL, consume the columnar result
+let result = @moonlake.execute(
+  "SELECT region, count(*) FROM events GROUP BY region",
+  cat, // a @catalog.Catalog with registered table entries
+)
+```
+
+## Where moonlake sits
+
+MoonBit's ecosystem had SQL parsers and format readers, but no query
+engine over them. moonlake fills the compute layer and is designed to
+sit next to, not on top of, its neighbours:
+
+| project | what it is | boundary with moonlake |
+|---|---|---|
+| [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) | SQL lexer/parser (AST) | parsing only, no execution; moonlake ships an in-house subset front-end today (sqlparser's select-statement AST is not destructurable cross-package yet) and stays pinned as the future swap-in once its visibility improves |
+| [moonbit-community/NyaCSV](https://github.com/moonbit-community/NyaCSV) | CSV dialect parser | text parsing only; moonlake's CSV source builds typed columnar batches on top of it |
+| [mizchi/parquet](https://github.com/mizchi/parquet) | Parquet reader/writer | format decoding only; moonlake adapts its columnar read into the same vectors the executor consumes |
+| [shunge/arrow](https://github.com/buildliming/MoonArrow) (MoonArrow) | Arrow IPC format read/write | memory-format interchange; a future `to_arrow` bridge is cooperation, not competition |
+| uiwcvb/moonsql | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
+| [f4ah6o/duckdb](https://github.com/f4ah6o/duckdb), mizchi/duckdb | DuckDB C++ bindings | FFI route: the wasm-gc target is a stub upstream and the binding build is unstable; moonlake is pure MoonBit and runs natively in the browser |
 
 ## Development
 
@@ -83,7 +104,8 @@ git config core.hooksPath hooks   # once per clone: pre-commit gate
 
 The pre-commit hook re-runs interface freshness (`moon info`),
 formatting, `moon check --deny-warn` and the tests before every
-commit — the same gates CI runs.
+commit — the same gates CI runs. CI covers native / wasm-gc / js test
+matrices plus the TPC-H cross-validation job.
 
 ## Acknowledgements
 
