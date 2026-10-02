@@ -25,9 +25,10 @@
 <h1><code>moonlake</code> playground</h1>
 <p>The whole analytical engine, compiled to WebAssembly GC — your file never leaves the browser, no server, no external wasm modules.</p>
 
-<div class="drop" id="drop">drop a <code>.csv</code> file here, or
-  <input type="file" id="file" accept=".csv,text/csv">
+<div class="drop" id="drop">drop a <code>.csv</code> or <code>.parquet</code> file here, or
+  <input type="file" id="file" accept=".csv,.parquet,text/csv">
   <div id="loaded"></div>
+  <div>parquet DATE columns: <input type="text" id="datecols" placeholder="comma-separated, e.g. l_shipdate" style="width:16rem"></div>
 </div>
 
 <div class="row">
@@ -39,14 +40,14 @@ ORDER BY l_returnflag</textarea>
 </div>
 <div class="row">
   <button id="run" disabled>Run (Ctrl+Enter)</button>
-  <span id="status">load a CSV to begin</span>
+  <span id="status">load a CSV or Parquet file to begin</span>
 </div>
 <div class="err" id="err"></div>
 <div id="out"></div>
 
 <script type="module">
 const $ = id => document.getElementById(id);
-let instance, csvText;
+let instance;
 
 const resp = await fetch('./playground.wasm');
 const { instance: inst } = await WebAssembly.instantiate(await resp.arrayBuffer(), {}, {
@@ -55,16 +56,46 @@ const { instance: inst } = await WebAssembly.instantiate(await resp.arrayBuffer(
 instance = inst;
 $('status').textContent = `engine ${instance.exports.version()} loaded (wasm-gc)`;
 
+let load = null; // (sql) => JSON string, set by whichever loader ran
+
 function loadCSV(text, name) {
+  const stem = name.replace(/\.csv$/i, '');
   csvText = text;
-  $('loaded').textContent = `loaded ${name} (${(text.length / 1e6).toFixed(1)} MB)`;
+  load = sql => instance.exports.run(text, stem, sql);
+  afterLoad(name, text.length);
+}
+
+async function loadParquet(buf, name) {
+  const stem = name.replace(/\.parquet$/i, '');
+  // binary string: one char per byte, byte-faithful (windows-1252
+  // decoding is NOT — it remaps 0x80-0x9F)
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  }
+  load = sql => {
+    const cols = $('datecols').value.trim();
+    return instance.exports.run_parquet(bin, stem, cols, sql);
+  };
+  afterLoad(name, buf.byteLength);
+}
+
+function afterLoad(name, size) {
+  $('loaded').textContent = `loaded ${name} (${(size / 1e6).toFixed(1)} MB)`;
   $('run').disabled = false;
   $('status').textContent = 'ready';
 }
 
 $('file').addEventListener('change', e => {
   const f = e.target.files[0];
-  if (f) f.text().then(t => loadCSV(t, f.name));
+  if (!f) return;
+  if (/\.parquet$/i.test(f.name)) {
+    f.arrayBuffer().then(b => loadParquet(b, f.name));
+  } else {
+    f.text().then(t => loadCSV(t, f.name));
+  }
 });
 const drop = $('drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
@@ -72,7 +103,12 @@ drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => {
   e.preventDefault(); drop.classList.remove('over');
   const f = e.dataTransfer.files[0];
-  if (f) f.text().then(t => loadCSV(t, f.name));
+  if (!f) return;
+  if (/\.parquet$/i.test(f.name)) {
+    f.arrayBuffer().then(b => loadParquet(b, f.name));
+  } else {
+    f.text().then(t => loadCSV(t, f.name));
+  }
 });
 
 function render(out, ms) {
@@ -86,12 +122,12 @@ function render(out, ms) {
 }
 
 async function runSQL() {
-  if (!csvText) return;
+  if (!load) return;
   $('err').textContent = ''; $('out').innerHTML = '';
   const t0 = performance.now();
   let out;
   try {
-    out = instance.exports.run(csvText, 'lineitem', $('sql').value);
+    out = load($('sql').value);
   } catch (e) { $('err').textContent = String(e); return; }
   const ms = performance.now() - t0;
   try {
