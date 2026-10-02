@@ -51,3 +51,8 @@ You can browse and install extra skills here:
   scientific computations), prefer assertion tests. You can use
   `moon coverage analyze > uncovered.log` to see which parts of your code are
   not covered by tests.
+
+## Known Pitfalls（实战沉淀，2026-10-02 自 agent 记忆迁入）
+
+- moon fmt 曾把 README.md 替换成悬空软链吞内容；定式 = README.mbt.md 真身 + README.md 软链
+- GitHub Actions fresh runner 必须先 `moon update && moon install` 再 check/test（本地 .mooncakes 缓存会掩盖，验证法 = wipe .mooncakes 模拟 fresh clone）
