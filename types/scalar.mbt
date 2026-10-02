@@ -48,33 +48,32 @@ fn cmp_i(x : Int, y : Int) -> Int {
 
 ///|
 /// Arithmetic with NULL propagation. Operand types must match (binder
-/// inserts Promote nodes to unify them beforehand).
+/// inserts Promote nodes to unify them beforehand). Division follows
+/// DuckDB: `/` is true division and always yields Float64 (the binder
+/// promotes both sides), so a zero divisor is IEEE ±inf (0/0 is nan),
+/// not an error; `%` is C fmod — the result takes the dividend's sign —
+/// and `x % 0` is NULL.
 pub fn Scalar::arith(op : ArithOp, a : Scalar, b : Scalar) -> Scalar {
   match (op, a, b) {
     (Add, Int32(x), Int32(y)) => Int32(x + y)
     (Sub, Int32(x), Int32(y)) => Int32(x - y)
     (Mul, Int32(x), Int32(y)) => Int32(x * y)
-    (Div, Int32(x), Int32(y)) => if y == 0 { Null } else { Int32(x / y) }
+    (Div, Int32(x), Int32(y)) => Float64(x.to_double() / y.to_double())
     (Mod, Int32(x), Int32(y)) => if y == 0 { Null } else { Int32(x % y) }
     (Add, Int64(x), Int64(y)) => Int64(x + y)
     (Sub, Int64(x), Int64(y)) => Int64(x - y)
     (Mul, Int64(x), Int64(y)) => Int64(x * y)
-    (Div, Int64(x), Int64(y)) => if y == 0L { Null } else { Int64(x / y) }
+    (Div, Int64(x), Int64(y)) => Float64(x.to_double() / y.to_double())
     (Mod, Int64(x), Int64(y)) => if y == 0L { Null } else { Int64(x % y) }
     (Add, Float64(x), Float64(y)) => Float64(x + y)
     (Sub, Float64(x), Float64(y)) => Float64(x - y)
     (Mul, Float64(x), Float64(y)) => Float64(x * y)
-    (Div, Float64(x), Float64(y)) =>
-      if y == 0.0 {
-        Null
-      } else {
-        Float64(x / y)
-      }
+    (Div, Float64(x), Float64(y)) => Float64(x / y)
     (Mod, Float64(x), Float64(y)) =>
       if y == 0.0 {
         Null
       } else {
-        Float64(x - y * (x / y).floor())
+        Float64(x - y * (x / y).trunc())
       }
     _ => Null // mismatched or Null operands, or Date arithmetic (v1: unsupported)
   }

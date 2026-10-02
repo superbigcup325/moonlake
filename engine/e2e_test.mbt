@@ -674,3 +674,34 @@ test "select star expands to every FROM column" {
     .contains("GROUP BY"),
   )
 }
+
+///|
+test "division is DuckDB true division: int/int is DOUBLE, /0 is inf/nan" {
+  let cat = q6_catalog()
+  // int32 / int32 promotes to Float64 with the exact quotient
+  let r = run(
+    "SELECT l_quantity / 2 AS half, l_quantity / 0 AS inf, l_quantity % 3 AS m, 10 % 3 AS im FROM lineitem WHERE l_quantity = 10",
+    cat,
+  )
+  assert_eq(r.types(), [
+    @types.Float64,
+    @types.Float64,
+    @types.Float64,
+    @types.Int32,
+  ])
+  assert_eq(r.get(0, 0), @types.Scalar::Float64(5.0))
+  assert_eq(r.get(0, 1), @types.Scalar::Float64(1.0 / 0.0))
+  // 10.0 % 3.0 is fmod (sign of the dividend); literal ints stay Int32
+  assert_eq(r.get(0, 2), @types.Scalar::Float64(1.0))
+  assert_eq(r.get(0, 3), @types.Scalar::Int32(1))
+  // 0.0/0.0 is nan (the /0 inf case is covered above), and the
+  // NULL-literal operand gets the Div promotion too
+  let r2 = run(
+    "SELECT (l_quantity - 10) / (l_quantity - 10) AS nan, l_quantity / NULL AS nd FROM lineitem WHERE l_quantity = 10",
+    cat,
+  )
+  assert_eq(r2.types()[0], @types.Float64)
+  assert_true(r2.get(0, 0) is @types.Float64(v) && v.is_nan())
+  assert_eq(r2.types()[1], @types.Float64)
+  assert_eq(r2.get(0, 1), @types.Scalar::Null)
+}

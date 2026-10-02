@@ -93,13 +93,14 @@ fn exec_command(args : Array[String]) -> Unit raise {
 
 ///|
 /// Report a fatal error and exit non-zero so shell pipelines can tell a
-/// failed query from an empty result. The real message goes to stderr;
-/// the MoonBit native runtime has no exit(code), so an empty abort()
-/// stands in for it: exit status 134, stdout gains only a trailing
-/// newline. catch arms `raise` this error to unwind to main.
+/// failed query from an empty result. The real message goes to stderr
+/// and the process exits 1 via @sys.exit — a clean process exit, so no
+/// abort stack trace follows the message. catch arms `raise` this error
+/// to unwind to main.
 fn cli_fail(msg : String) -> @types.SqlError {
   eprintln(msg)
-  abort("")
+  @sys.exit(1)
+  abort("") // unreachable: exit terminates the process
 }
 
 ///|

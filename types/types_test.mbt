@@ -68,43 +68,89 @@ test "arith with null and division by zero" {
   assert_eq(
     @types.Scalar::arith(
       @types.Mul,
-      @types.Scalar::Float64(2.5),
+      @types.Float64(2.5),
       @types.Scalar::Float64(4.0),
     ),
     @types.Scalar::Float64(10.0),
   )
   assert_eq(
-    @types.Scalar::arith(
-      @types.Mul,
-      @types.Scalar::Null,
-      @types.Scalar::Float64(4.0),
-    ),
+    @types.Scalar::arith(@types.Mul, @types.Null, @types.Scalar::Float64(4.0)),
     @types.Scalar::Null,
+  )
+  // division is DuckDB true division: always Float64, zero divisor is
+  // IEEE inf/nan rather than an error or NULL
+  assert_eq(
+    @types.Scalar::arith(@types.Div, @types.Int32(1), @types.Scalar::Int32(0)),
+    @types.Scalar::Float64(double_inf()),
+  )
+  assert_eq(
+    @types.Scalar::arith(@types.Div, @types.Int32(5), @types.Scalar::Int32(2)),
+    @types.Scalar::Float64(2.5),
   )
   assert_eq(
     @types.Scalar::arith(
       @types.Div,
-      @types.Scalar::Int32(1),
-      @types.Scalar::Int32(0),
+      @types.Int64(-1L),
+      @types.Scalar::Int64(0L),
+    ),
+    @types.Scalar::Float64(double_neg_inf()),
+  )
+  assert_true(
+    @types.Scalar::arith(
+      @types.Div,
+      @types.Float64(0.0),
+      @types.Scalar::Float64(0.0),
+    )
+    is @types.Float64(f) &&
+    f.is_nan(),
+  )
+  // % is fmod: sign of the dividend, NULL on a zero divisor
+  assert_eq(
+    @types.Scalar::arith(@types.Mod, @types.Int32(-10), @types.Scalar::Int32(3)),
+    @types.Scalar::Int32(-1),
+  )
+  assert_eq(
+    @types.Scalar::arith(
+      @types.Mod,
+      @types.Float64(-10.5),
+      @types.Scalar::Float64(3.0),
+    ),
+    @types.Scalar::Float64(-1.5),
+  )
+  assert_eq(
+    @types.Scalar::arith(
+      @types.Mod,
+      @types.Float64(10.5),
+      @types.Scalar::Float64(-3.0),
+    ),
+    @types.Scalar::Float64(1.5),
+  )
+  assert_eq(
+    @types.Scalar::arith(
+      @types.Mod,
+      @types.Float64(10.5),
+      @types.Scalar::Float64(0.0),
     ),
     @types.Scalar::Null,
   )
   assert_eq(
-    @types.Scalar::arith(
-      @types.Add,
-      @types.Scalar::Int32(1),
-      @types.Scalar::Int32(2),
-    ),
+    @types.Scalar::arith(@types.Add, @types.Int32(1), @types.Scalar::Int32(2)),
     @types.Scalar::Int32(3),
   )
   assert_eq(
-    @types.Scalar::arith(
-      @types.Add,
-      @types.Scalar::Int64(1L),
-      @types.Scalar::Int64(2L),
-    ),
+    @types.Scalar::arith(@types.Add, @types.Int64(1L), @types.Scalar::Int64(2L)),
     @types.Scalar::Int64(3L),
   )
+}
+
+///|
+fn double_inf() -> Double {
+  1.0 / 0.0
+}
+
+///|
+fn double_neg_inf() -> Double {
+  -1.0 / 0.0
 }
 
 ///|

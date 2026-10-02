@@ -6,6 +6,7 @@ import {
   "superbigcup325/moonlake/sources/parquet" @pq,
   "superbigcup325/moonlake/types",
   "moonbitlang/core/env",
+  "moonbitlang/x/sys",
 }
 
 pkgtype(kind: "executable")

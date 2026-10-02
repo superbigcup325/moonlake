@@ -1059,14 +1059,16 @@ fn Binder::bind(
         if live_dt is @types.Bool {
           raise @types.SqlError::Bind("bool operand in arithmetic")
         }
+        // `/` is true division per DuckDB even against NULL: int/int is DOUBLE
+        let out = arith_output(op, live_dt)
         let null_pe : PhysExpr = Const(@types.Null)
         (
           if l is Lit(@types.Null) {
-            ArithE(op, null_pe, live_pe, live_dt)
+            ArithE(op, null_pe, live_pe, out)
           } else {
-            ArithE(op, live_pe, null_pe, live_dt)
+            ArithE(op, live_pe, null_pe, out)
           },
-          live_dt,
+          out,
         )
       } else {
         let (lpe, ldt) = self.bind(l, space)
@@ -1077,9 +1079,12 @@ fn Binder::bind(
               @types.Bool =>
                 raise @types.SqlError::Bind("bool operand in arithmetic")
               _ => {
-                let lp = promote_to(lpe, ldt, dt)
-                let rp = promote_to(rpe, rdt, dt)
-                (ArithE(op, lp, rp, dt), dt)
+                // `/` is true division per DuckDB: int/int yields DOUBLE,
+                // so both sides promote even when unify agreed on an integer
+                let out = arith_output(op, dt)
+                let lp = promote_to(lpe, ldt, out)
+                let rp = promote_to(rpe, rdt, out)
+                (ArithE(op, lp, rp, out), out)
               }
             }
           None =>
@@ -1317,6 +1322,19 @@ fn unify(l : @types.DataType, r : @types.DataType) -> @types.DataType? {
     (@types.Int64, @types.Float64) | (@types.Float64, @types.Int64) =>
       Some(@types.Float64)
     _ => None
+  }
+}
+
+///|
+/// Result type of an arithmetic node. `/` is true division per DuckDB:
+/// numeric operands always yield DOUBLE (zero divisor becomes IEEE
+/// inf/nan at evaluation). Non-numeric operand types (Date) keep the
+/// unified type and stay on the evaluator's NULL-propagation path.
+fn arith_output(op : @types.ArithOp, dt : @types.DataType) -> @types.DataType {
+  if op is @types.Div && dt is (@types.Int32 | @types.Int64 | @types.Float64) {
+    @types.Float64
+  } else {
+    dt
   }
 }
 

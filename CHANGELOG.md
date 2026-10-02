@@ -32,7 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - LEFT JOIN pushdown soundness: WHERE conjuncts referencing only the build (right) table were applied as build filters, dropping build rows and letting NULL-extended probe rows survive a predicate they cannot satisfy (e.g. `... LEFT JOIN orders ON ... WHERE orders.amount > 15` returned the unmatched rows with NULL amounts). They now stay a deferred post-join filter; probe-side pushdown and ON-clause placement are unchanged
-- CLI exit codes: every error path (bad SQL, unknown table/column, unreadable file, usage violation) exited 0. Errors now print to stderr and exit non-zero (134, the MoonBit native runtime's abort status — there is no exit(code)); success, `--help` and `--version` remain 0
+- CLI exit codes: every error path (bad SQL, unknown table/column, unreadable file, usage violation) exited 0. Errors now print a single-line message to stderr and exit 1 via a clean process exit (`moonbitlang/x/sys`), so no runtime abort stack trace trails the message; success, `--help` and `--version` remain 0
+
+### Changed
+
+- Division and modulo follow DuckDB: `/` is true division and always yields DOUBLE (integer operands promote, `x/0` is ±inf, `0/0` is nan) instead of C-style integer division returning NULL on a zero divisor; `%` follows fmod — the result takes the dividend's sign (`-10.5 % 3` is `-1.5`) — and `x % 0` is NULL. `--json` renders non-finite floats as bare `Infinity`/`NaN` tokens, byte-identical to DuckDB's own JSON output (Python's `json` module round-trips them; strict RFC 8259 parsers do not)
 
 ### Added
 
