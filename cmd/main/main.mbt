@@ -1,7 +1,7 @@
 ///|
 /// Entry point for the `moonlake` CLI.
 /// Run with `moon run cmd/main` from the project root.
-fn main {
+fn main raise {
   let args = @env.args()
   if args.contains("--version") {
     println("moonlake \{@moonlake.version()}")
@@ -15,7 +15,7 @@ fn main {
 }
 
 ///|
-fn exec_command(args : Array[String]) -> Unit {
+fn exec_command(args : Array[String]) -> Unit raise {
   // expected shape: exec [flags] (--csv <path> | --parquet <path> | --date-col <c>)* <sql words...>
   let paths : Array[(String, String)] = [] // (kind, path)
   let date_cols : Array[String] = []
@@ -45,8 +45,7 @@ fn exec_command(args : Array[String]) -> Unit {
     }
   }
   if paths.length() == 0 || i >= n {
-    println(exec_usage())
-    return
+    raise cli_fail(exec_usage())
   }
   let sb = StringBuilder()
   for j in i..<n {
@@ -61,17 +60,11 @@ fn exec_command(args : Array[String]) -> Unit {
     let entry = match pair.0 {
       "parquet" =>
         @pq.scan_file(pair.1, table_stem(pair.1), date_cols) catch {
-          err => {
-            println(err.to_string())
-            return
-          }
+          err => raise cli_fail(err.to_string())
         }
       _ =>
         @csv.scan_file(pair.1, table_stem(pair.1)) catch {
-          err => {
-            println(err.to_string())
-            return
-          }
+          err => raise cli_fail(err.to_string())
         }
     }
     cat.register(entry)
@@ -79,19 +72,13 @@ fn exec_command(args : Array[String]) -> Unit {
   if explain {
     println(
       @engine.explain(sql, cat) catch {
-        err => {
-          println(err.to_string())
-          return
-        }
+        err => raise cli_fail(err.to_string())
       },
     )
     return
   }
   let result = @moonlake.execute(sql, cat) catch {
-    err => {
-      println(err.to_string())
-      return
-    }
+    err => raise cli_fail(err.to_string())
   }
   if json {
     println(result.to_json())
@@ -102,6 +89,17 @@ fn exec_command(args : Array[String]) -> Unit {
       println(join_row(result, r))
     }
   }
+}
+
+///|
+/// Report a fatal error and exit non-zero so shell pipelines can tell a
+/// failed query from an empty result. The real message goes to stderr;
+/// the MoonBit native runtime has no exit(code), so an empty abort()
+/// stands in for it: exit status 134, stdout gains only a trailing
+/// newline. catch arms `raise` this error to unwind to main.
+fn cli_fail(msg : String) -> @types.SqlError {
+  eprintln(msg)
+  abort("")
 }
 
 ///|
@@ -168,7 +166,13 @@ fn usage() -> String {
     #|Usage: moonlake [options] [command]
     #|
     #|Commands:
-    #|  exec --csv <file.csv> <sql>   Run a SELECT over a CSV file
+    #|  exec (--csv <file> | --parquet <file> | --date-col <c])+ <sql>
+    #|      Run a SELECT over CSV/Parquet files (one flag per table)
+    #|
+    #|    exec options:
+    #|      --date-col <c>        declare a Parquet column as DATE (epoch-day)
+    #|      --explain             print the physical plan instead of running
+    #|      --json                emit the result as one JSON array line
     #|
     #|Options:
     #|  --version   Print version and exit
