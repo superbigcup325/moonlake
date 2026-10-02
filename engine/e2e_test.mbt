@@ -375,6 +375,36 @@ test "left join keeps unmatched probe rows with NULL right side" {
 }
 
 ///|
+/// Regression: a WHERE conjunct on the build (right) side of a LEFT JOIN
+/// must stay a post-join filter. Pushing it into the build filter drops
+/// build rows, so NULL-extended probe rows would survive a predicate
+/// their NULL side cannot satisfy (duckdb-verified expectation).
+test "left join keeps WHERE on the build side post-join" {
+  let cat = join_catalog()
+  // joined rows: (1,10), (1,20), (2,NULL), (3,5) — only (1,20) passes
+  let r = run(
+    "SELECT c.cid, o.amount FROM customers AS c LEFT JOIN orders AS o ON c.cid = o.custkey WHERE o.amount > 15",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(1))
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(20))
+  // same shape with an equality predicate
+  let r2 = run(
+    "SELECT c.cid FROM customers AS c LEFT JOIN orders AS o ON c.cid = o.custkey WHERE o.oid = 101",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Scalar::Int32(1))
+  // the preserved (probe) side still pushes down into the scan
+  let r3 = run(
+    "SELECT count(*) AS c FROM customers AS c LEFT JOIN orders AS o ON c.cid = o.custkey WHERE c.seg = 'a'",
+    cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Scalar::Int64(3L))
+}
+
+///|
 test "cross join multiplies row counts" {
   let cat = join_catalog()
   let r = run("SELECT count(*) AS c FROM customers CROSS JOIN orders", cat)

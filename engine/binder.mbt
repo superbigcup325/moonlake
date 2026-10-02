@@ -704,8 +704,19 @@ fn Binder::plan_step(
     }
     let m = self.col_mask(cj.lexpr)
     if m == cur_mask {
-      build_l.push(cj.lexpr)
-      consumed[j] = true
+      // a WHERE conjunct on the joining table must not filter build rows
+      // at a LEFT step: removing build rows changes which probe rows find
+      // a match, so the NULL-extended output would lose the restriction
+      // (WHERE applies to the post-join row, NULL side included). It
+      // stays unconsumed and comes back as the deferred post-join filter.
+      // ON conjuncts keep build placement: dropping candidates is exactly
+      // their semantics, NULL-extension sees the same match set.
+      if item.join is Left && cj.origin is None {
+        let _ = m
+      } else {
+        build_l.push(cj.lexpr)
+        consumed[j] = true
+      }
     } else if m == 0 {
       // constant predicate: probe side from step 1 on, build at step 0
       if i == 0 {
