@@ -27,7 +27,7 @@ fi
 
 # 2. formatting: apply it, then re-stage only files that were already
 #    staged (moon fmt formats the whole tree; unrelated files stay out)
-staged_mbt=$(git diff --cached --name-only -- '*.mbt')
+staged_mbt=$(git diff --cached --name-only -- '*.mbt' '*moon.pkg')
 if [ -n "$staged_mbt" ]; then
   moon fmt
   for f in $staged_mbt; do
