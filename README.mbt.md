@@ -70,11 +70,16 @@ moon add superbigcup325/moonlake
 ```
 
 ```moonbit nocheck
-// register tables, run SQL, consume the columnar result
+// a @catalog.Catalog with registered table entries — @csv/@parquet
+// scan into one; note the argument order: content/name, not name/content
+
+///|
+let cat = @catalog.Catalog::new()
+cat.register(@csv.scan_string("region,amount\nnorth,100\n", "events"))
 
 ///|
 let result = @moonlake.execute(
-  "SELECT region, count(*) FROM events GROUP BY region", cat, // a @catalog.Catalog with registered table entries
+  "SELECT region, count(*) FROM events GROUP BY region", cat,
 )
 ```
 

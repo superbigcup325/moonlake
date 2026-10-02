@@ -86,5 +86,5 @@ moon test --target wasm-gc        # same suite on wasm-gc
 moon test --target js             # same suite on js
 ```
 
-All three targets run the identical 48-test suite. CI additionally
+All three targets run the identical test suite. CI additionally
 covers formatting, generated-interface freshness, and the TPC-H chain.
