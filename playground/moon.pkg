@@ -11,6 +11,6 @@ options(
     "wasm-gc": {
       "exports": [ "run", "version" ],
       "use-js-builtin-string": true,
-    }
-  }
+    },
+  },
 )

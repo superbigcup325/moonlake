@@ -69,11 +69,12 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-```moonbit
+```moonbit nocheck
 // register tables, run SQL, consume the columnar result
+
+///|
 let result = @moonlake.execute(
-  "SELECT region, count(*) FROM events GROUP BY region",
-  cat, // a @catalog.Catalog with registered table entries
+  "SELECT region, count(*) FROM events GROUP BY region", cat, // a @catalog.Catalog with registered table entries
 )
 ```
 
