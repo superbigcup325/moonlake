@@ -24,6 +24,7 @@ pub(all) enum PhysExpr {
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
   LikeE(PhysExpr, String) // pattern folded at bind time
+  IsNullE(PhysExpr, Bool) // IS NULL (false) / IS NOT NULL (true)
   ExtractE(PhysExpr, ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool) // value, folded key set, negated, right side had NULL
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
@@ -213,10 +214,26 @@ fn bind_select(
     }
   }
   let item_space : Space = if agg_mode { AggOut } else { Flat }
+  // expand a bare `*` select item into every FROM column, each table in
+  // FROM order (qualified refs keep duplicate names resolvable); in
+  // aggregate mode the plain columns then fail binding with the usual
+  // "must appear in GROUP BY" error, which is the right answer there too
+  let items : Array[SelectItem] = []
+  for item in sel.items {
+    if item.expr is Star {
+      for k, schema in schemas {
+        for col in schema.columns {
+          items.push({ expr: ColQ(quals[k], col.name), label: None, })
+        }
+      }
+    } else {
+      items.push(item)
+    }
+  }
   let out_exprs : Array[PhysExpr] = []
   let names : Array[String] = []
   let out_types : Array[@types.DataType] = []
-  for i, item in sel.items {
+  for i, item in items {
     let (pe, dt) = b.bind(item.expr, item_space)
     out_exprs.push(pe)
     names.push(
@@ -309,6 +326,8 @@ fn contains_agg(e : LExpr) -> Bool {
       return found
     }
     Like(v, _) | NotLike(v, _) => return contains_agg(v)
+    IsNull(v, _) => return contains_agg(v)
+    Star => return false
     Extract(_, x) => return contains_agg(x)
     Case(whens, else_) => {
       let mut found = false
@@ -413,6 +432,8 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
       m
     }
     Like(v, _) | NotLike(v, _) => self.col_mask(v)
+    IsNull(v, _) => self.col_mask(v)
+    Star => raise @types.SqlError::Bind("'*' is only allowed as a select item")
     Extract(_, x) => self.col_mask(x)
     Case(whens, else_) => {
       let mut m = 0
@@ -991,7 +1012,9 @@ fn Binder::bind(
     Lit(s) =>
       match s {
         @types.Null =>
-          raise @types.SqlError::Bind("untyped NULL is not supported yet")
+          raise @types.SqlError::Bind(
+            "untyped NULL is only supported as a comparison or arithmetic operand (v1 subset)",
+          )
         other => {
           let dt = scalar_type(other)
           (Const(other), dt)
@@ -1005,41 +1028,96 @@ fn Binder::bind(
             "aggregate is only allowed in SELECT, HAVING or ORDER BY",
           )
       }
-    Arith(op, l, r) => {
-      let (lpe, ldt) = self.bind(l, space)
-      let (rpe, rdt) = self.bind(r, space)
-      match unify(ldt, rdt) {
-        Some(dt) =>
-          match dt {
-            @types.Bool =>
-              raise @types.SqlError::Bind("bool operand in arithmetic")
-            _ => {
-              let lp = promote_to(lpe, ldt, dt)
-              let rp = promote_to(rpe, rdt, dt)
-              (ArithE(op, lp, rp, dt), dt)
-            }
-          }
-        None =>
+    Arith(op, l, r) =>
+      // NULL literal operand: the live side fixes the arithmetic type and
+      // the result is NULL for every row (Scalar::arith propagates it)
+      if l is Lit(@types.Null) || r is Lit(@types.Null) {
+        if l is Lit(@types.Null) && r is Lit(@types.Null) {
           raise @types.SqlError::Bind(
-            "type mismatch in arithmetic: \{ldt.to_string()} vs \{rdt.to_string()}",
+            "type of NULL cannot be inferred from NULL",
           )
-      }
-    }
-    Cmp(op, l, r) => {
-      let (lpe, ldt) = self.bind(l, space)
-      let (rpe, rdt) = self.bind(r, space)
-      match unify(ldt, rdt) {
-        Some(dt) => {
-          let lp = promote_to(lpe, ldt, dt)
-          let rp = promote_to(rpe, rdt, dt)
-          (CmpE(op, lp, rp), @types.Bool)
         }
-        None =>
-          raise @types.SqlError::Bind(
-            "type mismatch in comparison: \{ldt.to_string()} vs \{rdt.to_string()}",
-          )
+        let (live_pe, live_dt) = self.bind(
+          if l is Lit(@types.Null) {
+            r
+          } else {
+            l
+          },
+          space,
+        )
+        if live_dt is @types.Bool {
+          raise @types.SqlError::Bind("bool operand in arithmetic")
+        }
+        let null_pe : PhysExpr = Const(@types.Null)
+        (
+          if l is Lit(@types.Null) {
+            ArithE(op, null_pe, live_pe, live_dt)
+          } else {
+            ArithE(op, live_pe, null_pe, live_dt)
+          },
+          live_dt,
+        )
+      } else {
+        let (lpe, ldt) = self.bind(l, space)
+        let (rpe, rdt) = self.bind(r, space)
+        match unify(ldt, rdt) {
+          Some(dt) =>
+            match dt {
+              @types.Bool =>
+                raise @types.SqlError::Bind("bool operand in arithmetic")
+              _ => {
+                let lp = promote_to(lpe, ldt, dt)
+                let rp = promote_to(rpe, rdt, dt)
+                (ArithE(op, lp, rp, dt), dt)
+              }
+            }
+          None =>
+            raise @types.SqlError::Bind(
+              "type mismatch in arithmetic: \{ldt.to_string()} vs \{rdt.to_string()}",
+            )
+        }
       }
-    }
+    Cmp(op, l, r) =>
+      // NULL literal operand: v <op> NULL is UNKNOWN for every row (the
+      // evaluator turns a NULL side into a NULL ordering); the live side
+      // still binds so unknown columns and type errors surface
+      if l is Lit(@types.Null) || r is Lit(@types.Null) {
+        if l is Lit(@types.Null) && r is Lit(@types.Null) {
+          let null_pe : PhysExpr = Const(@types.Null)
+          return (CmpE(op, null_pe, null_pe), @types.Bool)
+        }
+        let (live_pe, _) = self.bind(
+          if l is Lit(@types.Null) {
+            r
+          } else {
+            l
+          },
+          space,
+        )
+        let null_pe : PhysExpr = Const(@types.Null)
+        (
+          if l is Lit(@types.Null) {
+            CmpE(op, null_pe, live_pe)
+          } else {
+            CmpE(op, live_pe, null_pe)
+          },
+          @types.Bool,
+        )
+      } else {
+        let (lpe, ldt) = self.bind(l, space)
+        let (rpe, rdt) = self.bind(r, space)
+        match unify(ldt, rdt) {
+          Some(dt) => {
+            let lp = promote_to(lpe, ldt, dt)
+            let rp = promote_to(rpe, rdt, dt)
+            (CmpE(op, lp, rp), @types.Bool)
+          }
+          None =>
+            raise @types.SqlError::Bind(
+              "type mismatch in comparison: \{ldt.to_string()} vs \{rdt.to_string()}",
+            )
+        }
+      }
     And(l, r) => {
       let (lpe, ldt) = self.bind(l, space)
       let (rpe, rdt) = self.bind(r, space)
@@ -1098,6 +1176,11 @@ fn Binder::bind(
       let (pe, dt) = self.bind(Not(In(v, items)), space)
       (pe, dt)
     }
+    IsNull(v, negated) => {
+      let (pe, _) = self.bind(v, space)
+      (IsNullE(pe, negated), @types.Bool)
+    }
+    Star => raise @types.SqlError::Bind("'*' is only allowed as a select item")
     Extract(field, inner) => {
       let (pe, dt) = self.bind(inner, space)
       if dt != @types.Date {
