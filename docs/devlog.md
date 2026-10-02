@@ -174,9 +174,11 @@ playground kickoff, and the parquet per-column-read upstream decision.
 
 ### Result
 
-TPC-H: 14 of 22 runnable — Q1 Q3 Q5 Q6 Q7 Q8 Q10 Q12 Q13 Q14 Q19 direct
-(11, two more than promised) plus Q11 Q15r Q16 (3 rewrites, Q16/Q11 on
-their official texts). Every golden matches duckdb within 1e-9 relative
+TPC-H: 14 of 22 runnable — 13 on the official text (two more than the
+promised 10; Important Stock Identification and Small-Quantity-Order
+Customer Scan turned out to run unmodified once scalar subqueries and
+NOT IN sets landed), plus Top Supplier rewritten (CTE inlined as a
+derived table). Every golden matches duckdb within 1e-9 relative
 tolerance; check_all.sh 15/15. Bench (SF0.01, best of 3): moonlake
 native 0.5-1.0 s vs duckdb 0.7-6 ms per query — recorded as-is; the gap
 is the row-at-a-time evaluator plus eager CSV parsing, exactly the W3

@@ -27,11 +27,11 @@ Out of scope for v1: writes (`INSERT`/`UPDATE`/DDL), persistence, transactions, 
 
 ### TPC-H cross-validation
 
-SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **14 of the 22 queries run** — 11 on their official text, 3 with the sanctioned rewrites (derived tables instead of the CTE, a scalar subquery for the max) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01:
+SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **14 of the 22 queries run** — 13 on their official text, 1 with the sanctioned rewrite (the CTE inlined as a derived table, its max as a scalar subquery) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01:
 
-| direct | rewritten |
+| runs on the official text | sanctioned rewrite |
 |---|---|
-| Q1 Q3 Q5 Q6 Q7 Q8 Q10 Q11 Q12 Q13 Q14 Q16 Q19 | Q15 (CTE inlined as a derived table) |
+| Pricing Summary Report, Shipping Priority, Local Supplier Volume, Forecasting Revenue Change, Volume Shipping, National Market Share, Returned Item Reporting, Important Stock Identification, Shipping Modes and Order Priority, Customer Distribution, Promotion Effect, Small-Quantity-Order Customer Scan, Discounted Revenue | Top Supplier |
 
 The whole chain is reproducible and runs in CI (job `tpch` regenerates the data and DuckDB's answers from scratch, then diffs every query):
 
@@ -45,10 +45,10 @@ row-at-a-time evaluation — vectorization is the declared next step):
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Q6 | 539 ms | 0.7 ms |
-| Q1 | 622 ms | 3.0 ms |
-| Q3 | 713 ms | 4.8 ms |
-| Q7 | 995 ms | 4.3 ms |
+| Forecasting Revenue Change | 539 ms | 0.7 ms |
+| Pricing Summary Report | 622 ms | 3.0 ms |
+| Shipping Priority | 713 ms | 4.8 ms |
+| Volume Shipping | 995 ms | 4.3 ms |
 
 ## Quickstart
 
@@ -90,7 +90,7 @@ sit next to, not on top of, its neighbours:
 | [moonbit-community/NyaCSV](https://github.com/moonbit-community/NyaCSV) | CSV dialect parser | text parsing only; moonlake's CSV source builds typed columnar batches on top of it |
 | [mizchi/parquet](https://github.com/mizchi/parquet) | Parquet reader/writer | format decoding only; moonlake adapts its columnar read into the same vectors the executor consumes |
 | [shunge/arrow](https://github.com/buildliming/MoonArrow) (MoonArrow) | Arrow IPC format read/write | memory-format interchange; a future `to_arrow` bridge is cooperation, not competition |
-| uiwcvb/moonsql | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
+| [uiwcvb/moonsql](https://github.com/uiwcvb/moonsql) | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
 | [f4ah6o/duckdb](https://github.com/f4ah6o/duckdb), mizchi/duckdb | DuckDB C++ bindings | FFI route: the wasm-gc target is a stub upstream and the binding build is unstable; moonlake is pure MoonBit and runs natively in the browser |
 
 ## Development
