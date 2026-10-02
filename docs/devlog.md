@@ -276,3 +276,23 @@ narrative from the plan.
 - **The evaluator stays row-at-a-time.** Projection pruning and
   vectorization remain the declared next steps; W4 discipline was
   polish, not new engine features.
+
+## Polish (buffer period, 2026-10-03): property tests, SF0.1, Parquet in
+the playground
+
+- **quickcheck properties** (4 x 80 cases, seeded): model-based oracle
+  for filter+group+five aggregates, join symmetry, pushdown equivalence,
+  sum-over-groups. Mutation-verified: breaking aggregate NULL skipping
+  gets Falsified at case 7.
+- **SF0.1**: all 15 goldens PASS on 600k+ lineitem rows (Q16 2762 rows,
+  Q11 2541 rows; Q8 non-empty at 2 rows). bench native 5.1-11.4 s vs
+  duckdb 2-12 ms — linear in the 10x growth, so CSV parsing dominates.
+  Data stays out of the repo; one command regenerates it. Restoring the
+  q6p golden exposed a real regression: the QUERIES-dict refactor had
+  silently dropped that golden from generation, masked at SF0.01 by the
+  old file still sitting in the tree.
+- **Playground Parquet**: bytes cross the wasm boundary as a
+  byte-faithful binary string. First cut used TextDecoder('windows-1252')
+  which corrupts 0x80-0x9F and surfaced as a parquet footer mismatch —
+  caught immediately by the in-browser end-to-end check. Q6 over a
+  dropped 1.9 MB parquet answers in 128 ms, identical to golden.

@@ -27,3 +27,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - W4: acceptance package — acceptance-facing README (ecosystem-boundary section, TPC-H scoreboard), `docs/DEMO.md` reproducible walkthrough, published to mooncakes.io as `superbigcup325/moonlake@0.1.0`
 - W4: browser playground (`playground/`) — the whole engine as a wasm-gc foreign library, drop-a-CSV page with zero dependencies, GitHub Pages workflow
 - W4: pre-commit gate (`hooks/`) — interface freshness, formatting, deny-warn check and tests run locally before every commit
+- Polish: quickcheck property tests over the full pipeline (model-based group/aggregate oracle, join symmetry, pushdown equivalence, sum-over-groups; mutation-verified), SF0.1 cross-validation (all 15 goldens PASS on 600k+ rows) and scale-parameterized harness scripts, and Parquet drag-and-drop in the playground
