@@ -4,6 +4,8 @@ package "superbigcup325/moonlake/playground"
 // Values
 pub fn run(String, String, String) -> String
 
+pub fn run_parquet(String, String, String, String) -> String
+
 pub fn version() -> String
 
 // Errors

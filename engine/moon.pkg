@@ -6,4 +6,6 @@ import {
 
 import {
   "superbigcup325/moonlake/sources/csv",
+  "moonbitlang/quickcheck" @qc,
+  "moonbitlang/quickcheck/gen" @gen,
 } for "test"
