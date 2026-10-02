@@ -21,7 +21,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `NOT LIKE`, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout
 - Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
 - Derived tables (`FROM (SELECT ...) AS t`), non-correlated scalar subqueries and `IN` / `NOT IN (SELECT ...)`
-- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions
+- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At a `LEFT` join, WHERE predicates on the build side stay post-join — filtering build rows would change which probe rows NULL-extend
 
 Out of scope for v1: writes (`INSERT`/`UPDATE`/DDL), persistence, transactions, indexes, correlated subqueries, window functions, cost-based optimization.
 
