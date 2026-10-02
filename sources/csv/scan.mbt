@@ -15,6 +15,13 @@ pub fn scan_string(
   content : String,
   table_name : String,
 ) -> @catalog.TableEntry raise @types.SqlError {
+  // strip a UTF-8 BOM so it does not glue onto the first header cell's
+  // name (Excel-exported CSVs carry one)
+  let content = if content.has_prefix("\u{FEFF}") {
+    content[1:].to_owned()
+  } else {
+    content
+  }
   let csv = @NyaCSV.CSV::parse_string(content)
   build_entry(table_name, csv.header(), csv.data())
 }
@@ -65,7 +72,9 @@ fn build_entry(
 ///|
 /// Infer one type per column from the first INFER_SAMPLE rows: every
 /// sampled non-empty cell must parse as the candidate type. Order:
-/// int32, float64, bool, date, else string. All-null columns infer as string.
+/// int32, int64, float64, bool, date, else string — an integer too big
+/// for int32 widens to int64, one too big for int64 falls to float64
+/// (DuckDB-style sniffing), never wraps. All-null columns infer as string.
 fn infer_types(
   header : Array[String],
   rows : Array[Array[String]],
@@ -77,7 +86,8 @@ fn infer_types(
   }
   let dtypes : Array[@types.DataType] = []
   for c in 0..<header.length() {
-    let mut all_int = true
+    let mut all_i32 = true
+    let mut all_i64 = true
     let mut all_double = true
     let mut all_bool = true
     let mut all_date = true
@@ -89,7 +99,10 @@ fn infer_types(
       }
       seen = true
       if @types.parse_i32(cell) is None {
-        all_int = false
+        all_i32 = false
+      }
+      if @types.parse_i64(cell) is None {
+        all_i64 = false
       }
       if @types.parse_f64(cell) is None {
         all_double = false
@@ -103,8 +116,10 @@ fn infer_types(
     }
     if !seen {
       dtypes.push(@types.Str)
-    } else if all_int {
+    } else if all_i32 {
       dtypes.push(@types.Int32)
+    } else if all_i64 {
+      dtypes.push(@types.Int64)
     } else if all_double {
       dtypes.push(@types.Float64)
     } else if all_bool {
@@ -165,7 +180,14 @@ fn build_batch(
                   "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as date",
                 )
             }
-          Int64 => () // not produced by inference (v1)
+          Int64 =>
+            match @types.parse_i64(cell) {
+              Some(v) => vec.set(r - start, @types.Scalar::Int64(v))
+              None =>
+                raise @types.SqlError::Scan(
+                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as int64",
+                )
+            }
           Str => vec.set(r - start, @types.Scalar::Str(cell))
         }
       } else {

@@ -4,33 +4,69 @@
 // relative tolerance used against duckdb goldens.
 
 ///|
-/// Optional sign then digits, else None. Overflow is not checked (v1
-/// values fit comfortably in 32 bits after inference).
+/// Optional sign then digits, else None, range-checked to int32: a value
+/// outside [-2^31, 2^31-1] returns None so callers promote or report
+/// instead of wrapping silently.
 pub fn parse_i32(s : String) -> Int? {
-  let mut acc = 0
+  match parse_i64(s) {
+    Some(v) =>
+      if v >= -2147483648L && v <= 2147483647L {
+        Some(v.to_int())
+      } else {
+        None
+      }
+    None => None
+  }
+}
+
+///|
+/// Optional sign then digits, else None, range-checked to int64.
+/// Accumulates as a negative magnitude — -2^63 is representable while
+/// +2^63 is not, so negating at the end stays exact.
+pub fn parse_i64(s : String) -> Int64? {
+  let mut acc = 0L
   let mut neg = false
-  let mut seen = false
+  let mut seen_sign = false
+  let mut digits = 0
   for ch in s {
-    if seen == false && (ch == '-' || ch == '+') {
+    if !seen_sign && (ch == '-' || ch == '+') {
       neg = ch == '-'
-      seen = true
+      seen_sign = true
       continue
     }
-    seen = true
+    seen_sign = true
     let v = ch.to_int()
     if v < 48 || v > 57 {
       return None
     }
-    acc = acc * 10 + (v - 48)
+    digits += 1
+    // floor(2^63 / 10): at or above this magnitude the * 10 step would
+    // leave the int64 range (any wrap lands on a positive value)
+    if acc < -922337203685477580L {
+      return None
+    }
+    acc = acc * 10L - (v - 48).to_int64()
+    if acc > 0L {
+      return None // wrapped past -2^63
+    }
   }
-  if !seen {
-    return None // empty
+  if !seen_sign || digits == 0 {
+    return None // empty or sign-only input
   }
-  Some(if neg { -acc } else { acc })
+  if !neg {
+    if acc == -9223372036854775808L {
+      return None // 2^63 overflows positive int64
+    }
+    acc = -acc
+  }
+  Some(acc)
 }
 
 ///|
 /// [sign] digits [ . digits ] [ (e|E) [sign] digits ], else None.
+/// Digits accumulate in Double — an Int64 accumulator would wrap exactly
+/// the way this parser exists to prevent — so arbitrarily long inputs
+/// degrade to the nearest float64 instead of flipping sign.
 pub fn parse_f64(s : String) -> Double? {
   let chars : Array[Char] = []
   for ch in s {
@@ -46,29 +82,28 @@ pub fn parse_f64(s : String) -> Double? {
     neg = chars[0] == '-'
     i = 1
   }
-  let mut int_part = 0L
+  let mut value = 0.0
   let mut int_digits = 0
   while i < n && is_digit(chars[i]) {
-    int_part = int_part * 10L + (chars[i].to_int() - 48).to_int64()
+    value = value * 10.0 + (chars[i].to_int() - 48).to_double()
     int_digits += 1
     i += 1
   }
-  let mut frac_part = 0L
-  let mut frac_len = 0
+  let mut frac_div = 1.0
   if i < n && chars[i] == '.' {
     i += 1
     while i < n && is_digit(chars[i]) {
-      if frac_len < 18 {
-        frac_part = frac_part * 10L + (chars[i].to_int() - 48).to_int64()
-        frac_len += 1
-      }
+      frac_div = frac_div * 10.0
+      value = value * 10.0 + (chars[i].to_int() - 48).to_double()
       i += 1
     }
   }
-  if int_digits == 0 && frac_len == 0 {
+  if int_digits == 0 && frac_div == 1.0 {
     return None
   }
-  let mut value = int_part.to_double() + frac_part.to_double() / pow10(frac_len)
+  if frac_div > 1.0 {
+    value = value / frac_div
+  }
   if i < n && (chars[i] == 'e' || chars[i] == 'E') {
     i += 1
     let mut exp_neg = false

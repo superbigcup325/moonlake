@@ -26,6 +26,8 @@ pub fn parse_f64(String) -> Double?
 
 pub fn parse_i32(String) -> Int?
 
+pub fn parse_i64(String) -> Int64?
+
 // Errors
 pub(all) suberror SqlError {
   Parse(String)

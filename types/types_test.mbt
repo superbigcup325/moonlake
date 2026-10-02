@@ -192,3 +192,26 @@ test "scalar string comparison is lexicographic" {
   // the operators are not: document the trap right next to the fix
   assert_false("apple" < "pear")
 }
+
+///|
+test "integer parsing is range-checked, never wrapping" {
+  // boundaries stay exact
+  assert_eq(@types.parse_i64("9223372036854775807"), Some(9223372036854775807L))
+  assert_eq(
+    @types.parse_i64("-9223372036854775808"),
+    Some(-9223372036854775808L),
+  )
+  assert_eq(@types.parse_i64("-9223372036854775809"), None)
+  assert_eq(@types.parse_i64("9223372036854775808"), None)
+  assert_eq(@types.parse_i64("99999999999999999999"), None)
+  assert_eq(@types.parse_i32("2147483647"), Some(2147483647))
+  assert_eq(@types.parse_i32("-2147483648"), Some(-2147483648))
+  // out of int32 range: None, not a wrapped negative
+  assert_eq(@types.parse_i32("2147483648"), None)
+  assert_eq(@types.parse_i32("-2147483649"), None)
+  // junk and sign-only inputs
+  assert_eq(@types.parse_i64("-"), None)
+  assert_eq(@types.parse_i64("+"), None)
+  assert_eq(@types.parse_i64(""), None)
+  assert_eq(@types.parse_i64("12x"), None)
+}

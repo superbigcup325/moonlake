@@ -50,3 +50,35 @@ test "empty table keeps column structure" {
   assert_eq(entry.batches.length(), 1)
   assert_eq(entry.batches[0].row_count(), 0)
 }
+
+///|
+test "integer columns widen to int64 then float64, never wrap" {
+  let entry = @csv.scan_string(
+    "i32max,i32p1,i64max,i64p1\n2147483647,2147483648,9223372036854775807,9223372036854775808\n",
+    "t",
+  )
+  let cols = entry.schema.columns
+  assert_eq(cols[0].dtype, @types.Int32)
+  assert_eq(cols[1].dtype, @types.Int64) // one past int32: widens, not wraps
+  assert_eq(cols[2].dtype, @types.Int64)
+  assert_eq(cols[3].dtype, @types.Float64) // one past int64: duckdb-style fallback
+  let b = entry.batches[0]
+  assert_eq(b.columns()[0].get(0), @types.Scalar::Int32(2147483647))
+  assert_eq(b.columns()[1].get(0), @types.Scalar::Int64(2147483648L))
+  assert_eq(b.columns()[2].get(0), @types.Scalar::Int64(9223372036854775807L))
+  // past 2^53 the double parser degrades to the nearest float64 (its
+  // documented accuracy contract); the sign and magnitude must survive
+  assert_true(
+    b.columns()[3].get(0) is @types.Scalar::Float64(v) &&
+    (v - 9223372036854775808.0).abs() / 9223372036854775808.0 < 1.0e-9,
+  )
+}
+
+///|
+test "UTF-8 BOM is stripped from the first header cell" {
+  let entry = @csv.scan_string("\u{FEFF}a,b\n1,2\n", "bom")
+  assert_eq(entry.schema.columns[0].name, "a")
+  let b = entry.batches[0]
+  assert_eq(b.columns()[0].get(0), @types.Scalar::Int32(1))
+  assert_eq(b.columns()[1].get(0), @types.Scalar::Int32(2))
+}
