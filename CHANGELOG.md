@@ -28,3 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - W4: browser playground (`playground/`) — the whole engine as a wasm-gc foreign library, drop-a-CSV page with zero dependencies, GitHub Pages workflow
 - W4: pre-commit gate (`hooks/`) — interface freshness, formatting, deny-warn check and tests run locally before every commit
 - Polish: quickcheck property tests over the full pipeline (model-based group/aggregate oracle, join symmetry, pushdown equivalence, sum-over-groups; mutation-verified), SF0.1 cross-validation (all 15 goldens PASS on 600k+ rows) and scale-parameterized harness scripts, and Parquet drag-and-drop in the playground
+
+### Fixed
+
+- LEFT JOIN pushdown soundness: WHERE conjuncts referencing only the build (right) table were applied as build filters, dropping build rows and letting NULL-extended probe rows survive a predicate they cannot satisfy (e.g. `... LEFT JOIN orders ON ... WHERE orders.amount > 15` returned the unmatched rows with NULL amounts). They now stay a deferred post-join filter; probe-side pushdown and ON-clause placement are unchanged
+- CLI exit codes: every error path (bad SQL, unknown table/column, unreadable file, usage violation) exited 0. Errors now print to stderr and exit non-zero (134, the MoonBit native runtime's abort status — there is no exit(code)); success, `--help` and `--version` remain 0
+
+### Added
+
+- `IS NULL` / `IS NOT NULL` — the first way to test NULL-ness in a WHERE or CASE condition
+- `NOT BETWEEN` (postfix form, three-valued negation of BETWEEN)
+- `NULL` as a comparison or arithmetic operand: `v = NULL` is UNKNOWN per row, `NOT IN (1, NULL)` is empty, `v + NULL` propagates (the literal takes its type from the other operand; standalone `SELECT NULL` remains unsupported)
+- `SELECT *` — expands to every FROM column, each table in FROM order; also inside derived tables
