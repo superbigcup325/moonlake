@@ -46,6 +46,8 @@ pub(all) enum LExpr {
   NotIn(LExpr, Array[LExpr]) // desugars into NOT of the In chain
   Like(LExpr, LExpr) // pattern must fold to a string constant
   NotLike(LExpr, LExpr) // pattern must fold to a string constant
+  IsNull(LExpr, Bool) // IS NULL (false) / IS NOT NULL (true)
+  Star // bare `*` as a whole select item: expands to every FROM column
   Extract(ExtractField, LExpr) // EXTRACT(year|month|day FROM date)
   Case(Array[(LExpr, LExpr)], LExpr?) // searched CASE: (when, then)*, else?
   Agg(AggFn, LExpr?) // None only for count(*)

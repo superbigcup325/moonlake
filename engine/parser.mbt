@@ -109,6 +109,8 @@ fn show_tok(t : Tok) -> String {
     KwOuter => "OUTER"
     KwCross => "CROSS"
     KwOn => "ON"
+    KwIs => "IS"
+    KwNull => "NULL"
     KwExtract => "EXTRACT"
     KwYear => "YEAR"
     KwMonth => "MONTH"
@@ -268,6 +270,10 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
 
 ///|
 fn parse_item(p : Parser) -> SelectItem raise @types.SqlError {
+  if p.eat(Star) {
+    // bare `*` selects every FROM column; no alias attaches to it
+    return { expr: Star, label: None, }
+  }
   let expr = parse_or(p)
   let label = if p.eat(KwAs) {
     match p.advance() {
@@ -405,6 +411,14 @@ fn parse_predicate(p : Parser) -> LExpr raise @types.SqlError {
           p.expect(RParen)
           In(left, list)
         }
+      } else if p.peek() is KwNot && p.peek_at(1) is KwBetween {
+        // postfix NOT BETWEEN (prefix NOT is handled by parse_not)
+        let _ = p.advance()
+        let _ = p.advance()
+        let low = parse_add(p)
+        p.expect(KwAnd)
+        let high = parse_add(p)
+        Not(Between(left, low, high))
       } else if p.peek() is KwNot && p.peek_at(1) is KwLike {
         // postfix NOT LIKE (prefix NOT is handled by parse_not)
         let _ = p.advance()
@@ -424,6 +438,12 @@ fn parse_predicate(p : Parser) -> LExpr raise @types.SqlError {
           p.expect(RParen)
           NotIn(left, list)
         }
+      } else if p.peek() is KwIs {
+        // IS NULL / IS NOT NULL: the only NULL test in the subset
+        let _ = p.advance()
+        let negated = if p.eat(KwNot) { true } else { false }
+        p.expect(KwNull)
+        IsNull(left, negated)
       } else {
         left
       }
@@ -511,6 +531,7 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
     DoubleLit(v) => Lit(@types.Scalar::Float64(v))
     StrLit(s) => Lit(@types.Scalar::Str(s))
     BoolLit(b) => Lit(@types.Scalar::Boolean(b))
+    KwNull => Lit(@types.Null)
     LParen =>
       // ( SELECT ... ) is a scalar subquery; anything else is a grouping
       if p.peek() is KwSelect {

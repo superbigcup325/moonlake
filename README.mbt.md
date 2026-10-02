@@ -16,9 +16,9 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 
 ### v1 SQL surface
 
-- `SELECT` / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
+- `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
 - `INNER` / `LEFT` / `CROSS` joins (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
-- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `NOT LIKE`, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout
+- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout
 - Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
 - Derived tables (`FROM (SELECT ...) AS t`), non-correlated scalar subqueries and `IN` / `NOT IN (SELECT ...)`
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At a `LEFT` join, WHERE predicates on the build side stay post-join — filtering build rows would change which probe rows NULL-extend

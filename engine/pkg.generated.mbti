@@ -79,6 +79,8 @@ pub(all) enum LExpr {
   NotIn(LExpr, Array[LExpr])
   Like(LExpr, LExpr)
   NotLike(LExpr, LExpr)
+  IsNull(LExpr, Bool)
+  Star
   Extract(ExtractField, LExpr)
   Case(Array[(LExpr, LExpr)], LExpr?)
   Agg(AggFn, LExpr?)
@@ -107,6 +109,7 @@ pub(all) enum PhysExpr {
   OrE(PhysExpr, PhysExpr)
   NotE(PhysExpr)
   LikeE(PhysExpr, String)
+  IsNullE(PhysExpr, Bool)
   ExtractE(PhysExpr, ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool)
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)

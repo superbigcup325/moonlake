@@ -587,3 +587,90 @@ test "scalar subquery folds to a constant" {
   assert_eq(r2.row_count(), 1)
   assert_eq(r2.get(0, 0), @types.Scalar::Int32(3))
 }
+
+///|
+test "is null and is not null select and filter NULL rows" {
+  let cat = join_catalog()
+  let r = run("SELECT count(*) AS c FROM orders WHERE custkey IS NULL", cat)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(1L))
+  let r2 = run(
+    "SELECT oid FROM orders WHERE custkey IS NOT NULL ORDER BY oid", cat,
+  )
+  assert_eq(r2.row_count(), 3)
+  assert_eq(r2.get(2, 0), @types.Scalar::Int32(102))
+  // the only way to test NULL-ness inside a CASE condition
+  let r3 = run(
+    "SELECT count(*) AS c FROM orders WHERE CASE WHEN custkey IS NULL THEN 1 ELSE 0 END = 1",
+    cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Scalar::Int64(1L))
+  // IS NULL is never true for non-null values under NOT (three-valued)
+  let r4 = run(
+    "SELECT count(*) AS c FROM orders WHERE NOT custkey IS NULL", cat,
+  )
+  assert_eq(r4.get(0, 0), @types.Scalar::Int64(3L))
+}
+
+///|
+test "not between is the three-valued negation" {
+  let cat = str_catalog("a,v\nb,1\na,5\nb,3\n")
+  let r = run("SELECT count(*) AS c FROM t WHERE v NOT BETWEEN 2 AND 4", cat)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(2L)) // 1 and 5
+  // a NULL low bound makes BETWEEN unknown; for rows past the high bound
+  // the AND folds to FALSE, so NOT flips them back to true (three-valued)
+  let r2 = run(
+    "SELECT count(*) AS c FROM t WHERE v NOT BETWEEN NULL AND 4", cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Scalar::Int64(1L)) // only v = 5
+}
+
+///|
+test "NULL literal compares as unknown and poisons NOT IN lists" {
+  let cat = join_catalog()
+  // v = NULL is UNKNOWN for every row, never true
+  let r = run("SELECT count(*) AS c FROM orders WHERE amount = NULL", cat)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(0L))
+  let r2 = run("SELECT count(*) AS c FROM orders WHERE oid > NULL", cat)
+  assert_eq(r2.get(0, 0), @types.Scalar::Int64(0L))
+  // classic SQL trap: NOT IN against a list containing NULL is UNKNOWN
+  // unless the value matches
+  let r3 = run(
+    "SELECT count(*) AS c FROM orders WHERE oid NOT IN (100, NULL)", cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Scalar::Int64(0L))
+  let r4 = run("SELECT count(*) AS c FROM orders WHERE oid IN (100, NULL)", cat)
+  assert_eq(r4.get(0, 0), @types.Scalar::Int64(1L))
+  // arithmetic with a NULL literal propagates; IS NULL observes it
+  let r5 = run(
+    "SELECT count(*) AS c FROM orders WHERE amount + NULL IS NULL", cat,
+  )
+  assert_eq(r5.get(0, 0), @types.Scalar::Int64(4L))
+  // the live side defines the type, so a string column compares fine
+  let r6 = run("SELECT count(*) AS c FROM customers WHERE seg = NULL", cat)
+  assert_eq(r6.get(0, 0), @types.Scalar::Int64(0L))
+}
+
+///|
+test "select star expands to every FROM column" {
+  let cat = join_catalog()
+  let r = run("SELECT * FROM customers ORDER BY cid", cat)
+  assert_eq(r.names(), ["cid", "seg"])
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(2, 0), @types.Scalar::Int32(3))
+  // over a join: both tables' columns, probe side first
+  let r2 = run("SELECT * FROM customers, orders WHERE cid = custkey", cat)
+  assert_eq(r2.names(), ["cid", "seg", "oid", "custkey", "amount"])
+  assert_eq(r2.row_count(), 3)
+  // inside a derived table the expansion is the subquery's projection
+  let r3 = run(
+    "SELECT * FROM (SELECT cid FROM customers WHERE cid = 2) AS t", cat,
+  )
+  assert_eq(r3.names(), ["cid"])
+  assert_eq(r3.row_count(), 1)
+  // bare columns cannot be selected next to an aggregate
+  assert_true(
+    run_err("SELECT * FROM customers GROUP BY seg", cat)
+    .to_string()
+    .contains("GROUP BY"),
+  )
+}

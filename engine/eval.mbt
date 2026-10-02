@@ -63,6 +63,14 @@ fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
         @types.Str(s) => @types.Boolean(like_match(s, pattern))
         _ => @types.Null
       } // NULL never matches
+    IsNullE(inner, negated) =>
+      @types.Boolean(
+        if eval_with(inner, get) is @types.Null {
+          !negated
+        } else {
+          negated
+        },
+      )
     CaseE(whens, else_, _) => {
       for when in whens {
         match eval_with(when.0, get) {

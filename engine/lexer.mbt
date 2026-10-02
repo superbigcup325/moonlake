@@ -54,6 +54,8 @@ priv enum Tok {
   KwOuter
   KwCross
   KwOn
+  KwIs
+  KwNull
   KwExtract
   KwYear
   KwMonth
@@ -264,6 +266,8 @@ fn keyword_or_ident(word : String) -> Tok {
     "outer" => KwOuter
     "cross" => KwCross
     "on" => KwOn
+    "is" => KwIs
+    "null" => KwNull
     "extract" => KwExtract
     "year" => KwYear
     "month" => KwMonth
