@@ -218,3 +218,59 @@ records the trap next to the fix.
   adapter consumes read_bytes_columnar; a column-selection read would
   only pay off after vectorization/pruning exist to exploit it. Whole-
   file decode stays for v1; revisit post-competition (plan §11).
+
+## W4 (acceptance package, landed early 2026-10-03): README facade,
+mooncakes 0.1.0, playground, local gates
+
+### Goal
+
+The acceptance package per the plan: README facade with the ecosystem
+section, a mooncakes release, green CI, a reproducible demo page — and
+the playground kickoff that slipped from W3.
+
+### What landed
+
+- README: CI badge, the concrete v1 SQL surface, the TPC-H scoreboard
+  as a table (14/22: 13 direct + Q15 rewritten), the benchmark with its
+  honest caveat, and the ecosystem-boundary section — parser / format
+  readers / Arrow interchange / embedded OLTP / DuckDB bindings, each
+  with the exact seam to moonlake
+- `docs/DEMO.md`: fresh-clone-to-evidence walkthrough (CSV + Parquet
+  runs with expected outputs, plan explain, the 15-golden chain, bench,
+  three-target tests)
+- **Published to mooncakes.io**: `superbigcup325/moonlake@0.1.0`
+  (dry-run accepted first; the listing went live and the docs build
+  kicked off)
+- Playground: `playground/` is a foreign_library package exporting
+  `run(csv, table, sql) -> JSON` and `version()` through
+  `link.wasm.exports` with js-string builtins — the entire engine in
+  the browser, no server, no external wasm. `index.html` is a
+  dependency-free drop-a-CSV page (table + wall-clock time, errors as
+  JSON). JSON rendering moved into the engine facade so CLI and
+  playground share one implementation. A pages workflow builds the wasm
+  and publishes the two-file site (needs Pages enabled in repo
+  settings)
+- `hooks/pre-commit`: interface freshness, formatting, deny-warn check
+  and tests run before every commit — the same gates as CI, so a stale
+  .mbti can never need a push round-trip again (it caught one itself
+  during the playground commit)
+
+### Result
+
+Verified end to end in a real browser: engine 0.1.0 loads (wasm-gc),
+a dropped 60175-row lineitem.csv answers the Q1-shaped GROUP BY in
+312 ms with totals identical to the duckdb-validated golden. node
+harness: run() in 299 ms — the wasm-gc build is faster than the native
+CLI on the same query (622 ms), matching the wasm-gc performance
+narrative from the plan.
+
+### Decisions and edges
+
+- **Publishing order**: dry-run -> README facade -> publish, so the
+  mooncakes listing renders the final README from day one.
+- **Playground ships two files** (index.html + playground.wasm) with no
+  build chain on the JS side; Pages needs a one-time enable in repo
+  settings, the workflow is committed and dispatch-ready.
+- **The evaluator stays row-at-a-time.** Projection pruning and
+  vectorization remain the declared next steps; W4 discipline was
+  polish, not new engine features.
