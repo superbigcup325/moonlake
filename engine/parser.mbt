@@ -61,6 +61,7 @@ fn show_tok(t : Tok) -> String {
   match t {
     Ident(s) => "identifier \"\{s}\""
     IntLit(v) => "number \{v}"
+    Int64Lit(v) => "number \{v}"
     DoubleLit(v) => "number \{v}"
     StrLit(_) => "string literal"
     BoolLit(_) => "boolean literal"
@@ -187,14 +188,31 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
 
 ///|
 fn parse_table_name(p : Parser) -> String raise @types.SqlError {
-  match p.advance() {
-    Ident(name) => name
-    other => {
-      let found = show_tok(other)
+  let t = p.advance()
+  match ident_like_tok(t) {
+    Some(name) => name
+    None => {
+      let found = show_tok(t)
       raise @types.SqlError::Parse(
         "expected table name after FROM, found \{found}",
       )
     }
+  }
+}
+
+///|
+/// A name position (column, table, alias): a plain identifier, or one of
+/// the DATE-part keywords year/month/day/date, which a CSV header can
+/// realistically collide with. Every other keyword stays reserved —
+/// quoting ("left") reaches those.
+fn ident_like_tok(t : Tok) -> String? {
+  match t {
+    Ident(s) => Some(s)
+    KwYear => Some("year")
+    KwMonth => Some("month")
+    KwDay => Some("day")
+    KwDate => Some("date")
+    _ => None
   }
 }
 
@@ -214,24 +232,25 @@ fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
 }
 
 ///|
-/// Optional table alias: `tbl alias` or `tbl AS alias`. Only a plain
-/// identifier counts (keywords tokenize as their own tokens).
+/// Optional table alias: `tbl alias` or `tbl AS alias`. Names follow
+/// ident_like_tok (identifiers plus the DATE-part keywords).
 fn parse_alias_opt(p : Parser) -> String? raise @types.SqlError {
   if p.eat(KwAs) {
-    match p.advance() {
-      Ident(name) => return Some(name)
-      other => {
-        let found = show_tok(other)
+    let t = p.advance()
+    match ident_like_tok(t) {
+      Some(name) => return Some(name)
+      None => {
+        let found = show_tok(t)
         raise @types.SqlError::Parse("expected alias after AS, found \{found}")
       }
     }
   }
-  match p.peek() {
-    Ident(name) => {
+  match ident_like_tok(p.peek()) {
+    Some(name) => {
       let _ = p.advance()
       Some(name)
     }
-    _ => None
+    None => None
   }
 }
 
@@ -276,19 +295,23 @@ fn parse_item(p : Parser) -> SelectItem raise @types.SqlError {
   }
   let expr = parse_or(p)
   let label = if p.eat(KwAs) {
-    match p.advance() {
-      Ident(name) => Some(name)
-      other => {
-        let found = show_tok(other)
+    let t = p.advance()
+    match ident_like_tok(t) {
+      Some(name) => Some(name)
+      None => {
+        let found = show_tok(t)
         raise @types.SqlError::Parse("expected alias after AS, found \{found}")
       }
     }
-  } else if p.peek() is Ident(name) {
-    // bare alias: SELECT sum(x) revenue FROM ...
-    let _ = p.advance()
-    Some(name)
   } else {
-    None
+    match ident_like_tok(p.peek()) {
+      // bare alias: SELECT sum(x) revenue FROM ...
+      Some(name) => {
+        let _ = p.advance()
+        Some(name)
+      }
+      None => None
+    }
   }
   { expr, label, }
 }
@@ -514,20 +537,23 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
       if p.peek() is LParen {
         parse_function(p, name)
       } else if p.peek() is Dot {
-        let _ = p.advance()
-        match p.advance() {
-          Ident(col) => ColQ(name, col)
-          other => {
-            let found = show_tok(other)
-            raise @types.SqlError::Parse(
-              "expected column name after '.', found \{found}",
-            )
-          }
-        }
+        parse_qualified(p, name)
       } else {
         Col(name)
       }
+    // the DATE-part keywords resolve as bare column names; DATE itself
+    // only starts a literal when a string literal follows
+    KwYear => Col("year")
+    KwMonth => Col("month")
+    KwDay => Col("day")
+    KwDate =>
+      if p.peek() is StrLit(_) {
+        parse_date_literal(p)
+      } else {
+        Col("date")
+      }
     IntLit(v) => Lit(@types.Scalar::Int32(v))
+    Int64Lit(v) => Lit(@types.Scalar::Int64(v))
     DoubleLit(v) => Lit(@types.Scalar::Float64(v))
     StrLit(s) => Lit(@types.Scalar::Str(s))
     BoolLit(b) => Lit(@types.Scalar::Boolean(b))
@@ -543,23 +569,6 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
         let e = parse_or(p)
         p.expect(RParen)
         e
-      }
-    KwDate =>
-      match p.advance() {
-        StrLit(s) =>
-          match @types.parse_date(s) {
-            Some(days) => Lit(@types.Scalar::Date(days))
-            None =>
-              raise @types.SqlError::Parse(
-                "bad DATE literal \"\{s}\" (expected yyyy-mm-dd)",
-              )
-          }
-        other => {
-          let found = show_tok(other)
-          raise @types.SqlError::Parse(
-            "expected string after DATE, found \{found}",
-          )
-        }
       }
     KwCase => parse_case(p)
     KwExtract => {
@@ -583,6 +592,40 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
     other => {
       let found = show_tok(other)
       raise @types.SqlError::Parse("unexpected \{found} in expression")
+    }
+  }
+}
+
+///|
+fn parse_qualified(p : Parser, table : String) -> LExpr raise @types.SqlError {
+  // assumes p.peek() is Dot and `table` is already consumed
+  let _ = p.advance()
+  let t = p.advance()
+  match ident_like_tok(t) {
+    Some(col) => ColQ(table, col)
+    None => {
+      let found = show_tok(t)
+      raise @types.SqlError::Parse(
+        "expected column name after '.', found \{found}",
+      )
+    }
+  }
+}
+
+///|
+fn parse_date_literal(p : Parser) -> LExpr raise @types.SqlError {
+  match p.advance() {
+    StrLit(s) =>
+      match @types.parse_date(s) {
+        Some(days) => Lit(@types.Scalar::Date(days))
+        None =>
+          raise @types.SqlError::Parse(
+            "bad DATE literal \"\{s}\" (expected yyyy-mm-dd)",
+          )
+      }
+    other => {
+      let found = show_tok(other)
+      raise @types.SqlError::Parse("expected string after DATE, found \{found}")
     }
   }
 }

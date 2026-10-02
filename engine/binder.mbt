@@ -129,10 +129,20 @@ fn SubqueryRunner::run_scalar(
   sel : Select,
 ) -> (@types.Scalar, @types.DataType) raise @types.SqlError {
   let r = run_parsed(sel, self.catalog)
-  if r.row_count() != 1 || r.names().length() != 1 {
+  if r.names().length() != 1 {
     raise @types.SqlError::Bind(
-      "scalar subquery must return exactly one row and one column",
+      "scalar subquery must return exactly one column",
     )
+  }
+  // SQL semantics: a scalar subquery over zero rows yields NULL; only
+  // more than one row is an error
+  if r.row_count() > 1 {
+    raise @types.SqlError::Bind(
+      "scalar subquery must return at most one row, got \{r.row_count()}",
+    )
+  }
+  if r.row_count() == 0 {
+    return (@types.Null, r.types()[0])
   }
   (r.get(0, 0), r.types()[0])
 }

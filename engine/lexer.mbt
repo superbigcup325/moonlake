@@ -1,11 +1,13 @@
 // Tokenizer for the W1 SQL subset. Keywords are case-insensitive;
-// identifiers, numbers (int/double with exponent), single-quoted strings
-// (with '' escape), DATE 'yyyy-mm-dd' literals and line comments.
+// identifiers (bare or double-quoted, with "" escape), numbers (int32 /
+// int64 / double with exponent), single-quoted strings (with '' escape),
+// DATE 'yyyy-mm-dd' literals and line comments.
 
 ///|
 priv enum Tok {
   Ident(String)
   IntLit(Int)
+  Int64Lit(Int64)
   DoubleLit(Double)
   StrLit(String)
   BoolLit(Bool)
@@ -106,6 +108,10 @@ fn lex_sql(sql : String) -> Array[Tok] raise @types.SqlError {
     }
     if ch == '\'' {
       toks.push(lx.lex_string())
+      continue
+    }
+    if ch == '"' {
+      toks.push(lx.lex_quoted_ident())
       continue
     }
     match ch {
@@ -311,11 +317,52 @@ fn Lexer::lex_number(self : Lexer) -> Tok raise @types.SqlError {
       None => raise @types.SqlError::Parse("bad number literal \"\{text}\"")
     }
   } else {
+    // int32 first, then int64 so big integers keep exact values, then
+    // float64 as the last resort (DuckDB-style literal widening)
     match @types.parse_i32(text) {
       Some(v) => IntLit(v)
-      None => raise @types.SqlError::Parse("bad integer literal \"\{text}\"")
+      None =>
+        match @types.parse_i64(text) {
+          Some(v) => Int64Lit(v)
+          None =>
+            match @types.parse_f64(text) {
+              Some(v) => DoubleLit(v)
+              None =>
+                raise @types.SqlError::Parse("bad integer literal \"\{text}\"")
+            }
+        }
     }
   }
+}
+
+///|
+fn Lexer::lex_quoted_ident(self : Lexer) -> Tok raise @types.SqlError {
+  // assumes chars[self.pos] == '"'; a quoted identifier never matches a
+  // keyword, so "day", "left", "select" all resolve as plain names
+  self.pos += 1
+  let sb = StringBuilder()
+  let n = self.chars.length()
+  let mut closed = false
+  while self.pos < n {
+    let ch = self.chars[self.pos]
+    if ch == '"' {
+      if self.pos + 1 < n && self.chars[self.pos + 1] == '"' {
+        sb.write_char('"') // "" escape
+        self.pos += 2
+      } else {
+        self.pos += 1
+        closed = true
+        break
+      }
+    } else {
+      sb.write_char(ch)
+      self.pos += 1
+    }
+  }
+  if !closed {
+    raise @types.SqlError::Parse("unterminated quoted identifier")
+  }
+  Ident(sb.to_string())
 }
 
 ///|

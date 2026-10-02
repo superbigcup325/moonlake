@@ -705,3 +705,100 @@ test "division is DuckDB true division: int/int is DOUBLE, /0 is inf/nan" {
   assert_eq(r2.types()[1], @types.Float64)
   assert_eq(r2.get(0, 1), @types.Scalar::Null)
 }
+
+///|
+/// Fixture for name-resolution tests: a table whose columns collide with
+/// the DATE-part keywords, plus one column named like a join keyword.
+fn kw_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(
+      "day,month,year,date,left\nday-01,1,2024,2024-01-15,10\nday-02,2,2024,2024-02-01,20\n",
+      "events",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "DATE-part keywords resolve as column names" {
+  let cat = kw_catalog()
+  // bare reference in projection
+  let r = run("SELECT day FROM events ORDER BY day", cat)
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(1, 0), @types.Str("day-02"))
+  // qualified and aliased references
+  let r2 = run("SELECT e.day, e.year FROM events AS e WHERE e.month = 2", cat)
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Str("day-02"))
+  assert_eq(r2.get(0, 1), @types.Int32(2024))
+  // date-part column compared against a DATE literal (CSV auto-infers Date);
+  // `left` is a JOIN keyword so it needs quoting, unlike the DATE parts
+  let r3 = run(
+    "SELECT \"left\" FROM events WHERE date >= date '2024-02-01'", cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Int32(20))
+  // EXTRACT keeps working alongside the keyword columns
+  let r4 = run(
+    "SELECT EXTRACT(year FROM date) AS y, \"left\" FROM events ORDER BY \"left\"",
+    cat,
+  )
+  assert_eq(r4.row_count(), 2)
+  assert_eq(r4.get(0, 0), @types.Int32(2024))
+}
+
+///|
+test "double-quoted identifiers reach keyword names" {
+  let cat = kw_catalog()
+  let r = run("SELECT \"left\" FROM events WHERE \"day\" LIKE 'day-01%'", cat)
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(10))
+  // a fully reserved word is reachable only through quoting
+  let cat2 = @catalog.Catalog::new()
+  cat2.register(
+    @csv.scan_string("select,from\n1,2\n", "kw") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r2 = run("SELECT \"select\" + \"from\" FROM kw", cat2)
+  assert_eq(r2.get(0, 0), @types.Int32(3))
+  let err = run_err("SELECT \"unterminated FROM kw", cat2)
+  assert_true(err.to_string().contains("unterminated quoted identifier"))
+}
+
+///|
+test "integer literals widen: int32, int64, float64" {
+  let cat = kw_catalog()
+  let r = run(
+    "SELECT 2147483648 AS big, 2147483647 AS fits32, \"left\" + 2147483648 AS s FROM events LIMIT 1",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(2147483648L))
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(2147483647))
+  assert_eq(r.get(0, 2), @types.Scalar::Int64(2147483658L)) // int32 col + int64 lit
+  assert_eq(r.types()[2], @types.Int64)
+}
+
+///|
+test "empty scalar subquery folds to NULL" {
+  let cat = q6_catalog()
+  // zero rows: comparison with NULL is UNKNOWN for every row -> empty, not an error
+  let r = run(
+    "SELECT l_quantity FROM lineitem WHERE l_extendedprice = (SELECT l_extendedprice FROM lineitem WHERE l_shipdate = date '1999-01-01')",
+    cat,
+  )
+  assert_eq(r.row_count(), 0)
+  let r2 = run(
+    "SELECT l_quantity FROM lineitem WHERE l_extendedprice > (SELECT l_extendedprice FROM lineitem WHERE l_shipdate = date '1999-01-01')",
+    cat,
+  )
+  assert_eq(r2.row_count(), 0)
+  // more than one row is still a bind error
+  let err = run_err(
+    "SELECT l_quantity FROM lineitem WHERE l_extendedprice = (SELECT l_extendedprice FROM lineitem)",
+    cat,
+  )
+  assert_true(err.to_string().contains("at most one row"))
+}
