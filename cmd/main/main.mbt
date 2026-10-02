@@ -47,14 +47,14 @@ fn exec_command(args : Array[String]) -> Unit raise {
   if paths.length() == 0 || i >= n {
     raise cli_fail(exec_usage())
   }
-  let sb = StringBuilder()
-  for j in i..<n {
-    if j > i {
-      sb.write_char(' ')
-    }
-    sb.write_string(args[j])
+  if n - i > 1 {
+    // words after a quoted SQL would otherwise silently glue onto the
+    // query and change its meaning (a stray word becomes a table alias)
+    raise cli_fail(
+      "sql must be one quoted argument, got \{n - i} words; wrap it: moonlake exec --csv t.csv \"SELECT ...\"",
+    )
   }
-  let sql = sb.to_string()
+  let sql = args[i]
   let cat = @catalog.Catalog::new()
   for pair in paths {
     let entry = match pair.0 {
@@ -68,6 +68,23 @@ fn exec_command(args : Array[String]) -> Unit raise {
         }
     }
     cat.register(entry)
+  }
+  // a misspelled --date-col would otherwise be a silent no-op and only
+  // surface later as a confusing int32-vs-date type mismatch
+  for dc in date_cols {
+    let mut found = false
+    for _, entry in cat.tables {
+      for col in entry.schema.columns {
+        if col.name == dc {
+          found = true
+        }
+      }
+    }
+    if !found {
+      raise cli_fail(
+        "--date-col: no column named \"\{dc}\" in any scanned table",
+      )
+    }
   }
   if explain {
     println(
