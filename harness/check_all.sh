@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DATA=harness/data/sf001
+DATA=${MOONLAKE_DATA:-harness/data/sf001}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

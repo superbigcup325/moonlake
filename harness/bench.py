@@ -4,7 +4,8 @@
 #
 # Usage:
 #   moon build cmd/main                      # compile first
-#   uv run --with duckdb python harness/bench.py
+#   uv run --with duckdb python harness/bench.py          # SF0.01
+#   uv run --with duckdb python harness/bench.py 0.1      # SF0.1
 
 import pathlib
 import subprocess
@@ -14,7 +15,9 @@ import time
 import duckdb
 
 root = pathlib.Path(__file__).parent.parent
-data = root / "harness" / "data" / "sf001"
+sf = sys.argv[1] if len(sys.argv) > 1 else "0.01"
+tag = f"sf{sf.replace('.', '')}"
+data = root / "harness" / "data" / tag
 
 BIN = root / "_build" / "native" / "debug" / "build" / "cmd" / "main" / "main.exe"
 
@@ -45,7 +48,7 @@ def main() -> int:
         print(f"missing {BIN}; run `moon build cmd/main` first", file=sys.stderr)
         return 1
     con = duckdb.connect()
-    con.execute("CALL dbgen(sf = 0.01)")
+    con.execute(f"CALL dbgen(sf = {float(sf)})")
 
     print("| query | moonlake native (best of 3) | duckdb (best of 3) |")
     print("|---|---|---|")

@@ -482,5 +482,11 @@ order by
 """,
 }
 
+# Q6 over the parquet-shaped lineitem (doubles instead of decimals):
+# the golden for the parquet scan adapter chain. The CASTS subquery is
+# byte-identical to the exported parquet, so duckdb computes the same
+# numbers moonlake will see.
+QUERIES["q6p"] = QUERIES["q6"].replace("from lineitem", f"from ({CASTS}) as li")
+
 for name, sql in QUERIES.items():
     golden(name, sql)
