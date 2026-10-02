@@ -245,3 +245,53 @@ pub fn explain(
   sb.write_string("\n")
   sb.to_string()
 }
+
+///|
+/// Whole result as one JSON array line. Strings are escaped; SQL NULL
+/// becomes null.
+pub fn SelectResult::to_json(self : SelectResult) -> String {
+  let sb = StringBuilder()
+  sb.write_char('[')
+  for r in 0..<self.row_count() {
+    if r > 0 {
+      sb.write_char(',')
+    }
+    sb.write_char('{')
+    for c in 0..<self.names().length() {
+      if c > 0 {
+        sb.write_char(',')
+      }
+      sb.write_char('"')
+      sb.write_string(json_escape(self.names()[c]))
+      sb.write_string("\":")
+      match self.get(r, c) {
+        @types.Null => sb.write_string("null")
+        @types.Str(v) => {
+          sb.write_char('"')
+          sb.write_string(json_escape(v))
+          sb.write_char('"')
+        }
+        other => sb.write_string(other.to_string())
+      }
+    }
+    sb.write_char('}')
+  }
+  sb.write_char(']')
+  sb.to_string()
+}
+
+///|
+fn json_escape(s : String) -> String {
+  let sb = StringBuilder()
+  for ch in s {
+    match ch {
+      '"' => sb.write_string("\\\"")
+      '\\' => sb.write_string("\\\\")
+      '\n' => sb.write_string("\\n")
+      '\r' => sb.write_string("\\r")
+      '\t' => sb.write_string("\\t")
+      _ => sb.write_char(ch)
+    }
+  }
+  sb.to_string()
+}

@@ -141,6 +141,7 @@ pub fn SelectResult::batch(Self) -> @types.DataBatch
 pub fn SelectResult::get(Self, Int, Int) -> @types.Scalar
 pub fn SelectResult::names(Self) -> Array[String]
 pub fn SelectResult::row_count(Self) -> Int
+pub fn SelectResult::to_json(Self) -> String
 pub fn SelectResult::types(Self) -> Array[@types.DataType]
 
 pub(all) enum TableRef {

@@ -94,7 +94,7 @@ fn exec_command(args : Array[String]) -> Unit {
     }
   }
   if json {
-    println(join_json(result))
+    println(result.to_json())
   } else {
     // pipe-friendly output: header row, then '|' separated values
     println(join_names(result.names()))
@@ -102,56 +102,6 @@ fn exec_command(args : Array[String]) -> Unit {
       println(join_row(result, r))
     }
   }
-}
-
-///|
-/// Whole result as one JSON array line. Strings are escaped; NULL
-/// becomes null.
-fn join_json(result : @engine.SelectResult) -> String {
-  let sb = StringBuilder()
-  sb.write_char('[')
-  for r in 0..<result.row_count() {
-    if r > 0 {
-      sb.write_char(',')
-    }
-    sb.write_char('{')
-    for c in 0..<result.names().length() {
-      if c > 0 {
-        sb.write_char(',')
-      }
-      sb.write_char('"')
-      sb.write_string(json_escape(result.names()[c]))
-      sb.write_string("\":")
-      match result.get(r, c) {
-        @types.Null => sb.write_string("null")
-        @types.Str(v) => {
-          sb.write_char('"')
-          sb.write_string(json_escape(v))
-          sb.write_char('"')
-        }
-        other => sb.write_string(other.to_string())
-      }
-    }
-    sb.write_char('}')
-  }
-  sb.write_char(']')
-  sb.to_string()
-}
-
-///|
-fn json_escape(s : String) -> String {
-  let sb = StringBuilder()
-  for ch in s {
-    match ch {
-      '"' => sb.write_string("\\\"")
-      '\\' => sb.write_string("\\\\")
-      '\n' => sb.write_string("\\n")
-      '\r' => sb.write_string("\\r")
-      '\t' => sb.write_string("\\t")
-      _ => sb.write_char(ch)
-    }
-  }
-  sb.to_string()
 }
 
 ///|

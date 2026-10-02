@@ -1,0 +1,16 @@
+import {
+  "superbigcup325/moonlake",
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/sources/csv",
+}
+
+pkgtype(kind: "foreign_library")
+
+options(
+  link: {
+    "wasm-gc": {
+      "exports": [ "run", "version" ],
+      "use-js-builtin-string": true,
+    }
+  }
+)
