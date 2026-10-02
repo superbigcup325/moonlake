@@ -10,7 +10,7 @@ Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet file
 
 moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) workloads:
 
-- Register CSV/Parquet files as tables, run SQL, get columnar result batches.
+- Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool, date, string) — out-of-range values widen, never wrap.
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory.
 
@@ -18,7 +18,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 
 - `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
 - `INNER` / `LEFT` / `CROSS` joins (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
-- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL)
+- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL). Integer literals widen int32 → int64 → float64 to stay exact. Identifiers: the DATE-part keywords `year`/`month`/`day`/`date` double as bare column/table/alias names; double-quoted identifiers (`"left"`, with `""` escape) reach every other reserved word
 - Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
 - Derived tables (`FROM (SELECT ...) AS t`), non-correlated scalar subqueries and `IN` / `NOT IN (SELECT ...)`
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At a `LEFT` join, WHERE predicates on the build side stay post-join — filtering build rows would change which probe rows NULL-extend
@@ -74,13 +74,19 @@ moon add superbigcup325/moonlake
 // scan into one; note the argument order: content/name, not name/content
 
 ///|
-let cat = @catalog.Catalog::new()
-cat.register(@csv.scan_string("region,amount\nnorth,100\n", "events"))
+fn main raise {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("region,amount\nnorth,100\n", "events"))
 
-///|
-let result = @moonlake.execute(
-  "SELECT region, count(*) FROM events GROUP BY region", cat,
-)
+  // read results back cell by cell: names() gives the columns,
+  // row_count() the rows, get(row, col) a @types.Scalar (null via Null)
+  let result = @moonlake.execute(
+    "SELECT region, count(*) FROM events GROUP BY region", cat,
+  )
+  for r in 0..<result.row_count() {
+    println(result.get(r, 0).to_string() + "|" + result.get(r, 1).to_string())
+  }
+}
 ```
 
 ## Where moonlake sits

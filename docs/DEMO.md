@@ -69,7 +69,8 @@ the data from scratch.
 ## 3. Reproduce the benchmark
 
 ```bash
-moon build cmd/main
+moon build cmd/main --target native   # the module's preferred target is
+                                      # wasm-gc; the benchmark wants native
 uv run --with duckdb python harness/bench.py
 ```
 

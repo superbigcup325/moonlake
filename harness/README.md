@@ -37,5 +37,7 @@ python3 harness/compare.py harness/data/sf001/q6_golden.txt /tmp/out.txt
 `check_all.sh` runs every golden query through the CLI and diffs each
 against its golden file; multi-table queries pass one `--csv` per
 table, and the parquet chain passes `--parquet` plus the DATE columns
-via `--date-col`. CI runs the same script after regenerating the data
-from scratch (job `tpch`).
+via `--date-col`. The data directory comes from `MOONLAKE_DATA`
+(default `harness/data/sf001`); point it at `harness/data/sf01` for
+the SF0.1 cross-validation. CI runs the same script after regenerating
+the data from scratch (job `tpch`).
