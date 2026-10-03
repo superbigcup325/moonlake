@@ -144,6 +144,7 @@ pub(all) struct Select {
   limit : Int?
   offset : Int? // rows skipped before LIMIT applies
   distinct : Bool // SELECT DISTINCT: dedupe the projected rows
+  setop : (Bool, Select)? // UNION [ALL] right; ALL = keep duplicates
 } derive(Eq, Debug)
 
 ///|

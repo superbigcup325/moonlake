@@ -125,7 +125,24 @@ fn show_tok(t : Tok) -> String {
 pub fn parse_select(sql : String) -> Select raise @types.SqlError {
   let p : Parser = { toks: lex_sql(sql), pos: 0, }
   p.expect(KwSelect)
-  let sel = parse_select_body(p)
+  let mut sel = parse_select_body(p)
+  // UNION [ALL|DISTINCT] chains associate left; per-branch ORDER BY is
+  // not supported (parenthesize into derived tables for that)
+  while p.peek() is Ident(un) && ascii_lower(un) == "union" {
+    let _ = p.advance()
+    let all = if p.eat(KwDistinct) {
+      false
+    } else if p.peek() is Ident(al) && ascii_lower(al) == "all" {
+      let _ = p.advance()
+      true
+    } else {
+      false
+    }
+    p.expect(KwSelect)
+    let right_core = parse_select_body(p)
+    // the accumulated chain becomes the LEFT operand of the new op
+    sel = { ..right_core, setop: Some((all, sel)), }
+  }
   p.expect(Eof)
   sel
 }
@@ -196,7 +213,18 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   } else {
     None
   }
-  { from, filter, group_by, having, items, order_by, limit, offset, distinct, }
+  {
+    from,
+    filter,
+    group_by,
+    having,
+    items,
+    order_by,
+    limit,
+    offset,
+    distinct,
+    setop: None,
+  }
 }
 
 ///|
@@ -259,11 +287,12 @@ fn parse_alias_opt(p : Parser) -> String? raise @types.SqlError {
     }
   }
   match ident_like_tok(p.peek()) {
-    Some(name) => {
+    // a bare alias must not swallow the UNION connective
+    Some(name) if ascii_lower(name) != "union" => {
       let _ = p.advance()
       Some(name)
     }
-    None => None
+    _ => None
   }
 }
 
@@ -318,12 +347,12 @@ fn parse_item(p : Parser) -> SelectItem raise @types.SqlError {
     }
   } else {
     match ident_like_tok(p.peek()) {
-      // bare alias: SELECT sum(x) revenue FROM ...
-      Some(name) => {
+      // bare alias: SELECT sum(x) revenue FROM ...; never UNION
+      Some(name) if ascii_lower(name) != "union" => {
         let _ = p.advance()
         Some(name)
       }
-      None => None
+      _ => None
     }
   }
   { expr, label, }

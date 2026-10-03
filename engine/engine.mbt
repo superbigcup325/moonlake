@@ -56,6 +56,10 @@ fn run_parsed(
   sel : Select,
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
+  match sel.setop {
+    Some((all, right_sel)) => return run_setop(sel, all, right_sel, catalog)
+    None => ()
+  }
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   for item in sel.from {
@@ -130,6 +134,95 @@ fn run_parsed(
     order_limit(projected, bq.order_keys, bq.limit, bq.offset)
   }
   { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// UNION [ALL]: flatten the right-nested chain into cores, merge left
+/// to right honoring each op (bare UNION dedupes, ALL keeps
+/// duplicates), then apply the trailing ORDER BY / OFFSET / LIMIT /
+/// DISTINCT, which belongs to the whole union. ORDER BY over a union
+/// resolves output names and ordinals only; column counts and types
+/// must match exactly.
+fn run_setop(
+  sel : Select,
+  _all : Bool,
+  _right_sel : Select,
+  catalog : @catalog.Catalog,
+) -> SelectResult raise @types.SqlError {
+  // the root carries the trailing window (ORDER BY / LIMIT / OFFSET /
+  // DISTINCT written after the last core)
+  let window_sel = sel
+  // walk root -> first: the arrays come out in reverse execution order
+  let walked : Array[Select] = []
+  let walked_ops : Array[Bool] = []
+  let mut cur = sel
+  while cur.setop is Some((all2, left)) {
+    walked.push({ ..cur, setop: None, })
+    walked_ops.push(all2)
+    cur = left
+  }
+  walked.push({ ..cur, setop: None, })
+  let cores : Array[Select] = walked.rev()
+  let ops : Array[Bool] = walked_ops.rev() // ops[i-1] joins cores i-1, i
+  let first = run_parsed(cores[0], catalog)
+  let names = first.names()
+  let types = first.types()
+  let mut batch = first.batch()
+  for i in 1..<cores.length() {
+    let right = run_parsed(cores[i], catalog)
+    if names.length() != right.names().length() {
+      raise @types.SqlError::Bind(
+        "UNION requires equal column counts: \{names.length()} vs \{right.names().length()}",
+      )
+    }
+    for c in 0..<names.length() {
+      if types[c] != right.types()[c] {
+        raise @types.SqlError::Bind(
+          "UNION column \{c + 1} type mismatch: \{types[c].to_string()} vs \{right.types()[c].to_string()}",
+        )
+      }
+    }
+    batch = concat_batches([batch, right.batch()], types)
+    if !ops[i - 1] {
+      batch = dedupe_rows(batch) // bare UNION is DISTINCT
+    }
+  }
+  let order_keys : Array[(Int, Bool, Bool?)] = []
+  for item in window_sel.order_by {
+    let idx : Int? = match item.key {
+      Col(name) => {
+        let mut found = None
+        for i, name2 in names {
+          if name2 == name {
+            found = Some(i)
+          }
+        }
+        found
+      }
+      Lit(@types.Int32(v)) =>
+        if v >= 1 && v <= names.length() {
+          Some(v - 1)
+        } else {
+          raise @types.SqlError::Bind("ORDER BY position \{v} is out of range")
+        }
+      _ => None
+    }
+    match idx {
+      Some(i) => order_keys.push((i, item.desc, item.nulls_first))
+      None =>
+        raise @types.SqlError::Bind(
+          "ORDER BY over UNION must reference an output column (v1 subset)",
+        )
+    }
+  }
+  let batch = order_limit(
+    batch,
+    order_keys,
+    window_sel.limit,
+    window_sel.offset,
+  )
+  let batch = if window_sel.distinct { dedupe_rows(batch) } else { batch }
+  { names, types, batch, }
 }
 
 ///|

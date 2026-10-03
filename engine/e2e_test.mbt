@@ -1089,3 +1089,44 @@ test "OFFSET windows past the first rows" {
   assert_eq(r2.row_count(), 2)
   assert_eq(r2.get(0, 0), @types.Int32(4))
 }
+
+///|
+test "UNION chains merge left to right with the trailing window" {
+  let cat = join_catalog()
+  // UNION ALL keeps duplicates; bare UNION dedupes; the trailing
+  // ORDER BY belongs to the whole union
+  let r = run(
+    "SELECT cid AS k FROM customers WHERE cid = 1 UNION ALL SELECT custkey AS k FROM orders WHERE custkey > 0 UNION SELECT cid AS k FROM customers WHERE cid = 3 ORDER BY k",
+    cat,
+  )
+  // [1] ALL [1,3] = [1,1,3], distinct -> {1,3}
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  // ALL after a DISTINCT stage keeps its duplicates
+  let r2 = run(
+    "SELECT cid AS k FROM customers WHERE cid = 1 UNION SELECT cid AS k FROM customers WHERE cid = 2 UNION ALL SELECT custkey AS k FROM orders WHERE custkey > 0 ORDER BY k",
+    cat,
+  )
+  // {1} distinct [2] -> [1,2], ALL [1,1,3] -> [1,2,1,1,3]
+  assert_eq(r2.row_count(), 5)
+  assert_eq(r2.get(0, 0), @types.Int32(1))
+  assert_eq(r2.get(2, 0), @types.Int32(1))
+  assert_eq(r2.get(4, 0), @types.Int32(3))
+  // trailing LIMIT applies to the union, not the last branch
+  let r3 = run(
+    "SELECT cid AS k FROM customers UNION ALL SELECT custkey AS k FROM orders WHERE custkey > 0 ORDER BY k DESC LIMIT 3",
+    cat,
+  )
+  assert_eq(r3.row_count(), 3)
+  assert_eq(r3.get(0, 0), @types.Int32(3))
+  // column count mismatch is a bind error
+  let err = run_err(
+    "SELECT cid, seg FROM customers UNION SELECT cid FROM customers", cat,
+  )
+  assert_true(err.to_string().contains("equal column counts"))
+  let err2 = run_err(
+    "SELECT cid FROM customers UNION SELECT seg FROM customers", cat,
+  )
+  assert_true(err2.to_string().contains("type mismatch"))
+}
