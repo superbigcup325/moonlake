@@ -97,6 +97,8 @@ pub(all) enum JoinKind {
   Left // LEFT [OUTER] JOIN ... ON
   Right // RIGHT [OUTER] JOIN ... ON: preserves the joining table
   Full // FULL [OUTER] JOIN ... ON: preserves both sides
+  Semi // synthetic: correlated EXISTS decorrelated by the binder
+  Anti // synthetic: correlated NOT EXISTS / NOT IN decorrelated
   Cross // CROSS JOIN
 } derive(Eq, Debug)
 

@@ -765,8 +765,26 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
       p.expect(RParen)
       Cast(e, dt)
     }
-    "substring"
-    | "length"
+    "substring" => {
+      // both SQL forms: SUBSTRING(x, start, len) and the positional
+      // SUBSTRING(x FROM start [FOR len])
+      let args : Array[LExpr] = []
+      args.push(parse_or(p))
+      if p.eat(KwFrom) {
+        args.push(parse_or(p))
+        if p.peek() is Ident(fw) && ascii_lower(fw) == "for" {
+          let _ = p.advance()
+          args.push(parse_or(p))
+        }
+      } else {
+        while p.eat(Comma) {
+          args.push(parse_or(p))
+        }
+      }
+      p.expect(RParen)
+      Func("substring", args)
+    }
+    "length"
     | "upper"
     | "lower"
     | "trim"

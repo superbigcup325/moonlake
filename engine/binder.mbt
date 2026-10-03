@@ -206,19 +206,63 @@ fn bind_select(
       },
     )
   }
+  // GROUP BY may reference select-list aliases (Q22's group by
+  // cntrycode): substitute the aliased expression structurally
+  let group_by : Array[LExpr] = []
+  for g in sel.group_by {
+    let g = match g {
+      Col(name) => {
+        let mut hit : LExpr? = None
+        for item in sel.items {
+          match item.label {
+            Some(l) => if l == name { hit = Some(item.expr) }
+            None => ()
+          }
+        }
+        match hit {
+          Some(e) => e
+          None => g
+        }
+      }
+      other => other
+    }
+    group_by.push(g)
+  }
   let b : Binder = {
     slots: schemas,
     quals,
     offsets: [],
     runner,
-    group_l: sel.group_by,
+    group_l: group_by,
     group_types: [],
     aggs: [],
     agg_keys: [],
   }
+  // GROUP BY may reference select-list aliases (Q22's group by
+  // cntrycode): substitute the aliased expression structurally
+  let group_by : Array[LExpr] = []
+  for g in sel.group_by {
+    let g = match g {
+      Col(name) => {
+        let mut hit : LExpr? = None
+        for item in sel.items {
+          match item.label {
+            Some(l) => if l == name { hit = Some(item.expr) }
+            None => ()
+          }
+        }
+        match hit {
+          Some(e) => e
+          None => g
+        }
+      }
+      other => other
+    }
+    group_by.push(g)
+  }
   let (steps, deferred) = b.plan_joins(sel)
   let group_exprs : Array[PhysExpr] = []
-  for g in sel.group_by {
+  for g in group_by {
     let (pe, dt) = b.bind(g, Flat)
     group_exprs.push(pe)
     b.group_types.push(dt)

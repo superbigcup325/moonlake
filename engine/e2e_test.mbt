@@ -1034,12 +1034,20 @@ test "EXISTS and NOT EXISTS gate rows on the subquery" {
     cat,
   )
   assert_eq(r5.get(0, 1), @types.Int32(1))
-  // correlated references are still out of scope, with a clear error
-  let err = run_err(
-    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE cid = custkey)",
+  // correlated EXISTS decorrelates into a semi join
+  // (customers 1 and 3 have orders; 2 does not)
+  let r6 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE cid = custkey) ORDER BY cid",
     cat,
   )
-  assert_true(err.to_string().contains("unknown column"))
+  assert_eq(r6.row_count(), 2)
+  // customers 1 and 3 have orders; 2 does not
+  let r7 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT oid FROM orders WHERE cid = custkey) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r7.row_count(), 1)
+  assert_eq(r7.get(0, 0), @types.Int32(2))
 }
 
 ///|
@@ -1162,4 +1170,37 @@ test "RIGHT and FULL joins preserve their kept sides" {
   // order 103 has a NULL custkey: preserved, never matched
   assert_eq(r3.get(4, 0), @types.Scalar::Null)
   assert_eq(r3.get(4, 1), @types.Int32(103))
+}
+
+///|
+test "correlated IN and NOT IN decorrelate with SQL NULL rules" {
+  let cat = join_catalog()
+  // customers 1 and 3 have orders; 2 does not
+  let r = run(
+    "SELECT cid FROM customers WHERE cid IN (SELECT custkey FROM orders) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  let r2 = run(
+    "SELECT cid FROM customers WHERE cid NOT IN (SELECT custkey FROM orders) ORDER BY cid",
+    cat,
+  )
+  // custkey contains a NULL: NOT IN is unknown for every row
+  assert_eq(r2.row_count(), 0)
+  // NOT IN over a NULL-free select list keeps the non-members
+  let r3 = run(
+    "SELECT cid FROM customers WHERE cid NOT IN (SELECT oid FROM orders) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 3)
+  // the residual shape: correlation plus an extra inner predicate
+  let r4 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE custkey = cid AND amount > 15) ORDER BY cid",
+    cat,
+  )
+  // only order 101 (custkey 1, amount 20) passes the residual
+  assert_eq(r4.row_count(), 1)
+  assert_eq(r4.get(0, 0), @types.Int32(1))
 }

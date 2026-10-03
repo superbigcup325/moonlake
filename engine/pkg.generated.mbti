@@ -63,6 +63,8 @@ pub(all) enum JoinKind {
   Left
   Right
   Full
+  Semi
+  Anti
   Cross
 } derive(Eq, @debug.Debug)
 pub fn JoinKind::equal(Self, Self) -> Bool

@@ -540,6 +540,9 @@ fn join_step(
   if step.kind is Right {
     return join_swapped(acc, right, step)
   }
+  if step.kind is Semi || step.kind is Anti {
+    return join_semi(acc, right, step)
+  }
   let right_width = step.right_width
   let left_width = step.out_dtypes.length() - right_width
   // build: one columnar batch, keys evaluated once over it
@@ -758,6 +761,134 @@ fn combined_row(
     row.push(build.columns()[c].get(brow))
   }
   row
+}
+
+///|
+/// Semi/anti join against a pre-executed inner batch (the
+/// decorrelation of a correlated EXISTS / [NOT] IN): probe rows pass a
+/// SEMI when some inner row shares the (non-null) key and satisfies the
+/// residual, an ANTI when none does and the probe key is non-null.
+/// The inner side contributes no output columns.
+fn join_semi(
+  acc : Array[@types.DataBatch],
+  inner : Array[@types.DataBatch],
+  step : JoinStep,
+) -> @types.DataBatch raise @types.SqlError {
+  let anti = step.kind is Anti
+  let inner_batch = concat_batches(inner, [])
+  let n_inner = inner_batch.row_count()
+  let int_map : Map[Int64, Array[Int]] = Map([])
+  let str_map : Map[String, Array[Int]] = Map([])
+  let inner_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_r {
+    inner_keys.push(eval_vec(e, inner_batch))
+  }
+  let single_int = step.keys_r.length() == 1 &&
+    inner_keys[0] is (@types.I32(_, _) | @types.I64(_, _))
+  if single_int {
+    let d : FixedArray[Int64] = match inner_keys[0] {
+      @types.I32(d, _) => {
+        let od : FixedArray[Int64] = FixedArray::make(n_inner, 0L)
+        for i in 0..<n_inner {
+          od[i] = d[i].to_int64()
+        }
+        od
+      }
+      @types.I64(d, _) => d
+      _ => abort("unreachable: single_int checked above")
+    }
+    let valid = v_validity(inner_keys[0])
+    for r in 0..<n_inner {
+      if valid[r] {
+        // NULL inner keys match nothing
+        let k = d[r]
+        match int_map.get(k) {
+          Some(ids) => ids.push(r)
+          None => int_map[k] = [r]
+        }
+      }
+    }
+  } else {
+    for r in 0..<n_inner {
+      let kv : Array[@types.Scalar] = []
+      for c in inner_keys {
+        kv.push(c.get(r))
+      }
+      if key_has_null(kv) {
+        continue
+      }
+      let key = canonical_key(kv)
+      match str_map.get(key) {
+        Some(ids) => ids.push(r)
+        None => str_map[key] = [r]
+      }
+    }
+  }
+  let left = concat_batches(
+    acc,
+    head_dtypes(step.out_dtypes, step.out_dtypes.length() - step.right_width),
+  )
+  let n_left = left.row_count()
+  let left_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_l {
+    left_keys.push(eval_vec(e, left))
+  }
+  let left_ids : Array[Int] = []
+  for r in 0..<n_left {
+    let kv : Array[@types.Scalar] = []
+    for c in left_keys {
+      kv.push(c.get(r))
+    }
+    let null_key = key_has_null(kv)
+    let mut matched = false
+    if !null_key {
+      if single_int {
+        let k = match left_keys[0].get(r) {
+          @types.Int32(v) => v.to_int64()
+          @types.Int64(v) => v
+          _ => 0L
+        }
+        match int_map.get(k) {
+          Some(ids) =>
+            for id in ids {
+              if residual_passes(step.residual, left, r, inner_batch, id) {
+                matched = true
+              }
+            }
+          None => ()
+        }
+      } else {
+        let key = canonical_key(kv)
+        match str_map.get(key) {
+          Some(ids) =>
+            for id in ids {
+              if residual_passes(step.residual, left, r, inner_batch, id) {
+                matched = true
+              }
+            }
+          None => ()
+        }
+      }
+    }
+    // SEMI: keep matches. ANTI: keep non-matches with a non-null key
+    // (a null correlation key is UNKNOWN, which excludes the row)
+    let keep = if anti { !matched && !null_key } else { matched }
+    if keep {
+      left_ids.push(r)
+    }
+  }
+  // full-width assembly like a plain join: the layout stays flat so the
+  // residual and projection see every column; the projection drops the
+  // inner columns naturally
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<left.columns().length() {
+    columns.push(gather(left.columns()[c], left_ids))
+  }
+  for c in 0..<inner_batch.columns().length() {
+    let right_ids : Array[Int] = Array::make(left_ids.length(), 0)
+    columns.push(gather(inner_batch.columns()[c], right_ids))
+  }
+  @types.DataBatch::new(columns, left_ids.length())
 }
 
 ///|

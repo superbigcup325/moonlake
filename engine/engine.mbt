@@ -56,22 +56,37 @@ fn run_parsed(
   sel : Select,
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
+  // correlated EXISTS / IN conjuncts become semi/anti joins against
+  // pre-executed synthetic tables before anything else runs
+  let (sel, extra_schemas, extra_batches) = decorrelate(sel, catalog)
+  let schemas : Array[@catalog.TableSchema] = []
+  let tables : Array[Array[@types.DataBatch]] = []
   match sel.setop {
     Some((all, right_sel)) => return run_setop(sel, all, right_sel, catalog)
     None => ()
   }
-  let schemas : Array[@catalog.TableSchema] = []
-  let tables : Array[Array[@types.DataBatch]] = []
   for item in sel.from {
     match item.table {
-      Named(name) =>
-        match catalog.lookup(name) {
-          Some(entry) => {
-            schemas.push(entry.schema)
-            tables.push(entry.batches)
+      Named(name) => {
+        // synthetic semi/anti tables live here, not in the catalog
+        let mut hit = false
+        for i in 0..<extra_schemas.length() {
+          if extra_schemas[i].table == name {
+            schemas.push(extra_schemas[i])
+            tables.push(extra_batches[i])
+            hit = true
           }
-          None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
         }
+        if !hit {
+          match catalog.lookup(name) {
+            Some(entry) => {
+              schemas.push(entry.schema)
+              tables.push(entry.batches)
+            }
+            None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
+          }
+        }
+      }
       Sub(inner) => {
         let r = run_parsed(inner, catalog)
         let names = r.names()
@@ -248,6 +263,13 @@ pub fn explain(
     }
   }
   let runner : SubqueryRunner = { catalog, }
+  // the executed plan includes decorrelated semi/anti joins; explain
+  // must render the same thing (the pass executes the inner queries,
+  // which the plan depends on anyway)
+  let (sel, extra_schemas, _extra_batches) = decorrelate(sel, catalog)
+  for t in extra_schemas {
+    schemas.push(t)
+  }
   let bq = prune_bound(bind_select(sel, schemas, runner), schemas).bq
   let sb = StringBuilder()
   for i, step in bq.steps {
@@ -272,6 +294,8 @@ pub fn explain(
           Left => "left"
           Right => "right"
           Full => "full"
+          Semi => "semi"
+          Anti => "anti"
           Cross => "cross"
         },
       )

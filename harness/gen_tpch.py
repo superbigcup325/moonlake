@@ -488,5 +488,11 @@ order by
 # numbers moonlake will see.
 QUERIES["q6p"] = QUERIES["q6"].replace("from lineitem", f"from ({CASTS}) as li")
 
+# Q21/Q22 exercise the correlated-subquery decorrelation (semi/anti
+# joins); both run on the official text.
+qdir = pathlib.Path(__file__).parent / "queries"
+QUERIES["q21"] = (qdir / "q21.sql").read_text()
+QUERIES["q22"] = (qdir / "q22.sql").read_text()
+
 for name, sql in QUERIES.items():
     golden(name, sql)
