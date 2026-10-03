@@ -802,3 +802,75 @@ test "empty scalar subquery folds to NULL" {
   )
   assert_true(err.to_string().contains("at most one row"))
 }
+
+///|
+/// Fixture for projection pruning: two columns the queries want, three
+/// they never mention.
+fn prune_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(
+      "id,keep_a,drop1,keep_b,drop2\n1,10,99,1.5,x\n2,20,98,2.5,y\n3,30,97,3.5,z\n",
+      "t",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "pruned reads agree with SELECT * over the same rows" {
+  let cat = prune_catalog()
+  let star = run("SELECT * FROM t WHERE keep_a > 10 ORDER BY id", cat)
+  let narrow = run(
+    "SELECT keep_a, keep_b FROM t WHERE keep_a > 10 ORDER BY keep_a", cat,
+  )
+  assert_eq(narrow.row_count(), star.row_count())
+  assert_eq(narrow.get(0, 0), star.get(0, 1))
+  assert_eq(narrow.get(0, 1), star.get(0, 3))
+  // the dropped columns still work when referenced directly
+  assert_eq(
+    run("SELECT drop1 FROM t WHERE id = 1", cat).get(0, 0),
+    @types.Int32(99),
+  )
+}
+
+///|
+test "explain reports pruned column counts" {
+  let cat = prune_catalog()
+  // keep_a plus the filter column: id/keep_b/drop2 are dropped
+  let plan = @engine.explain("SELECT keep_a FROM t WHERE drop1 > 0", cat) catch {
+    e => abort("\{e}")
+  }
+  assert_true(plan.contains("scan t (2 cols)"))
+  // SELECT * references everything: no narrowing
+  let full = @engine.explain("SELECT * FROM t", cat) catch {
+    e => abort("\{e}")
+  }
+  assert_true(full.contains("scan t (5 cols)"))
+}
+
+///|
+test "joins prune to referenced columns only" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k,a\n1,10\n2,20\n3,30\n", "l") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("k,b\n1,100\n2,200\n4,400\n", "r") catch {
+      e => abort("\{e}")
+    },
+  )
+  // r keeps only its key column; LEFT NULL extension still lands
+  let r = run(
+    "SELECT a FROM l LEFT JOIN r ON l.k = r.k WHERE r.k IS NULL ORDER BY a", cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(30))
+  // count(*) over a join where one side contributes no columns at all
+  let c = run("SELECT count(*) FROM l, r WHERE l.k >= 2", cat)
+  assert_eq(c.get(0, 0), @types.Int64(6))
+}

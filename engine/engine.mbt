@@ -93,8 +93,14 @@ fn run_parsed(
     }
   }
   let runner : SubqueryRunner = { catalog, }
-  let bq = bind_select(sel, schemas, runner)
-  let joined = exec_joins(tables, bq.steps, bq.deferred)
+  let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
+  let bq = plan.bq
+  // drop unreferenced columns up front; the kept vectors are shared
+  let narrowed : Array[Array[@types.DataBatch]] = []
+  for k in 0..<tables.length() {
+    narrowed.push(narrow_batches(tables[k], plan.table_cols[k]))
+  }
+  let joined = exec_joins(narrowed, bq.steps, bq.deferred)
   let kept : Array[@types.DataBatch] = if bq.aggregate {
     let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
     [
@@ -138,7 +144,7 @@ pub fn explain(
     }
   }
   let runner : SubqueryRunner = { catalog, }
-  let bq = bind_select(sel, schemas, runner)
+  let bq = prune_bound(bind_select(sel, schemas, runner), schemas).bq
   let sb = StringBuilder()
   for i, step in bq.steps {
     if i == 0 {

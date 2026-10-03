@@ -391,6 +391,22 @@ fn order_limit(
 }
 
 ///|
+/// Drop unreferenced columns from every batch of a table. The kept
+/// ColumnVectors are shared with the source batch, not copied.
+fn narrow_batches(
+  batches : Array[@types.DataBatch],
+  cols : Array[Int],
+) -> Array[@types.DataBatch] {
+  batches.map(fn(b) {
+    let columns : Array[@types.ColumnVector] = []
+    for c in cols {
+      columns.push(b.columns()[c])
+    }
+    @types.DataBatch::new(columns, b.row_count())
+  })
+}
+
+///|
 /// Execute the planned join chain left-deep over the FROM tables.
 fn exec_joins(
   tables : Array[Array[@types.DataBatch]],
