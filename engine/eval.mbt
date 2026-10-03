@@ -102,11 +102,16 @@ fn promote(s : @types.Scalar, dt : @types.DataType) -> @types.Scalar {
 fn eval_mask(e : PhysExpr, batch : @types.DataBatch) -> FixedArray[Bool] {
   let n = batch.row_count()
   let mask : FixedArray[Bool] = FixedArray::make(n, false)
-  for r in 0..<n {
-    match eval_scalar(e, batch, r) {
-      @types.Boolean(v) => mask[r] = v
-      _ => mask[r] = false // NULL never passes WHERE
-    }
+  match eval_vec(e, batch) {
+    @types.BoolV(d, valid) =>
+      for r in 0..<n {
+        mask[r] = valid[r] && d[r]
+      }
+    _ =>
+      // predicates are Bool by construction; stay safe via the interpreter
+      for r in 0..<n {
+        mask[r] = eval_scalar(e, batch, r) is @types.Boolean(true)
+      }
   }
   mask
 }

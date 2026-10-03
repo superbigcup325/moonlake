@@ -106,7 +106,11 @@ fn run_parsed(
   } else {
     joined
   }
-  let projected = project(concat_batches(kept), bq.out_exprs, bq.out_types)
+  let projected = project(
+    concat_batches(kept, bq.steps[bq.steps.length() - 1].out_dtypes),
+    bq.out_exprs,
+    bq.out_types,
+  )
   let batch = order_limit(projected, bq.order_keys, bq.limit)
   { names: bq.names, types: bq.out_types, batch, }
 }

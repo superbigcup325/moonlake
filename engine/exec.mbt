@@ -98,23 +98,17 @@ fn as_double(v : @types.Scalar) -> Double? {
 }
 
 ///|
-fn acc_step(
-  acc : Acc,
-  spec : AggSpec,
-  batch : @types.DataBatch,
-  r : Int,
-) -> Acc {
+/// One running accumulator per aggregate spec. `input` is the
+/// pre-evaluated aggregate input for one row; Null inputs are skipped
+/// (aggregates ignore NULL).
+fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
   if spec.kind is CountStar {
     match acc {
       CountOf(c) => CountOf(c + 1L)
       other => other
     }
   } else {
-    let input = match spec.input {
-      Some(e) => e
-      None => return acc
-    }
-    match eval_scalar(input, batch, r) {
+    match input {
       @types.Null => acc // aggregates ignore NULL inputs
       v =>
         match acc {
@@ -238,10 +232,23 @@ fn aggregate(
   let group_keys : Array[Array[@types.Scalar]] = []
   let acc_rows : Array[Array[Acc]] = []
   for batch in batches {
+    // evaluate group keys and aggregate inputs once per batch, then the
+    // row loop reads the materialized columns
+    let key_cols : Array[@types.ColumnVector] = []
+    for e in group_exprs {
+      key_cols.push(eval_vec(e, batch))
+    }
+    let input_cols : Array[@types.ColumnVector?] = []
+    for spec in aggs {
+      match spec.input {
+        Some(e) => input_cols.push(Some(eval_vec(e, batch)))
+        None => input_cols.push(None)
+      }
+    }
     for r in 0..<batch.row_count() {
       let kv : Array[@types.Scalar] = []
-      for e in group_exprs {
-        kv.push(eval_scalar(e, batch, r))
+      for c in key_cols {
+        kv.push(c.get(r))
       }
       let key = canonical_key(kv)
       let gi = match index.get(key) {
@@ -256,7 +263,11 @@ fn aggregate(
       }
       let row = acc_rows[gi]
       for i in 0..<m {
-        row[i] = acc_step(row[i], aggs[i], batch, r)
+        let input = match input_cols[i] {
+          Some(col) => col.get(r)
+          None => @types.Null
+        } // CountStar ignores it
+        row[i] = acc_step(row[i], aggs[i], input)
       }
     }
   }
@@ -285,36 +296,44 @@ fn aggregate(
 }
 
 ///|
-/// Evaluate the projection expressions over the post-agg row.
+/// Evaluate the projection expressions over the post-agg row. Each
+/// output column comes from one vectorized pass; a column whose vector
+/// dtype already matches the declared output type is shared, not copied.
 fn project(
   batch : @types.DataBatch,
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
 ) -> @types.DataBatch {
-  let n = batch.row_count()
   let columns : Array[@types.ColumnVector] = []
   for i, e in out_exprs {
-    let vec = @types.ColumnVector::make(out_types[i], n)
-    for r in 0..<n {
-      vec.set(r, eval_scalar(e, batch, r))
+    let v = eval_vec(e, batch)
+    if v.dtype() == out_types[i] {
+      columns.push(v)
+    } else {
+      // unreachable: the binder derives out_types from the same exprs
+      let n = batch.row_count()
+      let vec = @types.ColumnVector::make(out_types[i], n)
+      for r in 0..<n {
+        vec.set(r, v.get(r))
+      }
+      columns.push(vec)
     }
-    columns.push(vec)
   }
-  @types.DataBatch::new(columns, n)
+  @types.DataBatch::new(columns, batch.row_count())
 }
 
 ///|
-/// Row comparator over the ORDER BY output columns. NULLs sort last
-/// regardless of direction; ties keep input order.
-fn cmp_rows(
-  batch : @types.DataBatch,
+/// Row comparator over pre-materialized ORDER BY key columns. NULLs
+/// sort last regardless of direction; ties keep input order.
+fn cmp_decorated(
+  key_cols : Array[Array[@types.Scalar]],
   keys : Array[(Int, Bool)],
   a : Int,
   b : Int,
 ) -> Int {
-  for kv in keys {
-    let x = batch.columns()[kv.0].get(a)
-    let y = batch.columns()[kv.0].get(b)
+  for k, kv in keys {
+    let x = key_cols[k][a]
+    let y = key_cols[k][b]
     let ord : Int = match (x, y) {
       (@types.Null, @types.Null) => 0
       (@types.Null, _) => 1
@@ -344,7 +363,17 @@ fn order_limit(
     indices.push(i)
   }
   if keys.length() > 0 {
-    indices.sort_by((a, b) => cmp_rows(batch, keys, a, b))
+    // decorate: read each sort key column once, then compare arrays
+    let key_cols : Array[Array[@types.Scalar]] = []
+    for kv in keys {
+      let col = batch.columns()[kv.0]
+      let vals : Array[@types.Scalar] = []
+      for r in 0..<n {
+        vals.push(col.get(r))
+      }
+      key_cols.push(vals)
+    }
+    indices.sort_by((a, b) => cmp_decorated(key_cols, keys, a, b))
   }
   let sel : Array[Int] = match limit {
     Some(k) => {
@@ -510,13 +539,22 @@ fn join_step(
 }
 
 ///|
-/// Columnar concatenation of batches sharing one layout.
-fn concat_batches(batches : Array[@types.DataBatch]) -> @types.DataBatch {
+/// Columnar concatenation of batches sharing one layout. An empty input
+/// yields a zero-row batch with the given layout (dtypes of the flat
+/// row), so downstream expressions still see every column.
+fn concat_batches(
+  batches : Array[@types.DataBatch],
+  dtypes : Array[@types.DataType],
+) -> @types.DataBatch {
   if batches.length() == 1 {
     return batches[0]
   }
   if batches.length() == 0 {
-    return @types.DataBatch::new([], 0)
+    let columns : Array[@types.ColumnVector] = []
+    for dt in dtypes {
+      columns.push(@types.ColumnVector::make(dt, 0))
+    }
+    return @types.DataBatch::new(columns, 0)
   }
   let mut total = 0
   for b in batches {
