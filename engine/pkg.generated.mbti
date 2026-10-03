@@ -61,6 +61,8 @@ pub fn FromItem::to_repr(Self) -> @debug.Repr
 pub(all) enum JoinKind {
   Inner
   Left
+  Right
+  Full
   Cross
 } derive(Eq, @debug.Debug)
 pub fn JoinKind::equal(Self, Self) -> Bool

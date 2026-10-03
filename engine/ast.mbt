@@ -95,6 +95,8 @@ pub extend OrderItem with @debug.Debug::{to_repr}
 pub(all) enum JoinKind {
   Inner // comma lists and JOIN ... ON
   Left // LEFT [OUTER] JOIN ... ON
+  Right // RIGHT [OUTER] JOIN ... ON: preserves the joining table
+  Full // FULL [OUTER] JOIN ... ON: preserves both sides
   Cross // CROSS JOIN
 } derive(Eq, Debug)
 

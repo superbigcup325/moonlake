@@ -638,7 +638,8 @@ fn Binder::plan_joins(
   let order : Array[Int] = []
   let mut has_left = false
   for item in sel.from {
-    if item.join is Left {
+    // any row-preserving join fixes the written order
+    if !(item.join is Inner) {
       has_left = true
     }
   }
@@ -789,13 +790,16 @@ fn Binder::plan_step(
     let m = self.col_mask(cj.lexpr)
     if m == cur_mask {
       // a WHERE conjunct on the joining table must not filter build rows
-      // at a LEFT step: removing build rows changes which probe rows find
-      // a match, so the NULL-extended output would lose the restriction
-      // (WHERE applies to the post-join row, NULL side included). It
-      // stays unconsumed and comes back as the deferred post-join filter.
+      // when the accumulated side is preserved (LEFT): removing build
+      // rows changes which probe rows find a match, so the NULL-extended
+      // output would lose the restriction (WHERE applies to the
+      // post-join row, NULL side included). It stays unconsumed and
+      // comes back as the deferred post-join filter. At a RIGHT step the
+      // joining table is the preserved side, so the filter is sound
+      // there; at FULL both sides are preserved, so it defers too.
       // ON conjuncts keep build placement: dropping candidates is exactly
       // their semantics, NULL-extension sees the same match set.
-      if item.join is Left && cj.origin is None {
+      if (item.join is Left || item.join is Full) && cj.origin is None {
         let _ = m
       } else {
         build_l.push(cj.lexpr)
@@ -810,10 +814,17 @@ fn Binder::plan_step(
       }
       consumed[j] = true
     } else if (m & both_masks.lnot()) == 0 && (m & cur_mask) == 0 {
-      // references only accumulated tables; at a LEFT step this is a
-      // WHERE pushdown, still sound
-      probe_l.push(cj.lexpr)
-      consumed[j] = true
+      // references only accumulated tables: a WHERE pushdown is sound
+      // while the accumulated side is preserved (Inner/Left). At RIGHT
+      // and FULL the accumulated side is NULL-extendable, so a WHERE
+      // conjunct must stay a deferred post-join filter (ON conjuncts
+      // keep candidate filtering — that is their semantics)
+      if (item.join is Right || item.join is Full) && cj.origin is None {
+        let _ = m // stay unconsumed; deferred below
+      } else {
+        probe_l.push(cj.lexpr)
+        consumed[j] = true
+      }
     } else if (m & both_masks.lnot()) == 0 && (m & cur_mask) != 0 {
       // spans the accumulated row and the joining table
       let key = match cj.lexpr {

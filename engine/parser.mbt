@@ -287,8 +287,11 @@ fn parse_alias_opt(p : Parser) -> String? raise @types.SqlError {
     }
   }
   match ident_like_tok(p.peek()) {
-    // a bare alias must not swallow the UNION connective
-    Some(name) if ascii_lower(name) != "union" => {
+    // a bare alias must not swallow a connective: UNION or the RIGHT /
+    // FULL join keywords (LEFT/CROSS are keywords already)
+    Some(name) if ascii_lower(name) != "union" &&
+      ascii_lower(name) != "right" &&
+      ascii_lower(name) != "full" => {
       let _ = p.advance()
       Some(name)
     }
@@ -311,6 +314,16 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
     let _ = p.eat(KwOuter)
     p.expect(KwJoin)
     Left
+  } else if p.peek() is Ident(w) && ascii_lower(w) == "right" {
+    let _ = p.advance()
+    let _ = p.eat(KwOuter)
+    p.expect(KwJoin)
+    Right
+  } else if p.peek() is Ident(w) && ascii_lower(w) == "full" {
+    let _ = p.advance()
+    let _ = p.eat(KwOuter)
+    p.expect(KwJoin)
+    Full
   } else if p.peek() is KwCross {
     let _ = p.advance()
     p.expect(KwJoin)

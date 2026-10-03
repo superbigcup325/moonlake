@@ -537,6 +537,9 @@ fn join_step(
   right : Array[@types.DataBatch],
   step : JoinStep,
 ) -> @types.DataBatch raise @types.SqlError {
+  if step.kind is Right {
+    return join_swapped(acc, right, step)
+  }
   let right_width = step.right_width
   let left_width = step.out_dtypes.length() - right_width
   // build: one columnar batch, keys evaluated once over it
@@ -555,6 +558,9 @@ fn join_step(
   }
   let left_ids : Array[Int] = []
   let right_ids : Array[Int] = [] // -1 marks a LEFT NULL extension
+  // FULL also preserves unmatched build rows: remember who matched
+  let matched_build : FixedArray[Bool] = FixedArray::make(n_build, false)
+  let track = step.kind is Full
   // single-int-key fast path: hash Int64s, no key strings per row
   let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
     int_key_cols(build_keys[0], left_keys[0])
@@ -584,13 +590,14 @@ fn join_step(
                   left_ids.push(r)
                   right_ids.push(id)
                   matched = true
+                  matched_build[id] = true
                 }
               }
             None => ()
           }
         }
         if !matched {
-          if step.kind is Left {
+          if step.kind is Left || step.kind is Full {
             left_ids.push(r)
             right_ids.push(-1)
           }
@@ -627,17 +634,27 @@ fn join_step(
                   left_ids.push(r)
                   right_ids.push(id)
                   matched = true
+                  matched_build[id] = true
                 }
               }
             None => ()
           }
         }
         if !matched {
-          if step.kind is Left {
+          if step.kind is Left || step.kind is Full {
             left_ids.push(r)
             right_ids.push(-1)
           }
         }
+      }
+    }
+  }
+  // FULL: unmatched build rows survive with a NULL accumulated side
+  if track {
+    for id in 0..<n_build {
+      if !matched_build[id] {
+        left_ids.push(-1)
+        right_ids.push(id)
       }
     }
   }
@@ -741,6 +758,126 @@ fn combined_row(
     row.push(build.columns()[c].get(brow))
   }
   row
+}
+
+///|
+/// RIGHT JOIN with roles swapped: the accumulated (optional) side
+/// becomes the hash map, the joining (preserved) side probes, and every
+/// unmatched probe row keeps its values with a NULL accumulated side.
+/// Output column order stays (accumulated, joining) as the layout
+/// requires.
+fn join_swapped(
+  acc : Array[@types.DataBatch],
+  right : Array[@types.DataBatch],
+  step : JoinStep,
+) -> @types.DataBatch raise @types.SqlError {
+  let right_width = step.right_width
+  let left_width = step.out_dtypes.length() - right_width
+  // build: the accumulated (optional) side; keys are the Flat left keys
+  let build = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
+  let n_build = build.row_count()
+  // probe: the preserved joining table; keys are its Slot keys
+  let probe = concat_batches(right, tail_dtypes(step.out_dtypes, right_width))
+  let n_probe = probe.row_count()
+  let build_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_l {
+    build_keys.push(eval_vec(e, build))
+  }
+  let probe_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_r {
+    probe_keys.push(eval_vec(e, probe))
+  }
+  let acc_ids : Array[Int] = []
+  let right_ids : Array[Int] = [] // -1 marks a NULL accumulated side
+  let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
+    int_key_cols(build_keys[0], probe_keys[0])
+  } else {
+    None
+  }
+  match int_keys {
+    Some((bd, bv, pd, pv)) => {
+      let map : Map[Int64, Array[Int]] = Map([])
+      for r in 0..<n_build {
+        if bv[r] {
+          let k = bd[r]
+          match map.get(k) {
+            Some(ids) => ids.push(r)
+            None => map[k] = [r]
+          }
+        }
+      }
+      for r in 0..<n_probe {
+        let mut matched = false
+        if pv[r] {
+          match map.get(pd[r]) {
+            Some(ids) =>
+              for id in ids {
+                if residual_passes(step.residual, build, id, probe, r) {
+                  acc_ids.push(id)
+                  right_ids.push(r)
+                  matched = true
+                }
+              }
+            None => ()
+          }
+        }
+        if !matched {
+          acc_ids.push(-1)
+          right_ids.push(r)
+        }
+      }
+    }
+    None => {
+      let map : Map[String, Array[Int]] = Map([])
+      for r in 0..<n_build {
+        let kv : Array[@types.Scalar] = []
+        for c in build_keys {
+          kv.push(c.get(r))
+        }
+        if key_has_null(kv) {
+          continue
+        }
+        let key = canonical_key(kv)
+        match map.get(key) {
+          Some(ids) => ids.push(r)
+          None => map[key] = [r]
+        }
+      }
+      for r in 0..<n_probe {
+        let kv : Array[@types.Scalar] = []
+        for c in probe_keys {
+          kv.push(c.get(r))
+        }
+        let mut matched = false
+        if !key_has_null(kv) {
+          match map.get(canonical_key(kv)) {
+            Some(ids) =>
+              for id in ids {
+                if residual_passes(step.residual, build, id, probe, r) {
+                  acc_ids.push(id)
+                  right_ids.push(r)
+                  matched = true
+                }
+              }
+            None => ()
+          }
+        }
+        if !matched {
+          acc_ids.push(-1)
+          right_ids.push(r)
+        }
+      }
+    }
+  }
+  // assemble: accumulated columns first, then the joining table
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<left_width {
+    columns.push(gather(build.columns()[c], acc_ids))
+  }
+  for c in 0..<right_width {
+    columns.push(gather(probe.columns()[c], right_ids))
+  }
+  @types.DataBatch::new(columns, acc_ids.length())
 }
 
 ///|

@@ -1130,3 +1130,36 @@ test "UNION chains merge left to right with the trailing window" {
   )
   assert_true(err2.to_string().contains("type mismatch"))
 }
+
+///|
+test "RIGHT and FULL joins preserve their kept sides" {
+  let cat = join_catalog()
+  // customers (cid 1..3); orders (custkey 1, 1, 3, NULL)
+  let r = run(
+    "SELECT cid, oid FROM orders RIGHT JOIN customers ON custkey = cid ORDER BY cid, oid",
+    cat,
+  )
+  // every customer survives; customer 2 has no orders
+  assert_eq(r.row_count(), 4)
+  assert_eq(r.get(2, 0), @types.Int32(2))
+  assert_eq(r.get(2, 1), @types.Scalar::Null)
+  assert_eq(r.get(3, 0), @types.Int32(3))
+  assert_eq(r.get(3, 1), @types.Int32(102))
+  // a WHERE on the preserved-... accumulated side applies post-join
+  let r2 = run(
+    "SELECT cid FROM orders RIGHT JOIN customers ON custkey = cid WHERE cid >= 2 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 2)
+  // FULL keeps unmatched rows from both sides; NULL keys never match
+  let r3 = run(
+    "SELECT cid, oid FROM orders FULL JOIN customers ON custkey = cid ORDER BY cid, oid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 5)
+  assert_eq(r3.get(2, 0), @types.Int32(2))
+  assert_eq(r3.get(2, 1), @types.Scalar::Null)
+  // order 103 has a NULL custkey: preserved, never matched
+  assert_eq(r3.get(4, 0), @types.Scalar::Null)
+  assert_eq(r3.get(4, 1), @types.Int32(103))
+}

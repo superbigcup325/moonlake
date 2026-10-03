@@ -270,6 +270,8 @@ pub fn explain(
         match step.kind {
           Inner => "inner"
           Left => "left"
+          Right => "right"
+          Full => "full"
           Cross => "cross"
         },
       )
