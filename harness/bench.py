@@ -3,7 +3,8 @@
 # promises reproducible numbers, not superiority.
 #
 # Usage:
-#   moon build cmd/main                      # compile first
+#   moon build cmd/main --target native     # compile first: the module's
+#                                           # preferred target is wasm-gc
 #   uv run --with duckdb python harness/bench.py          # SF0.01
 #   uv run --with duckdb python harness/bench.py 0.1      # SF0.1
 
@@ -45,7 +46,10 @@ def best_of(fn, n=3) -> float:
 
 def main() -> int:
     if not BIN.exists():
-        print(f"missing {BIN}; run `moon build cmd/main` first", file=sys.stderr)
+        print(
+            f"missing {BIN}; run `moon build cmd/main --target native` first",
+            file=sys.stderr,
+        )
         return 1
     con = duckdb.connect()
     con.execute(f"CALL dbgen(sf = {float(sf)})")

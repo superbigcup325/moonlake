@@ -45,10 +45,18 @@ row-at-a-time evaluation — vectorization is the declared next step):
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Forecasting Revenue Change | 539 ms | 0.7 ms |
-| Pricing Summary Report | 622 ms | 3.0 ms |
-| Shipping Priority | 713 ms | 4.8 ms |
-| Volume Shipping | 995 ms | 4.3 ms |
+| Pricing Summary Report | 618 ms | 3.1 ms |
+| Shipping Priority | 666 ms | 3.9 ms |
+| Local Supplier Volume | 769 ms | 4.0 ms |
+| Forecasting Revenue Change | 522 ms | 0.6 ms |
+| Volume Shipping | 1040 ms | 4.6 ms |
+| Returned Item Reporting | 642 ms | 7.2 ms |
+| Shipping Modes and Order Priority | 649 ms | 2.4 ms |
+| Promotion Effect | 520 ms | 1.2 ms |
+
+These are the eight queries `harness/bench.py` runs (it prints the
+same rows labelled q1–q14); the table was taken from one run so the
+columns are comparable.
 
 ## Quickstart
 
