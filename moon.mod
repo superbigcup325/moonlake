@@ -25,7 +25,6 @@ description = "Embeddable analytical query engine for MoonBit: run SQL over CSV/
 
 import {
   "moonbit-community/sqlparser@0.5.1",
-  "moonbit-community/NyaCSV@0.3.3",
   "moonbitlang/x@0.5.5",
   "moonbitlang/quickcheck@0.14.0",
   "mizchi/parquet@0.2.2",

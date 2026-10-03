@@ -82,3 +82,36 @@ test "UTF-8 BOM is stripped from the first header cell" {
   assert_eq(b.columns()[0].get(0), @types.Scalar::Int32(1))
   assert_eq(b.columns()[1].get(0), @types.Scalar::Int32(2))
 }
+
+///|
+test "reader dialect: CRLF, blank lines, escapes, no trailing newline" {
+  // CRLF terminators
+  let e1 = @csv.scan_string("a,b\r\n1,x\r\n2,y\r\n", "t1")
+  assert_eq(e1.batches[0].row_count(), 2)
+  assert_eq(e1.batches[0].columns()[0].get(1), @types.Scalar::Int32(2))
+  assert_eq(e1.batches[0].columns()[1].get(1), @types.Str("y"))
+  // blank lines in the middle are skipped
+  let e2 = @csv.scan_string("a\n1\n\n2\n", "t2")
+  assert_eq(e2.batches[0].row_count(), 2)
+  // "" escape folds to a single quote; quoted comma and newline stay
+  let e3 = @csv.scan_string("s\n\"say \"\"hi\"\"\"\n\"line1\nline2\"\n", "t3")
+  assert_eq(e3.batches[0].columns()[0].get(0), @types.Str("say \"hi\""))
+  assert_eq(e3.batches[0].columns()[0].get(1), @types.Str("line1\nline2"))
+  // unquoted empty and quoted empty both read as NULL
+  let e4 = @csv.scan_string("a,b\n,\"\"\n", "t4")
+  assert_eq(e4.batches[0].columns()[0].get(0), @types.Scalar::Null)
+  assert_eq(e4.batches[0].columns()[1].get(0), @types.Scalar::Null)
+  // no trailing newline; single cell row
+  let e5 = @csv.scan_string("a\n7", "t5")
+  assert_eq(e5.batches[0].columns()[0].get(0), @types.Scalar::Int32(7))
+  // trailing comma: empty last field
+  let e6 = @csv.scan_string("a,b\n1,\n", "t6")
+  assert_eq(e6.batches[0].columns()[1].get(0), @types.Scalar::Null)
+  // header-only file keeps one empty batch
+  let e7 = @csv.scan_string("a,b\n", "t7")
+  assert_eq(e7.batches.length(), 1)
+  assert_eq(e7.batches[0].row_count(), 0)
+  // unicode passes through
+  let e8 = @csv.scan_string("s\ncafé ☕\n", "t8")
+  assert_eq(e8.batches[0].columns()[0].get(0), @types.Str("café ☕"))
+}
