@@ -446,7 +446,8 @@ fn key_has_null(vals : Array[@types.Scalar]) -> Bool {
 /// Both sides are concatenated into single columnar batches, keys are
 /// evaluated once per side, probe hits collect (left row, build row)
 /// integer pairs, and the output is assembled by per-column gathers —
-/// no boxed row arrays in the hot path.
+/// no boxed row arrays in the hot path. A single int join key (the
+/// TPC-H shape) hashes Int64s directly instead of building key strings.
 fn join_step(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
@@ -457,64 +458,102 @@ fn join_step(
   // build: one columnar batch, keys evaluated once over it
   let build = concat_batches(right, tail_dtypes(step.out_dtypes, right_width))
   let n_build = build.row_count()
-  let map : Map[String, Array[Int]] = Map([])
+  // probe: keys evaluated once over the concatenated left side
+  let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
+  let n_left = left.row_count()
   let build_keys : Array[@types.ColumnVector] = []
   for e in step.keys_r {
     build_keys.push(eval_vec(e, build))
   }
-  for r in 0..<n_build {
-    let kv : Array[@types.Scalar] = []
-    for c in build_keys {
-      kv.push(c.get(r))
-    }
-    if key_has_null(kv) {
-      continue // NULL join keys never match
-    }
-    let key = canonical_key(kv)
-    match map.get(key) {
-      Some(ids) => ids.push(r)
-      None => map[key] = [r]
-    }
-  }
-  // probe: keys evaluated once over the concatenated left side
-  let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
-  let n_left = left.row_count()
   let left_keys : Array[@types.ColumnVector] = []
   for e in step.keys_l {
     left_keys.push(eval_vec(e, left))
   }
   let left_ids : Array[Int] = []
   let right_ids : Array[Int] = [] // -1 marks a LEFT NULL extension
-  for r in 0..<n_left {
-    let kv : Array[@types.Scalar] = []
-    for c in left_keys {
-      kv.push(c.get(r))
-    }
-    let mut matched = false
-    if !key_has_null(kv) {
-      match map.get(canonical_key(kv)) {
-        Some(ids) =>
-          for id in ids {
-            let pass = match step.residual {
-              Some(re) => {
-                let combined = combined_row(left, r, build, id)
-                eval_row(re, combined) is @types.Boolean(true)
-              }
-              None => true
-            }
-            if pass {
-              left_ids.push(r)
-              right_ids.push(id)
-              matched = true
-            }
+  // single-int-key fast path: hash Int64s, no key strings per row
+  let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
+    int_key_cols(build_keys[0], left_keys[0])
+  } else {
+    None
+  }
+  match int_keys {
+    Some((bd, bv, ld, lv)) => {
+      let map : Map[Int64, Array[Int]] = Map([])
+      for r in 0..<n_build {
+        if bv[r] {
+          // NULL join keys never match
+          let k = bd[r]
+          match map.get(k) {
+            Some(ids) => ids.push(r)
+            None => map[k] = [r]
           }
-        None => ()
+        }
+      }
+      for r in 0..<n_left {
+        let mut matched = false
+        if lv[r] {
+          match map.get(ld[r]) {
+            Some(ids) =>
+              for id in ids {
+                if residual_passes(step.residual, left, r, build, id) {
+                  left_ids.push(r)
+                  right_ids.push(id)
+                  matched = true
+                }
+              }
+            None => ()
+          }
+        }
+        if !matched {
+          if step.kind is Left {
+            left_ids.push(r)
+            right_ids.push(-1)
+          }
+        }
       }
     }
-    if !matched {
-      if step.kind is Left {
-        left_ids.push(r)
-        right_ids.push(-1)
+    None => {
+      let map : Map[String, Array[Int]] = Map([])
+      for r in 0..<n_build {
+        let kv : Array[@types.Scalar] = []
+        for c in build_keys {
+          kv.push(c.get(r))
+        }
+        if key_has_null(kv) {
+          continue // NULL join keys never match
+        }
+        let key = canonical_key(kv)
+        match map.get(key) {
+          Some(ids) => ids.push(r)
+          None => map[key] = [r]
+        }
+      }
+      for r in 0..<n_left {
+        let kv : Array[@types.Scalar] = []
+        for c in left_keys {
+          kv.push(c.get(r))
+        }
+        let mut matched = false
+        if !key_has_null(kv) {
+          match map.get(canonical_key(kv)) {
+            Some(ids) =>
+              for id in ids {
+                if residual_passes(step.residual, left, r, build, id) {
+                  left_ids.push(r)
+                  right_ids.push(id)
+                  matched = true
+                }
+              }
+            None => ()
+          }
+        }
+        if !matched {
+          if step.kind is Left {
+            left_ids.push(r)
+            right_ids.push(-1)
+          }
+        }
       }
     }
   }
@@ -527,6 +566,52 @@ fn join_step(
     columns.push(gather(build.columns()[c], right_ids))
   }
   @types.DataBatch::new(columns, left_ids.length())
+}
+
+///|
+/// Residual evaluation for one candidate pair.
+fn residual_passes(
+  residual : PhysExpr?,
+  left : @types.DataBatch,
+  lrow : Int,
+  build : @types.DataBatch,
+  brow : Int,
+) -> Bool {
+  match residual {
+    Some(re) =>
+      eval_row(re, combined_row(left, lrow, build, brow))
+      is @types.Boolean(true)
+    None => true
+  }
+}
+
+///|
+/// Normalize a single-int join key pair to (Int64 data, validity) for
+/// both sides; None when either key is not a 32/64-bit int column (the
+/// binder promotes both sides to one type, so mixed int widths do not
+/// reach the executor, but staying type-exact costs one check).
+fn int_key_cols(
+  build_key : @types.ColumnVector,
+  left_key : @types.ColumnVector,
+) -> (FixedArray[Int64], FixedArray[Bool], FixedArray[Int64], FixedArray[Bool])? {
+  fn norm(v : @types.ColumnVector) -> (FixedArray[Int64], FixedArray[Bool])? {
+    match v {
+      @types.I32(d, valid) => {
+        let n = v.len()
+        let od : FixedArray[Int64] = FixedArray::make(n, 0L)
+        for i in 0..<n {
+          od[i] = d[i].to_int64()
+        }
+        Some((od, valid))
+      }
+      @types.I64(d, valid) => Some((d, valid))
+      _ => None
+    }
+  }
+  match (norm(build_key), norm(left_key)) {
+    (Some((bd, bv)), Some((ld, lv))) => Some((bd, bv, ld, lv))
+    _ => None
+  }
 }
 
 ///|
