@@ -39,20 +39,16 @@ fn compact(
 
 ///|
 /// Build a new batch holding the selected input rows, preserving order.
+/// Each column is one typed gather.
 fn take_rows(
   batch : @types.DataBatch,
   indices : Array[Int],
 ) -> @types.DataBatch {
-  let n = indices.length()
   let columns : Array[@types.ColumnVector] = []
   for src in batch.columns() {
-    let dst = @types.ColumnVector::make(src.dtype(), n)
-    for w, i in indices {
-      dst.set(w, src.get(i))
-    }
-    columns.push(dst)
+    columns.push(gather(src, indices))
   }
-  @types.DataBatch::new(columns, n)
+  @types.DataBatch::new(columns, indices.length())
 }
 
 ///|
@@ -764,13 +760,55 @@ fn concat_batches(
     let dst = @types.ColumnVector::make(dt, total)
     let mut w = 0
     for b in batches {
-      let src = b.columns()[c]
-      for r in 0..<b.row_count() {
-        dst.set(w, src.get(r))
-        w += 1
-      }
+      copy_vec_range(dst, w, b.columns()[c])
+      w += b.row_count()
     }
     columns.push(dst)
   }
   @types.DataBatch::new(columns, total)
+}
+
+///|
+/// Copy one vector's rows into another at the given offset. Same dtype
+/// by construction (concat batches share a layout); the fallback mirrors
+/// ColumnVector::set's silent mismatch ignore.
+fn copy_vec_range(
+  dst : @types.ColumnVector,
+  w : Int,
+  src : @types.ColumnVector,
+) -> Unit {
+  let n = src.len()
+  match (dst, src) {
+    (@types.I32(dd, dv), @types.I32(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    (@types.I64(dd, dv), @types.I64(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    (@types.F64(dd, dv), @types.F64(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    (@types.BoolV(dd, dv), @types.BoolV(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    (@types.StrV(dd, dv), @types.StrV(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    (@types.DateV(dd, dv), @types.DateV(sd, sv)) =>
+      for i in 0..<n {
+        dd[w + i] = sd[i]
+        dv[w + i] = sv[i]
+      }
+    _ => ()
+  }
 }
