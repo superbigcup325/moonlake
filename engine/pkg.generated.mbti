@@ -88,6 +88,7 @@ pub(all) enum LExpr {
   Agg(AggFn, LExpr?)
   ScalarSub(Select)
   InSelect(LExpr, Select, Bool)
+  Exists(Select, Bool)
   Func(String, Array[LExpr])
   Cast(LExpr, @types.DataType)
 } derive(Eq, @debug.Debug)

@@ -53,6 +53,7 @@ pub(all) enum LExpr {
   Agg(AggFn, LExpr?) // None only for count(*)
   ScalarSub(Select) // non-correlated scalar subquery, folded to a constant
   InSelect(LExpr, Select, Bool) // value IN / NOT IN (SELECT ...), non-correlated
+  Exists(Select, Bool) // [NOT] EXISTS (SELECT ...), non-correlated, folded at bind
   Func(String, Array[LExpr]) // scalar function call (name lowercased)
   Cast(LExpr, @types.DataType) // CAST(expr AS type)
 } derive(Eq, Debug)

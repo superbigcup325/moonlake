@@ -538,7 +538,13 @@ fn parse_unary(p : Parser) -> LExpr raise @types.SqlError {
 fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
   match p.advance() {
     Ident(name) =>
-      if p.peek() is LParen {
+      if ascii_lower(name) == "exists" && p.peek() is LParen {
+        let _ = p.advance() // (
+        p.expect(KwSelect)
+        let sub = parse_select_body(p)
+        p.expect(RParen)
+        Exists(sub, false) // NOT EXISTS arrives as Not(Exists)
+      } else if p.peek() is LParen {
         parse_function(p, name)
       } else if p.peek() is Dot {
         parse_qualified(p, name)

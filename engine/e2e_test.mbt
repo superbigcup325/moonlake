@@ -1001,3 +1001,43 @@ test "SELECT DISTINCT dedupes projected rows" {
   let r3 = run("SELECT DISTINCT count(*) FROM t", cat)
   assert_eq(r3.get(0, 0), @types.Int64(5))
 }
+
+///|
+test "EXISTS and NOT EXISTS gate rows on the subquery" {
+  let cat = join_catalog()
+  // customers (cid 1..3); orders (custkey 1, 1, 3, NULL)
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders) ORDER BY cid",
+    cat,
+  )
+  // the subquery matches, so every customer passes
+  assert_eq(r.row_count(), 3)
+  let r2 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE oid = 999) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 0)
+  let r3 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT oid FROM orders WHERE oid = 999) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 3)
+  let r4 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT oid FROM orders WHERE amount > 15) ORDER BY cid",
+    cat,
+  )
+  // the subquery matches (amount 20 exists), so nobody passes
+  assert_eq(r4.row_count(), 0)
+  // EXISTS folds to a constant boolean: legal in CASE and projection
+  let r5 = run(
+    "SELECT cid, CASE WHEN EXISTS (SELECT oid FROM orders) THEN 1 ELSE 0 END AS has FROM customers WHERE EXISTS (SELECT oid FROM orders) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r5.get(0, 1), @types.Int32(1))
+  // correlated references are still out of scope, with a clear error
+  let err = run_err(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE cid = custkey)",
+    cat,
+  )
+  assert_true(err.to_string().contains("unknown column"))
+}

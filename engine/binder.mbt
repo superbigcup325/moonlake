@@ -151,6 +151,18 @@ fn SubqueryRunner::run_scalar(
 }
 
 ///|
+/// EXISTS folds to a boolean constant: true when the subquery returns
+/// any row. Correlation is not supported (the inner select binds
+/// against its own FROM only).
+fn SubqueryRunner::run_exists(
+  self : SubqueryRunner,
+  sel : Select,
+) -> Bool raise @types.SqlError {
+  let r = run_parsed(sel, self.catalog)
+  r.row_count() > 0
+}
+
+///|
 fn SubqueryRunner::run_key_set(
   self : SubqueryRunner,
   sel : Select,
@@ -332,6 +344,7 @@ fn contains_agg(e : LExpr) -> Bool {
         }
       }
     Cast(e, _) => if contains_agg(e) { return true }
+    Exists(_, _) => ()
     Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
       return contains_agg(l) || contains_agg(r)
     Not(x) => return contains_agg(x)
@@ -469,6 +482,7 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
     // subqueries are self-contained: only the outer value expression counts
     ScalarSub(_) => 0
     InSelect(v, _, _) => self.col_mask(v)
+    Exists(_, _) => 0
     Func(_, args) => {
       let mut m = 0
       for a in args {
@@ -1305,6 +1319,13 @@ fn Binder::bind(
         None => None
       }
       (CaseE(whens_p, else_p, out_dt), out_dt)
+    }
+    Exists(sub, negated) => {
+      let has_rows = self.runner.run_exists(sub)
+      (
+        Const(@types.Boolean(if negated { !has_rows } else { has_rows })),
+        @types.Bool,
+      )
     }
     Func(name, args) => self.bind_func(name, args, space)
     Cast(e, dt) =>
