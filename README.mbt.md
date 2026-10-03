@@ -4,7 +4,9 @@
 
 Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet files in-process, with native and WebAssembly builds from one codebase.
 
-> **Status: v1 SQL surface complete, under acceptance hardening.** Projection pruning and the vectorized evaluator are the remaining v1 items; APIs may still change.
+> **Status: v1 SQL surface complete, under acceptance hardening.** The
+> evaluator is columnar — vectorized expression kernels, a columnar hash
+> join, and bind-time projection pruning — but APIs may still change.
 
 ## What it is
 
@@ -41,22 +43,24 @@ bash harness/check_all.sh                         # 15 goldens: all PASS
 ```
 
 Informational benchmark (SF0.01, best of 3, via `harness/bench.py`;
-row-at-a-time evaluation — vectorization is the declared next step):
+same machine, one run, both engines:
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Pricing Summary Report | 618 ms | 3.1 ms |
-| Shipping Priority | 666 ms | 3.9 ms |
-| Local Supplier Volume | 769 ms | 4.0 ms |
-| Forecasting Revenue Change | 522 ms | 0.6 ms |
-| Volume Shipping | 1040 ms | 4.6 ms |
-| Returned Item Reporting | 642 ms | 7.2 ms |
-| Shipping Modes and Order Priority | 649 ms | 2.4 ms |
-| Promotion Effect | 520 ms | 1.2 ms |
+| Pricing Summary Report | 547 ms | 2.8 ms |
+| Shipping Priority | 586 ms | 3.1 ms |
+| Local Supplier Volume | 599 ms | 3.3 ms |
+| Forecasting Revenue Change | 483 ms | 0.6 ms |
+| Volume Shipping | 678 ms | 6.5 ms |
+| Returned Item Reporting | 574 ms | 5.9 ms |
+| Shipping Modes and Order Priority | 571 ms | 2.3 ms |
+| Promotion Effect | 496 ms | 1.1 ms |
 
 These are the eight queries `harness/bench.py` runs (it prints the
-same rows labelled q1–q14); the table was taken from one run so the
-columns are comparable.
+same rows labelled q1–q14). Times include process startup and CSV
+parsing; the columnar evaluator (vectorized kernels, columnar hash
+join, bind-time projection pruning) roughly halved the join-heavy
+queries against the previous row-at-a-time build on the same machine.
 
 ## Quickstart
 

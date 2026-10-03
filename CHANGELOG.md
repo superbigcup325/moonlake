@@ -45,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `IS NULL` / `IS NOT NULL` — the first way to test NULL-ness in a WHERE or CASE condition
+- Columnar evaluation core (the v1 vectorization milestone): `eval_vec` evaluates expressions over whole batches with typed kernels — column refs shared zero-copy, constant broadcast, same-type int32/int64/float64 arithmetic, three-valued comparison, NULL-aware AND/OR/NOT — with a per-row fallback for the remaining shapes; nine differential tests pin the vector path to the scalar interpreter cell-for-cell
+- Filter, projection, aggregation inputs and ORDER BY run on the vector path: masks come from the vectorized boolean result, each output column is one pass, group keys and aggregate inputs are evaluated once per batch, and sort keys are materialized before the comparator runs
+- Columnar hash join: both sides concatenate once into single batches, keys evaluate once per side, probe hits collect (left row, build row) integer pairs, and output assembles by typed per-column gathers — no row-major boxed Scalar arrays. NULL-key, residual and LEFT NULL-extension semantics are unchanged
+- Bind-time projection pruning: the executor walks the bound plan, drops every unreferenced column from the pipeline (zero-copy vector subsets) and rewrites all column references. TPC-H lineitem scans narrow from 16 columns to the 2–6 the query touches; `--explain` reports the narrowed counts and renders the executed plan. `SELECT *` degenerates to an identity rewrite
 - `NOT BETWEEN` (postfix form, three-valued negation of BETWEEN)
 - `NULL` as a comparison or arithmetic operand: `v = NULL` is UNKNOWN per row, `NOT IN (1, NULL)` is empty, `v + NULL` propagates (the literal takes its type from the other operand; standalone `SELECT NULL` remains unsupported)
 - `SELECT *` — expands to every FROM column, each table in FROM order; also inside derived tables
