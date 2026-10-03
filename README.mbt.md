@@ -47,20 +47,22 @@ same machine, one run, both engines:
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Pricing Summary Report | 547 ms | 2.8 ms |
-| Shipping Priority | 586 ms | 3.1 ms |
-| Local Supplier Volume | 599 ms | 3.3 ms |
-| Forecasting Revenue Change | 483 ms | 0.6 ms |
-| Volume Shipping | 678 ms | 6.5 ms |
-| Returned Item Reporting | 574 ms | 5.9 ms |
-| Shipping Modes and Order Priority | 571 ms | 2.3 ms |
-| Promotion Effect | 496 ms | 1.1 ms |
+| Pricing Summary Report | 461 ms | 3.0 ms |
+| Shipping Priority | 455 ms | 3.1 ms |
+| Local Supplier Volume | 471 ms | 4.5 ms |
+| Forecasting Revenue Change | 391 ms | 0.5 ms |
+| Volume Shipping | 483 ms | 6.6 ms |
+| Returned Item Reporting | 464 ms | 5.7 ms |
+| Shipping Modes and Order Priority | 465 ms | 3.0 ms |
+| Promotion Effect | 397 ms | 1.2 ms |
 
 These are the eight queries `harness/bench.py` runs (it prints the
 same rows labelled q1–q14). Times include process startup and CSV
-parsing; the columnar evaluator (vectorized kernels, columnar hash
-join, bind-time projection pruning) roughly halved the join-heavy
-queries against the previous row-at-a-time build on the same machine.
+parsing, which now dominate: the columnar evaluator (vectorized
+kernels, columnar hash join with int-keyed hash maps, bind-time
+projection pruning, direct-to-vector CSV materialization) roughly
+halved the join-heavy queries against the original row-at-a-time
+build on the same machine.
 
 ## Quickstart
 
