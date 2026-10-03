@@ -874,3 +874,130 @@ test "joins prune to referenced columns only" {
   let c = run("SELECT count(*) FROM l, r WHERE l.k >= 2", cat)
   assert_eq(c.get(0, 0), @types.Int64(6))
 }
+
+///|
+/// Fixture for scalar functions, CAST and DISTINCT.
+fn funcs_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(
+      "id,name,grade\n1, Alpha ,a\n2,beta,B\n3, ,a\n4,gamma,c\n4,gamma,c\n", "t",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "string functions compute and propagate NULL" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT upper(trim(name)) AS u, lower(grade) AS l, length(trim(name)) AS n FROM t WHERE id = 1",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Str("ALPHA"))
+  assert_eq(r.get(0, 1), @types.Str("a"))
+  assert_eq(r.get(0, 2), @types.Int32(5))
+  // id 3 has a blank (but non-empty) name: trim -> empty string, not NULL
+  let r2 = run("SELECT length(trim(name)) FROM t WHERE id = 3", cat)
+  assert_eq(r2.get(0, 0), @types.Int32(0))
+}
+
+///|
+test "substring follows duckdb start semantics" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT substring(name, 2, 3) AS s1, substring(name, -2, 2) AS s2, substring(grade, 1) AS s3 FROM t WHERE id = 2",
+    cat,
+  )
+  // name = 'beta': (2,3) -> 'eta'; (-2,2) -> last two -> 'ta'; (1) -> whole
+  assert_eq(r.get(0, 0), @types.Str("eta"))
+  assert_eq(r.get(0, 1), @types.Str("ta"))
+  assert_eq(r.get(0, 2), @types.Str("B"))
+  // empty result past the end
+  let r2 = run("SELECT substring(name, 99, 2) AS s FROM t WHERE id = 2", cat)
+  assert_eq(r2.get(0, 0), @types.Str(""))
+}
+
+///|
+test "concat operator joins strings and propagates NULL" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT trim(name) || '-' || grade AS tag FROM t WHERE id = 2", cat,
+  )
+  assert_eq(r.get(0, 0), @types.Str("beta-B"))
+  // concatenating a string column with nothing after trim keeps NULL out
+  // of the result here; unknown functions still error
+  let err = run_err("SELECT nosuchfn(name) FROM t", cat)
+  assert_true(err.to_string().contains("unknown function"))
+  let err2 = run_err("SELECT upper(name, 2) FROM t", cat)
+  assert_true(err2.to_string().contains("exactly one argument"))
+  let err3 = run_err("SELECT length(id) FROM t", cat)
+  assert_true(err3.to_string().contains("requires a string argument"))
+}
+
+///|
+test "CAST converts across types and errors on garbage" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT CAST(id AS string) AS s, CAST('12.5' AS float64) AS f, CAST('2024-03-01' AS date) AS d, CAST(3 AS bool) AS b FROM t WHERE id = 1",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Str("1"))
+  assert_eq(r.get(0, 1), @types.Float64(12.5))
+  assert_eq(r.get(0, 2), @types.Date(@types.parse_date("2024-03-01").unwrap()))
+  assert_eq(r.get(0, 3), @types.Boolean(true))
+  // float -> int truncates toward zero
+  let r2 = run("SELECT CAST(2.9 AS int) AS i FROM t WHERE id = 1", cat)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+  // NULL passes through every cast
+  let r3 = run("SELECT CAST(NULL AS int) AS n FROM t WHERE id = 1", cat)
+  assert_eq(r3.get(0, 0), @types.Scalar::Null)
+  // garbage input raises a row error
+  let err = run_err("SELECT CAST('nope' AS int) FROM t WHERE id = 1", cat)
+  assert_true(err.to_string().contains("cannot cast"))
+  // str -> bool parses at runtime; a non-boolean string is a row error
+  let err2 = run_err("SELECT CAST(grade AS bool) FROM t WHERE id = 1", cat)
+  assert_true(err2.to_string().contains("cannot cast"))
+  // impossible cast paths are bind errors
+  let err3 = run_err("SELECT CAST(id AS date) FROM t", cat)
+  assert_true(err3.to_string().contains("cannot cast int32 to date"))
+  let err4 = run_err("SELECT CAST('2024-13-01' AS date) FROM t", cat)
+  assert_true(err4.to_string().contains("cannot cast"))
+}
+
+///|
+test "simple CASE compares the base expression" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT CASE lower(grade) WHEN 'a' THEN 10 WHEN 'b' THEN 20 ELSE 0 END AS pts FROM t WHERE id <= 2 ORDER BY pts",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(10))
+  assert_eq(r.get(1, 0), @types.Int32(20))
+  // no ELSE: unmatched falls to NULL
+  let r2 = run(
+    "SELECT CASE grade WHEN 'c' THEN 1 END AS p FROM t WHERE id = 1", cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Scalar::Null)
+}
+
+///|
+test "SELECT DISTINCT dedupes projected rows" {
+  let cat = funcs_catalog()
+  // (4, gamma, c) appears twice; DISTINCT collapses them
+  let r = run("SELECT DISTINCT * FROM t ORDER BY id", cat)
+  assert_eq(r.row_count(), 4)
+  // distinct over a projected column
+  let r2 = run("SELECT DISTINCT grade FROM t ORDER BY grade", cat)
+  assert_eq(r2.row_count(), 3)
+  // byte order: uppercase B sorts before lowercase a
+  assert_eq(r2.get(0, 0), @types.Str("B"))
+  assert_eq(r2.get(1, 0), @types.Str("a"))
+  assert_eq(r2.get(2, 0), @types.Str("c"))
+  // DISTINCT with an aggregate stays legal
+  let r3 = run("SELECT DISTINCT count(*) FROM t", cat)
+  assert_eq(r3.get(0, 0), @types.Int64(5))
+}

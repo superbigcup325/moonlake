@@ -7,7 +7,7 @@
 fn filter_batches(
   batches : Array[@types.DataBatch],
   pred : PhysExpr?,
-) -> Array[@types.DataBatch] {
+) -> Array[@types.DataBatch] raise @types.SqlError {
   let out : Array[@types.DataBatch] = []
   for batch in batches {
     match pred {
@@ -221,7 +221,7 @@ fn aggregate(
   group_exprs : Array[PhysExpr],
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
-) -> @types.DataBatch {
+) -> @types.DataBatch raise @types.SqlError {
   let g = group_exprs.length()
   let m = aggs.length()
   let index : Map[String, Int] = Map([])
@@ -292,6 +292,29 @@ fn aggregate(
 }
 
 ///|
+/// SELECT DISTINCT: keep the first row for every distinct projected row
+/// (first-seen order, so ORDER BY ties stay stable).
+fn dedupe_rows(batch : @types.DataBatch) -> @types.DataBatch {
+  let seen : Map[String, Bool] = Map([])
+  let indices : Array[Int] = []
+  for r in 0..<batch.row_count() {
+    let kv : Array[@types.Scalar] = []
+    for c in batch.columns() {
+      kv.push(c.get(r))
+    }
+    let key = canonical_key(kv)
+    match seen.get(key) {
+      Some(_) => ()
+      None => {
+        seen[key] = true
+        indices.push(r)
+      }
+    }
+  }
+  take_rows(batch, indices)
+}
+
+///|
 /// Evaluate the projection expressions over the post-agg row. Each
 /// output column comes from one vectorized pass; a column whose vector
 /// dtype already matches the declared output type is shared, not copied.
@@ -299,7 +322,7 @@ fn project(
   batch : @types.DataBatch,
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
-) -> @types.DataBatch {
+) -> @types.DataBatch raise @types.SqlError {
   let columns : Array[@types.ColumnVector] = []
   for i, e in out_exprs {
     let v = eval_vec(e, batch)
@@ -408,7 +431,7 @@ fn exec_joins(
   tables : Array[Array[@types.DataBatch]],
   steps : Array[JoinStep],
   deferred : PhysExpr?,
-) -> Array[@types.DataBatch] {
+) -> Array[@types.DataBatch] raise @types.SqlError {
   let mut acc = tables[steps[0].table]
   for i, step in steps {
     if i == 0 {
@@ -448,7 +471,7 @@ fn join_step(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,
-) -> @types.DataBatch {
+) -> @types.DataBatch raise @types.SqlError {
   let right_width = step.right_width
   let left_width = step.out_dtypes.length() - right_width
   // build: one columnar batch, keys evaluated once over it
@@ -572,7 +595,7 @@ fn residual_passes(
   lrow : Int,
   build : @types.DataBatch,
   brow : Int,
-) -> Bool {
+) -> Bool raise @types.SqlError {
   match residual {
     Some(re) =>
       eval_row(re, combined_row(left, lrow, build, brow))

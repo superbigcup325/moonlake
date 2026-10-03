@@ -7,18 +7,24 @@ pub fn eval_scalar(
   e : PhysExpr,
   batch : @types.DataBatch,
   row : Int,
-) -> @types.Scalar {
+) -> @types.Scalar raise @types.SqlError {
   eval_with(e, fn(i) { batch.columns()[i].get(row) })
 }
 
 ///|
 /// Evaluate against a fully materialized flat row (index = column).
-fn eval_row(e : PhysExpr, row : Array[@types.Scalar]) -> @types.Scalar {
+fn eval_row(
+  e : PhysExpr,
+  row : Array[@types.Scalar],
+) -> @types.Scalar raise @types.SqlError {
   eval_with(e, fn(i) { row[i] })
 }
 
 ///|
-fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
+fn eval_with(
+  e : PhysExpr,
+  get : (Int) -> @types.Scalar,
+) -> @types.Scalar raise @types.SqlError {
   match e {
     ColRef(i, _) => get(i)
     Const(v) => v
@@ -83,7 +89,298 @@ fn eval_with(e : PhysExpr, get : (Int) -> @types.Scalar) -> @types.Scalar {
         None => @types.Null
       }
     }
+    FuncE(name, args, _) => {
+      let vals : Array[@types.Scalar] = []
+      for a in args {
+        vals.push(eval_with(a, get))
+      }
+      eval_func(name, vals)
+    }
+    CastE(inner, dt) => cast_scalar(eval_with(inner, get), dt)
   }
+}
+
+///|
+/// Scalar string and math functions. Every function propagates NULL.
+fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
+  for v in vals {
+    if v is @types.Null {
+      return @types.Null
+    }
+  }
+  match name {
+    "length" =>
+      match vals[0] {
+        @types.Str(s) => @types.Int32(char_count(s))
+        _ => @types.Null
+      }
+    "upper" =>
+      match vals[0] {
+        @types.Str(s) => @types.Str(s.to_upper())
+        _ => @types.Null
+      }
+    "lower" =>
+      match vals[0] {
+        @types.Str(s) => @types.Str(s.to_lower())
+        _ => @types.Null
+      }
+    "trim" =>
+      match vals[0] {
+        @types.Str(s) => @types.Str(strip_spaces(s, true, true))
+        _ => @types.Null
+      }
+    "ltrim" =>
+      match vals[0] {
+        @types.Str(s) => @types.Str(strip_spaces(s, true, false))
+        _ => @types.Null
+      }
+    "rtrim" =>
+      match vals[0] {
+        @types.Str(s) => @types.Str(strip_spaces(s, false, true))
+        _ => @types.Null
+      }
+    "substring" => {
+      let chars : Array[Char] = []
+      match vals[0] {
+        @types.Str(s) =>
+          for ch in s {
+            chars.push(ch)
+          }
+        _ => return @types.Null
+      }
+      // DuckDB-style start: 1-based; zero or negative counts from the end
+      let start = match vals[1] {
+        @types.Int32(v) => v
+        _ => return @types.Null
+      }
+      let len = chars.length()
+      let begin0 = if start > 0 { start - 1 } else { len + start }
+      let want = match vals.get(2) {
+        Some(@types.Int32(v)) => v
+        _ => len // no length: through the end
+      }
+      if want <= 0 || begin0 >= len {
+        return @types.Str("")
+      }
+      let from = if begin0 < 0 { 0 } else { begin0 }
+      // a negative begin consumes skipped characters against the length
+      let mut remaining = want + (if begin0 < 0 { begin0 } else { 0 })
+      let sb = StringBuilder()
+      let mut i = from
+      while i < len && remaining > 0 {
+        sb.write_char(chars[i])
+        i += 1
+        remaining -= 1
+      }
+      @types.Str(sb.to_string())
+    }
+    "concat" => {
+      let a = match vals[0] {
+        @types.Str(s) => s
+        _ => return @types.Null
+      }
+      let b = match vals[1] {
+        @types.Str(s) => s
+        _ => return @types.Null
+      }
+      @types.Str(a + b)
+    }
+    "abs" =>
+      match vals[0] {
+        @types.Int32(v) => @types.Int32(if v < 0 { -v } else { v })
+        @types.Int64(v) => @types.Int64(if v < 0L { -v } else { v })
+        @types.Float64(v) => @types.Float64(if v < 0.0 { -v } else { v })
+        _ => @types.Null
+      }
+    "sqrt" =>
+      match as_double_scalar(vals[0]) {
+        Some(v) => @types.Float64(sqrt_fn(v))
+        None => @types.Null
+      }
+    "floor" =>
+      match as_double_scalar(vals[0]) {
+        Some(v) => @types.Float64(v.floor())
+        None => @types.Null
+      }
+    "ceil" =>
+      match as_double_scalar(vals[0]) {
+        Some(v) => @types.Float64(v.ceil())
+        None => @types.Null
+      }
+    "round" => {
+      let digits = match vals.get(1) {
+        Some(@types.Int32(d)) => d
+        _ => 0
+      }
+      match as_double_scalar(vals[0]) {
+        Some(v) => {
+          let scale = pow10i(digits)
+          @types.Float64((v * scale).round() / scale)
+        }
+        None => @types.Null
+      }
+    }
+    _ => @types.Null
+  } // unreachable: the binder whitelists names
+}
+
+///|
+fn char_count(s : String) -> Int {
+  let mut c = 0
+  for _ in s {
+    c += 1
+  }
+  c
+}
+
+///|
+fn strip_spaces(s : String, left : Bool, right : Bool) -> String {
+  let chars : Array[Char] = []
+  for ch in s {
+    chars.push(ch)
+  }
+  let mut lo = 0
+  let mut hi = chars.length()
+  if left {
+    while lo < hi && chars[lo] == ' ' {
+      lo += 1
+    }
+  }
+  if right {
+    while hi > lo && chars[hi - 1] == ' ' {
+      hi -= 1
+    }
+  }
+  let sb = StringBuilder()
+  for i in lo..<hi {
+    sb.write_char(chars[i])
+  }
+  sb.to_string()
+}
+
+///|
+fn as_double_scalar(v : @types.Scalar) -> Double? {
+  match v {
+    @types.Int32(x) => Some(x.to_double())
+    @types.Int64(x) => Some(x.to_double())
+    @types.Float64(x) => Some(x)
+    _ => None
+  }
+}
+
+///|
+fn sqrt_fn(v : Double) -> Double {
+  v.sqrt()
+}
+
+///|
+fn pow10i(e : Int) -> Double {
+  let mut v = 1.0
+  for _ in 0..<e {
+    v = v * 10.0
+  }
+  v
+}
+
+///|
+/// Runtime CAST. Failures are row errors (DuckDB-style): the query
+/// aborts with an Execute error rather than silently producing NULL.
+fn cast_scalar(
+  v : @types.Scalar,
+  dt : @types.DataType,
+) -> @types.Scalar raise @types.SqlError {
+  if v is @types.Null {
+    return @types.Null
+  }
+  match dt {
+    @types.Str => @types.Str(v.to_string())
+    @types.Int32 =>
+      match v {
+        @types.Int32(_) => v
+        @types.Int64(x) =>
+          if x >= -2147483648L && x <= 2147483647L {
+            @types.Int32(x.to_int())
+          } else {
+            raise @types.SqlError::Execute(
+              "cannot cast \{x.to_string()} to int32: out of range",
+            )
+          }
+        @types.Float64(x) => @types.Int32(x.to_int())
+        @types.Boolean(b) => @types.Int32(if b { 1 } else { 0 })
+        @types.Str(s) =>
+          match @types.parse_i32(s) {
+            Some(x) => @types.Int32(x)
+            None =>
+              raise @types.SqlError::Execute("cannot cast \"\{s}\" to int32")
+          }
+        _ => unreachable_cast(v, dt)
+      }
+    @types.Int64 =>
+      match v {
+        @types.Int32(x) => @types.Int64(x.to_int64())
+        @types.Int64(_) => v
+        @types.Float64(x) => @types.Int64(x.to_int64())
+        @types.Boolean(b) => @types.Int64(if b { 1L } else { 0L })
+        @types.Str(s) =>
+          match @types.parse_i64(s) {
+            Some(x) => @types.Int64(x)
+            None =>
+              raise @types.SqlError::Execute("cannot cast \"\{s}\" to int64")
+          }
+        _ => unreachable_cast(v, dt)
+      }
+    @types.Float64 =>
+      match v {
+        @types.Int32(x) => @types.Float64(x.to_double())
+        @types.Int64(x) => @types.Float64(x.to_double())
+        @types.Float64(_) => v
+        @types.Boolean(b) => @types.Float64(if b { 1.0 } else { 0.0 })
+        @types.Str(s) =>
+          match @types.parse_f64(s) {
+            Some(x) => @types.Float64(x)
+            None =>
+              raise @types.SqlError::Execute("cannot cast \"\{s}\" to float64")
+          }
+        _ => unreachable_cast(v, dt)
+      }
+    @types.Bool =>
+      match v {
+        @types.Boolean(_) => v
+        @types.Int32(x) => @types.Boolean(x != 0)
+        @types.Int64(x) => @types.Boolean(x != 0L)
+        @types.Str(s) =>
+          match @types.parse_bool(s) {
+            Some(b) => @types.Boolean(b)
+            None =>
+              raise @types.SqlError::Execute("cannot cast \"\{s}\" to bool")
+          }
+        _ => unreachable_cast(v, dt)
+      }
+    @types.Date =>
+      match v {
+        @types.Date(_) => v
+        @types.Int32(x) => @types.Date(x)
+        @types.Str(s) =>
+          match @types.parse_date(s) {
+            Some(d) => @types.Date(d)
+            None =>
+              raise @types.SqlError::Execute(
+                "cannot cast \"\{s}\" to date (expected yyyy-mm-dd)",
+              )
+          }
+        _ => unreachable_cast(v, dt)
+      }
+  }
+}
+
+///|
+fn unreachable_cast(
+  v : @types.Scalar,
+  dt : @types.DataType,
+) -> @types.Scalar raise @types.SqlError {
+  raise @types.SqlError::Execute(
+    "cannot cast \{v.to_string()} to \{dt.to_string()}",
+  )
 }
 
 ///|
@@ -99,7 +396,10 @@ fn promote(s : @types.Scalar, dt : @types.DataType) -> @types.Scalar {
 ///|
 /// Evaluate a boolean predicate for every row: NULL rows do not pass the
 /// filter (SQL WHERE semantics). Returns a dense selection mask.
-fn eval_mask(e : PhysExpr, batch : @types.DataBatch) -> FixedArray[Bool] {
+fn eval_mask(
+  e : PhysExpr,
+  batch : @types.DataBatch,
+) -> FixedArray[Bool] raise @types.SqlError {
   let n = batch.row_count()
   let mask : FixedArray[Bool] = FixedArray::make(n, false)
   match eval_vec(e, batch) {

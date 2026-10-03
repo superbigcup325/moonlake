@@ -53,6 +53,8 @@ pub(all) enum LExpr {
   Agg(AggFn, LExpr?) // None only for count(*)
   ScalarSub(Select) // non-correlated scalar subquery, folded to a constant
   InSelect(LExpr, Select, Bool) // value IN / NOT IN (SELECT ...), non-correlated
+  Func(String, Array[LExpr]) // scalar function call (name lowercased)
+  Cast(LExpr, @types.DataType) // CAST(expr AS type)
 } derive(Eq, Debug)
 
 ///|
@@ -138,6 +140,7 @@ pub(all) struct Select {
   items : Array[SelectItem]
   order_by : Array[OrderItem]
   limit : Int?
+  distinct : Bool // SELECT DISTINCT: dedupe the projected rows
 } derive(Eq, Debug)
 
 ///|

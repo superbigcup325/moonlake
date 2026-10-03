@@ -22,6 +22,7 @@ priv enum Tok {
   Percent
   Eq
   Neq
+  PipePipe
   Lt
   Le
   Gt
@@ -176,6 +177,13 @@ fn lex_sql(sql : String) -> Array[Tok] raise @types.SqlError {
         toks.push(Eq)
         lx.pos += 1
       }
+      '|' =>
+        if lx.pos + 1 < n && chars[lx.pos + 1] == '|' {
+          toks.push(PipePipe)
+          lx.pos += 2
+        } else {
+          raise @types.SqlError::Parse("unexpected '|' (expected ||)")
+        }
       '!' => {
         lx.pos += 1
         if lx.pos < n && chars[lx.pos] == '=' {

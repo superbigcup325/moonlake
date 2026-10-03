@@ -76,6 +76,7 @@ fn show_tok(t : Tok) -> String {
     Percent => "'%'"
     Eq => "'='"
     Neq => "'<>'"
+    PipePipe => "'||'"
     Lt => "'<'"
     Le => "'<='"
     Gt => "'>'"
@@ -133,9 +134,7 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
 /// Parse everything after SELECT (no Eof check — the caller may be
 /// inside a derived table).
 fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
-  if p.eat(KwDistinct) {
-    raise @types.SqlError::Parse("SELECT DISTINCT is not supported yet")
-  }
+  let distinct = p.eat(KwDistinct)
   let items : Array[SelectItem] = []
   items.push(parse_item(p))
   while p.eat(Comma) {
@@ -183,7 +182,7 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   } else {
     None
   }
-  { from, filter, group_by, having, items, order_by, limit, }
+  { from, filter, group_by, having, items, order_by, limit, distinct, }
 }
 
 ///|
@@ -487,6 +486,11 @@ fn parse_add(p : Parser) -> LExpr raise @types.SqlError {
         let _ = p.advance()
         left = Arith(@types.Sub, left, parse_mul(p))
       }
+      PipePipe => {
+        // string concatenation; the binder requires string operands
+        let _ = p.advance()
+        left = Func("concat", [left, parse_mul(p)])
+      }
       _ => running = false
     }
   }
@@ -667,6 +671,37 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
         p.expect(RParen)
         Agg(Count, Some(inner))
       }
+    "cast" => {
+      // CAST(expr AS type): AS binds inside the call
+      let e = parse_or(p)
+      p.expect(KwAs)
+      let dt = parse_type_name(p)
+      p.expect(RParen)
+      Cast(e, dt)
+    }
+    "substring"
+    | "length"
+    | "upper"
+    | "lower"
+    | "trim"
+    | "ltrim"
+    | "rtrim"
+    | "concat"
+    | "abs"
+    | "sqrt"
+    | "floor"
+    | "ceil"
+    | "round" => {
+      let args : Array[LExpr] = []
+      if !(p.peek() is RParen) {
+        args.push(parse_or(p))
+        while p.eat(Comma) {
+          args.push(parse_or(p))
+        }
+      }
+      p.expect(RParen)
+      Func(ascii_lower(name), args)
+    }
     _ => {
       p.pos -= 1 // rewind for a stable error position report
       raise @types.SqlError::Parse("unknown function \"\{name}\"")
@@ -676,11 +711,45 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
 }
 
 ///|
+/// Type names accepted by CAST. INT32 is the default integer width.
+fn parse_type_name(p : Parser) -> @types.DataType raise @types.SqlError {
+  let t = p.advance()
+  match t {
+    Ident(name) =>
+      match ascii_lower(name) {
+        "int32" | "int" | "integer" => @types.Int32
+        "int64" | "bigint" | "long" => @types.Int64
+        "float64" | "double" | "float" => @types.Float64
+        "bool" | "boolean" => @types.Bool
+        "string" | "text" | "varchar" | "char" => @types.Str
+        "date" => @types.Date
+        other => raise @types.SqlError::Parse("unknown type name \"\{other}\"")
+      }
+    // DATE is a keyword (date literals) but a perfectly good cast target
+    KwDate => @types.Date
+    other => {
+      let found = show_tok(other)
+      raise @types.SqlError::Parse("expected type name, found \{found}")
+    }
+  }
+}
+
+///|
 fn parse_case(p : Parser) -> LExpr raise @types.SqlError {
-  // searched CASE only: CASE WHEN c THEN r [WHEN ...] [ELSE e] END
+  // CASE WHEN c THEN r [WHEN ...] [ELSE e] END, plus the simple form
+  // CASE expr WHEN v THEN r ... which desugars to equality comparisons
+  let base : LExpr? = if p.peek() is KwWhen {
+    None
+  } else {
+    Some(parse_or(p)) // the loop below consumes the first WHEN
+  }
   let whens : Array[(LExpr, LExpr)] = []
   while p.eat(KwWhen) {
     let cond = parse_or(p)
+    let cond = match base {
+      Some(b) => Cmp(@types.Eq, b, cond)
+      None => cond
+    }
     p.expect(KwThen)
     let res = parse_or(p)
     whens.push((cond, res))

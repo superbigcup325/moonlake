@@ -6,7 +6,10 @@
 // eval_with exactly — the differential tests pin the two paths together.
 
 ///|
-pub fn eval_vec(e : PhysExpr, batch : @types.DataBatch) -> @types.ColumnVector {
+pub fn eval_vec(
+  e : PhysExpr,
+  batch : @types.DataBatch,
+) -> @types.ColumnVector raise @types.SqlError {
   let n = batch.row_count()
   match e {
     ColRef(i, _) => batch.columns()[i] // shared reference, never mutated
@@ -83,7 +86,10 @@ pub fn eval_vec(e : PhysExpr, batch : @types.DataBatch) -> @types.ColumnVector {
 ///|
 /// Per-row fallback: the exact scalar interpreter, one boxed cell at a
 /// time. dt comes from the expression shape itself.
-fn fallback(e : PhysExpr, batch : @types.DataBatch) -> @types.ColumnVector {
+fn fallback(
+  e : PhysExpr,
+  batch : @types.DataBatch,
+) -> @types.ColumnVector raise @types.SqlError {
   let n = batch.row_count()
   let vec = @types.ColumnVector::make(expr_dtype(e), n)
   for r in 0..<n {
@@ -108,6 +114,8 @@ fn expr_dtype(e : PhysExpr) -> @types.DataType {
     IsNullE(_, _) => @types.Bool
     ExtractE(_, _) => @types.Int32
     InSetE(_, _, _, _) => @types.Bool
+    FuncE(_, _, dt) => dt
+    CastE(_, dt) => dt
     CaseE(_, _, dt) => dt
   }
 }

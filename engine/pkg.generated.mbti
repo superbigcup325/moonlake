@@ -8,9 +8,9 @@ import {
 }
 
 // Values
-pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar
+pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar raise @types.SqlError
 
-pub fn eval_vec(PhysExpr, @types.DataBatch) -> @types.ColumnVector
+pub fn eval_vec(PhysExpr, @types.DataBatch) -> @types.ColumnVector raise @types.SqlError
 
 pub fn explain(String, @catalog.Catalog) -> String raise @types.SqlError
 
@@ -88,6 +88,8 @@ pub(all) enum LExpr {
   Agg(AggFn, LExpr?)
   ScalarSub(Select)
   InSelect(LExpr, Select, Bool)
+  Func(String, Array[LExpr])
+  Cast(LExpr, @types.DataType)
 } derive(Eq, @debug.Debug)
 pub fn LExpr::equal(Self, Self) -> Bool
 pub fn LExpr::not_equal(Self, Self) -> Bool
@@ -115,6 +117,8 @@ pub(all) enum PhysExpr {
   ExtractE(PhysExpr, ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool)
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
+  FuncE(String, Array[PhysExpr], @types.DataType)
+  CastE(PhysExpr, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 
@@ -126,6 +130,7 @@ pub(all) struct Select {
   items : Array[SelectItem]
   order_by : Array[OrderItem]
   limit : Int?
+  distinct : Bool
 } derive(Eq, @debug.Debug)
 pub fn Select::equal(Self, Self) -> Bool
 pub fn Select::not_equal(Self, Self) -> Bool

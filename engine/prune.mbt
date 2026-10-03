@@ -201,6 +201,7 @@ fn prune_bound(
       out_types: bq.out_types,
       order_keys: bq.order_keys,
       limit: bq.limit,
+      distinct: bq.distinct,
     },
     table_cols,
   }
@@ -251,6 +252,11 @@ fn collect_refs(
     IsNullE(inner, _) => collect_refs(inner, resolve, needed)
     ExtractE(inner, _) => collect_refs(inner, resolve, needed)
     InSetE(inner, _, _, _) => collect_refs(inner, resolve, needed)
+    FuncE(_, args, _) =>
+      for a in args {
+        collect_refs(a, resolve, needed)
+      }
+    CastE(inner, _) => collect_refs(inner, resolve, needed)
     CaseE(whens, else_, _) => {
       for w in whens {
         collect_refs(w.0, resolve, needed)
@@ -299,6 +305,14 @@ fn rewrite_refs(e : PhysExpr, m : (Int) -> Int) -> PhysExpr {
     ExtractE(inner, field) => ExtractE(rewrite_refs(inner, m), field)
     InSetE(inner, set, negated, has_null) =>
       InSetE(rewrite_refs(inner, m), set, negated, has_null)
+    FuncE(name, args, dt) => {
+      let new_args : Array[PhysExpr] = []
+      for a in args {
+        new_args.push(rewrite_refs(a, m))
+      }
+      FuncE(name, new_args, dt)
+    }
+    CastE(inner, dt) => CastE(rewrite_refs(inner, m), dt)
     CaseE(whens, else_, dt) => {
       let new_whens : Array[(PhysExpr, PhysExpr)] = []
       for w in whens {

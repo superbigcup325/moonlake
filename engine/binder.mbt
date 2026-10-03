@@ -28,6 +28,8 @@ pub(all) enum PhysExpr {
   ExtractE(PhysExpr, ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool) // value, folded key set, negated, right side had NULL
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
+  FuncE(String, Array[PhysExpr], @types.DataType) // scalar function, name lowercased
+  CastE(PhysExpr, @types.DataType) // CAST(expr AS type)
 } derive(Debug)
 
 ///|
@@ -83,6 +85,7 @@ pub struct BoundQuery {
   priv out_types : Array[@types.DataType]
   priv order_keys : Array[(Int, Bool)] // output column index, desc
   priv limit : Int?
+  priv distinct : Bool // SELECT DISTINCT: dedupe projected rows
 } derive(Debug)
 
 ///|
@@ -313,6 +316,7 @@ fn bind_select(
     out_types,
     order_keys,
     limit: sel.limit,
+    distinct: sel.distinct,
   }
 }
 
@@ -321,6 +325,13 @@ fn contains_agg(e : LExpr) -> Bool {
   match e {
     Col(_) | ColQ(_, _) | Lit(_) => ()
     Agg(_, _) => return true
+    Func(_, args) =>
+      for a in args {
+        if contains_agg(a) {
+          return true
+        }
+      }
+    Cast(e, _) => if contains_agg(e) { return true }
     Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
       return contains_agg(l) || contains_agg(r)
     Not(x) => return contains_agg(x)
@@ -458,6 +469,14 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
     // subqueries are self-contained: only the outer value expression counts
     ScalarSub(_) => 0
     InSelect(v, _, _) => self.col_mask(v)
+    Func(_, args) => {
+      let mut m = 0
+      for a in args {
+        m = m | self.col_mask(a)
+      }
+      m
+    }
+    Cast(e, _) => self.col_mask(e)
     Agg(_, _) =>
       raise @types.SqlError::Bind("aggregate not allowed in a join condition")
   }
@@ -1287,6 +1306,162 @@ fn Binder::bind(
       }
       (CaseE(whens_p, else_p, out_dt), out_dt)
     }
+    Func(name, args) => self.bind_func(name, args, space)
+    Cast(e, dt) =>
+      // CAST(NULL AS t) is a typed NULL like Cmp/Arith's NULL operands
+      if e is Lit(@types.Null) {
+        (Const(@types.Null), dt)
+      } else {
+        let (pe, src_dt) = self.bind(e, space)
+        castable(src_dt, dt)
+        (CastE(pe, dt), dt)
+      }
+  }
+}
+
+///|
+/// Type-check a scalar function call and lower it to FuncE. Operand
+/// types must match the signature exactly (no implicit casts besides
+/// the binder's numeric promotions, which do not apply to strings).
+fn Binder::bind_func(
+  self : Binder,
+  name : String,
+  args : Array[LExpr],
+  space : Space,
+) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+  let arity = args.length()
+  fn want(
+    e : LExpr,
+    dt : @types.DataType,
+    what : String,
+  ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+    let (pe, got) = self.bind(e, space)
+    if got != dt {
+      raise @types.SqlError::Bind(
+        "\{name}() requires a \{what} argument, got \{got.to_string()}",
+      )
+    }
+    (pe, got)
+  }
+  fn want_num(e : LExpr) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+    let (pe, got) = self.bind(e, space)
+    match got {
+      @types.Int32 | @types.Int64 | @types.Float64 => ()
+      other =>
+        raise @types.SqlError::Bind(
+          "\{name}() requires a numeric argument, got \{other.to_string()}",
+        )
+    }
+    (pe, got)
+  }
+  match name {
+    "length" => {
+      if arity != 1 {
+        raise @types.SqlError::Bind("length() takes exactly one argument")
+      }
+      let (pe, _) = want(args[0], @types.Str, "string")
+      (FuncE("length", [pe], @types.Int32), @types.Int32)
+    }
+    "upper" | "lower" | "trim" | "ltrim" | "rtrim" => {
+      if arity != 1 {
+        raise @types.SqlError::Bind("\{name}() takes exactly one argument")
+      }
+      let (pe, _) = want(args[0], @types.Str, "string")
+      (FuncE(name, [pe], @types.Str), @types.Str)
+    }
+    "substring" => {
+      if arity != 2 && arity != 3 {
+        raise @types.SqlError::Bind(
+          "substring() takes (string, start) or (string, start, length)",
+        )
+      }
+      let (spe, _) = want(args[0], @types.Str, "string")
+      let pes = [spe]
+      for i in 1..<arity {
+        let (pe, _) = want(args[i], @types.Int32, "int32")
+        pes.push(pe)
+      }
+      (FuncE("substring", pes, @types.Str), @types.Str)
+    }
+    "concat" => {
+      if arity != 2 {
+        raise @types.SqlError::Bind("concat() takes exactly two arguments")
+      }
+      let (l, _) = want(args[0], @types.Str, "string")
+      let (r, _) = want(args[1], @types.Str, "string")
+      (FuncE("concat", [l, r], @types.Str), @types.Str)
+    }
+    "abs" => {
+      if arity != 1 {
+        raise @types.SqlError::Bind("abs() takes exactly one argument")
+      }
+      let (pe, dt) = want_num(args[0])
+      (FuncE("abs", [pe], dt), dt)
+    }
+    "sqrt" => {
+      if arity != 1 {
+        raise @types.SqlError::Bind("sqrt() takes exactly one argument")
+      }
+      let (pe, _) = want_num(args[0])
+      (FuncE("sqrt", [pe], @types.Float64), @types.Float64)
+    }
+    "floor" | "ceil" => {
+      if arity != 1 {
+        raise @types.SqlError::Bind("\{name}() takes exactly one argument")
+      }
+      let (pe, _) = want_num(args[0])
+      (FuncE(name, [pe], @types.Float64), @types.Float64)
+    }
+    "round" => {
+      if arity != 1 && arity != 2 {
+        raise @types.SqlError::Bind("round() takes (x) or (x, digits)")
+      }
+      let (pe, _) = want_num(args[0])
+      let pes = [pe]
+      if arity == 2 {
+        let (dpe, _) = want(args[1], @types.Int32, "int32")
+        pes.push(dpe)
+      }
+      (FuncE("round", pes, @types.Float64), @types.Float64)
+    }
+    other => raise @types.SqlError::Bind("unknown function \"\{other}\"")
+  }
+}
+
+///|
+/// Allowed CAST paths; anything else is a bind error.
+fn castable(
+  src : @types.DataType,
+  dst : @types.DataType,
+) -> Unit raise @types.SqlError {
+  let ok = if src == dst {
+    true
+  } else {
+    match src {
+      @types.Int32 | @types.Int64 | @types.Float64 =>
+        dst
+        is (@types.Int32
+        | @types.Int64
+        | @types.Float64
+        | @types.Str
+        | @types.Bool)
+      @types.Bool =>
+        dst is (@types.Str | @types.Int32 | @types.Int64 | @types.Float64)
+      @types.Str =>
+        dst
+        is (@types.Int32
+        | @types.Int64
+        | @types.Float64
+        | @types.Bool
+        | @types.Date
+        | @types.Str)
+      @types.Date => dst is (@types.Str | @types.Int32)
+    }
+  }
+  if !ok {
+    raise @types.SqlError::Bind(
+      "cannot cast \{src.to_string()} to \{dst.to_string()}",
+    )
   }
 }
 

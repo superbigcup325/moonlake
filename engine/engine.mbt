@@ -117,6 +117,7 @@ fn run_parsed(
     bq.out_exprs,
     bq.out_types,
   )
+  let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
   let batch = order_limit(projected, bq.order_keys, bq.limit)
   { names: bq.names, types: bq.out_types, batch, }
 }
