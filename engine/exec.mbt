@@ -411,30 +411,6 @@ fn exec_joins(
 }
 
 ///|
-fn concat_rows(
-  a : Array[@types.Scalar],
-  b : Array[@types.Scalar],
-) -> Array[@types.Scalar] {
-  let out : Array[@types.Scalar] = []
-  for x in a {
-    out.push(x)
-  }
-  for x in b {
-    out.push(x)
-  }
-  out
-}
-
-///|
-fn null_row(width : Int) -> Array[@types.Scalar] {
-  let row : Array[@types.Scalar] = []
-  for _ in 0..<width {
-    row.push(@types.Null)
-  }
-  row
-}
-
-///|
 fn key_has_null(vals : Array[@types.Scalar]) -> Bool {
   for v in vals {
     if v is @types.Null {
@@ -445,97 +421,217 @@ fn key_has_null(vals : Array[@types.Scalar]) -> Bool {
 }
 
 ///|
-/// Turn row arrays into a columnar batch (join output).
-fn columnarize(
-  dtypes : Array[@types.DataType],
-  rows : Array[Array[@types.Scalar]],
-) -> @types.DataBatch {
-  let n = rows.length()
-  let columns : Array[@types.ColumnVector] = []
-  for c, dt in dtypes {
-    let vec = @types.ColumnVector::make(dt, n)
-    for r in 0..<n {
-      vec.set(r, rows[r][c])
-    }
-    columns.push(vec)
-  }
-  @types.DataBatch::new(columns, n)
-}
-
-///|
-/// One hash join: build a key -> rows map on the (filtered) right table,
-/// probe with every accumulated row. NULL keys never match; LEFT keeps
-/// unmatched probe rows with a NULL right side; the residual filters
-/// candidate pairs before the match counts (so LEFT NULL-extension sees
-/// the post-residual match set, per ON semantics).
+/// One hash join: build a key -> row-ids map on the (filtered) right
+/// side, probe with every accumulated row. NULL keys never match; LEFT
+/// keeps unmatched probe rows with a NULL right side; the residual
+/// filters candidate pairs before the match counts (so LEFT
+/// NULL-extension sees the post-residual match set, per ON semantics).
+///
+/// Both sides are concatenated into single columnar batches, keys are
+/// evaluated once per side, probe hits collect (left row, build row)
+/// integer pairs, and the output is assembled by per-column gathers —
+/// no boxed row arrays in the hot path.
 fn join_step(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,
 ) -> @types.DataBatch {
   let right_width = step.right_width
-  // build
-  let build_rows : Array[Array[@types.Scalar]] = []
+  let left_width = step.out_dtypes.length() - right_width
+  // build: one columnar batch, keys evaluated once over it
+  let build = concat_batches(right, tail_dtypes(step.out_dtypes, right_width))
+  let n_build = build.row_count()
   let map : Map[String, Array[Int]] = Map([])
-  for rb in right {
-    for r in 0..<rb.row_count() {
-      let row : Array[@types.Scalar] = []
-      for c in 0..<rb.columns().length() {
-        row.push(rb.columns()[c].get(r))
-      }
-      let kv : Array[@types.Scalar] = []
-      for e in step.keys_r {
-        kv.push(eval_row(e, row))
-      }
-      if key_has_null(kv) {
-        continue // NULL join keys never match
-      }
-      let key = canonical_key(kv)
-      match map.get(key) {
-        Some(ids) => ids.push(build_rows.length())
-        None => map[key] = [build_rows.length()]
-      }
-      build_rows.push(row)
+  let build_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_r {
+    build_keys.push(eval_vec(e, build))
+  }
+  for r in 0..<n_build {
+    let kv : Array[@types.Scalar] = []
+    for c in build_keys {
+      kv.push(c.get(r))
+    }
+    if key_has_null(kv) {
+      continue // NULL join keys never match
+    }
+    let key = canonical_key(kv)
+    match map.get(key) {
+      Some(ids) => ids.push(r)
+      None => map[key] = [r]
     }
   }
-  // probe
-  let out : Array[Array[@types.Scalar]] = []
-  for ab in acc {
-    for r in 0..<ab.row_count() {
-      let lrow : Array[@types.Scalar] = []
-      for c in 0..<ab.columns().length() {
-        lrow.push(ab.columns()[c].get(r))
-      }
-      let kv : Array[@types.Scalar] = []
-      for e in step.keys_l {
-        kv.push(eval_row(e, lrow))
-      }
-      let mut matched = false
-      if !key_has_null(kv) {
-        match map.get(canonical_key(kv)) {
-          Some(ids) =>
-            for id in ids {
-              let combined = concat_rows(lrow, build_rows[id])
-              let pass = match step.residual {
-                Some(re) => eval_row(re, combined) is @types.Boolean(true)
-                None => true
+  // probe: keys evaluated once over the concatenated left side
+  let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
+  let n_left = left.row_count()
+  let left_keys : Array[@types.ColumnVector] = []
+  for e in step.keys_l {
+    left_keys.push(eval_vec(e, left))
+  }
+  let left_ids : Array[Int] = []
+  let right_ids : Array[Int] = [] // -1 marks a LEFT NULL extension
+  for r in 0..<n_left {
+    let kv : Array[@types.Scalar] = []
+    for c in left_keys {
+      kv.push(c.get(r))
+    }
+    let mut matched = false
+    if !key_has_null(kv) {
+      match map.get(canonical_key(kv)) {
+        Some(ids) =>
+          for id in ids {
+            let pass = match step.residual {
+              Some(re) => {
+                let combined = combined_row(left, r, build, id)
+                eval_row(re, combined) is @types.Boolean(true)
               }
-              if pass {
-                out.push(combined)
-                matched = true
-              }
+              None => true
             }
-          None => ()
-        }
+            if pass {
+              left_ids.push(r)
+              right_ids.push(id)
+              matched = true
+            }
+          }
+        None => ()
       }
-      if !matched {
-        if step.kind is Left {
-          out.push(concat_rows(lrow, null_row(right_width)))
-        }
+    }
+    if !matched {
+      if step.kind is Left {
+        left_ids.push(r)
+        right_ids.push(-1)
       }
     }
   }
-  columnarize(step.out_dtypes, out)
+  // assemble by per-column gather
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<left_width {
+    columns.push(gather(left.columns()[c], left_ids))
+  }
+  for c in 0..<right_width {
+    columns.push(gather(build.columns()[c], right_ids))
+  }
+  @types.DataBatch::new(columns, left_ids.length())
+}
+
+///|
+/// The first `count` dtypes of the combined join layout.
+fn head_dtypes(
+  dtypes : Array[@types.DataType],
+  count : Int,
+) -> Array[@types.DataType] {
+  let out : Array[@types.DataType] = []
+  for i in 0..<count {
+    out.push(dtypes[i])
+  }
+  out
+}
+
+///|
+/// The last `count` dtypes of the combined join layout.
+fn tail_dtypes(
+  dtypes : Array[@types.DataType],
+  count : Int,
+) -> Array[@types.DataType] {
+  let out : Array[@types.DataType] = []
+  let start = dtypes.length() - count
+  for i in start..<dtypes.length() {
+    out.push(dtypes[i])
+  }
+  out
+}
+
+///|
+/// The combined flat row for one candidate pair (residual evaluation).
+fn combined_row(
+  left : @types.DataBatch,
+  lrow : Int,
+  build : @types.DataBatch,
+  brow : Int,
+) -> Array[@types.Scalar] {
+  let row : Array[@types.Scalar] = []
+  for c in 0..<left.columns().length() {
+    row.push(left.columns()[c].get(lrow))
+  }
+  for c in 0..<build.columns().length() {
+    row.push(build.columns()[c].get(brow))
+  }
+  row
+}
+
+///|
+/// Gather rows by id into a fresh vector. A negative id writes an
+/// invalid slot (LEFT join NULL extension). Typed per variant so the
+/// gather writes plain arrays, no boxed Scalars.
+fn gather(src : @types.ColumnVector, ids : Array[Int]) -> @types.ColumnVector {
+  let n = ids.length()
+  match src {
+    @types.I32(d, valid) => {
+      let od : FixedArray[Int] = FixedArray::make(n, 0)
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.I32(od, ovalid)
+    }
+    @types.I64(d, valid) => {
+      let od : FixedArray[Int64] = FixedArray::make(n, 0L)
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.I64(od, ovalid)
+    }
+    @types.F64(d, valid) => {
+      let od : FixedArray[Double] = FixedArray::make(n, 0.0)
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.F64(od, ovalid)
+    }
+    @types.BoolV(d, valid) => {
+      let od : FixedArray[Bool] = FixedArray::make(n, false)
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.BoolV(od, ovalid)
+    }
+    @types.StrV(d, valid) => {
+      let od : FixedArray[String] = FixedArray::make(n, "")
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.StrV(od, ovalid)
+    }
+    @types.DateV(d, valid) => {
+      let od : FixedArray[Int] = FixedArray::make(n, 0)
+      let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+      for w, i in ids {
+        if i >= 0 && valid[i] {
+          od[w] = d[i]
+          ovalid[w] = true
+        }
+      }
+      @types.DateV(od, ovalid)
+    }
+  }
 }
 
 ///|
