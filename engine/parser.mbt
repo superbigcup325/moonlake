@@ -182,7 +182,21 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   } else {
     None
   }
-  { from, filter, group_by, having, items, order_by, limit, distinct, }
+  let offset : Int? = if p.peek() is Ident(on) && ascii_lower(on) == "offset" {
+    let _ = p.advance()
+    match p.advance() {
+      IntLit(v) => Some(v)
+      other => {
+        let found = show_tok(other)
+        raise @types.SqlError::Parse(
+          "expected a number after OFFSET, found \{found}",
+        )
+      }
+    }
+  } else {
+    None
+  }
+  { from, filter, group_by, having, items, order_by, limit, offset, distinct, }
 }
 
 ///|
@@ -344,7 +358,31 @@ fn parse_order_item(p : Parser) -> OrderItem raise @types.SqlError {
     let _ = p.eat(KwAsc)
     false
   }
-  { key, desc, }
+  // optional NULLS FIRST / NULLS LAST ("nulls" is not a keyword, so a
+  // column named nulls stays usable elsewhere)
+  let mut nulls_first : Bool? = None
+  if p.peek() is Ident(wn) && ascii_lower(wn) == "nulls" {
+    let _ = p.advance()
+    let d = p.advance()
+    match d {
+      Ident(dir) =>
+        match ascii_lower(dir) {
+          "first" => nulls_first = Some(true)
+          "last" => nulls_first = Some(false)
+          other =>
+            raise @types.SqlError::Parse(
+              "expected FIRST or LAST after NULLS, found \"\{other}\"",
+            )
+        }
+      other => {
+        let found = show_tok(other)
+        raise @types.SqlError::Parse(
+          "expected FIRST or LAST after NULLS, found \{found}",
+        )
+      }
+    }
+  }
+  { key, desc, nulls_first, }
 }
 
 ///|

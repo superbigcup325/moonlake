@@ -84,6 +84,11 @@ fn prune_bound(
     for e in bq.out_exprs {
       mark_flat(e)
     }
+    // expression ORDER BY sorts the pre-projection row: its columns are
+    // needed even when nothing else references them
+    for k in bq.order_exprs {
+      mark_flat(k.0)
+    }
   }
   // fast path: every column of every table is referenced
   let mut all_needed = true
@@ -187,6 +192,11 @@ fn prune_bound(
   } else {
     rewrite_all(bq.out_exprs, fn(i) { flat_map[i] })
   }
+  let order_exprs = if bq.aggregate {
+    bq.order_exprs
+  } else {
+    rewrite_order_exprs(bq.order_exprs, fn(i) { flat_map[i] })
+  }
   {
     bq: {
       steps,
@@ -200,7 +210,9 @@ fn prune_bound(
       names: bq.names,
       out_types: bq.out_types,
       order_keys: bq.order_keys,
+      order_exprs,
       limit: bq.limit,
+      offset: bq.offset,
       distinct: bq.distinct,
     },
     table_cols,
@@ -286,6 +298,19 @@ fn rewrite_opt(e : PhysExpr?, m : (Int) -> Int) -> PhysExpr? {
     Some(inner) => Some(rewrite_refs(inner, m))
     None => None
   }
+}
+
+///|
+/// Deep-copy ORDER BY keys with every ColRef index remapped.
+fn rewrite_order_exprs(
+  keys : Array[(PhysExpr, Bool, Bool?)],
+  m : (Int) -> Int,
+) -> Array[(PhysExpr, Bool, Bool?)] {
+  let out : Array[(PhysExpr, Bool, Bool?)] = []
+  for k in keys {
+    out.push((rewrite_refs(k.0, m), k.1, k.2))
+  }
+  out
 }
 
 ///|

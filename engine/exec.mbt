@@ -343,20 +343,26 @@ fn project(
 
 ///|
 /// Row comparator over pre-materialized ORDER BY key columns. NULLs
-/// sort last regardless of direction; ties keep input order.
+/// sort last by default, or first when the key says so; ties keep
+/// input order.
 fn cmp_decorated(
   key_cols : Array[Array[@types.Scalar]],
-  keys : Array[(Int, Bool)],
+  keys : Array[(Int, Bool, Bool?)],
+  nulls_first : Array[Bool?],
   a : Int,
   b : Int,
 ) -> Int {
   for k, kv in keys {
     let x = key_cols[k][a]
     let y = key_cols[k][b]
+    let nf = match nulls_first[k] {
+      Some(f) => f
+      None => false
+    }
     let ord : Int = match (x, y) {
       (@types.Null, @types.Null) => 0
-      (@types.Null, _) => 1
-      (_, @types.Null) => -1
+      (@types.Null, _) => if nf { -1 } else { 1 }
+      (_, @types.Null) => if nf { 1 } else { -1 }
       _ =>
         match @types.Scalar::compare(x, y) {
           Some(c) => if kv.1 { -c } else { c }
@@ -373,8 +379,9 @@ fn cmp_decorated(
 ///|
 fn order_limit(
   batch : @types.DataBatch,
-  keys : Array[(Int, Bool)],
+  keys : Array[(Int, Bool, Bool?)],
   limit : Int?,
+  offset : Int?,
 ) -> @types.DataBatch {
   let n = batch.row_count()
   let indices : Array[Int] = []
@@ -392,21 +399,79 @@ fn order_limit(
       }
       key_cols.push(vals)
     }
-    indices.sort_by((a, b) => cmp_decorated(key_cols, keys, a, b))
+    let nfs : Array[Bool?] = []
+    for kv in keys {
+      nfs.push(kv.2)
+    }
+    indices.sort_by((a, b) => cmp_decorated(key_cols, keys, nfs, a, b))
   }
-  let sel : Array[Int] = match limit {
-    Some(k) => {
-      let out : Array[Int] = []
-      for i in 0..<n {
-        if i < k {
-          out.push(indices[i])
+  take_rows(batch, window(indices, offset, limit))
+}
+
+///|
+/// Sort by key expressions over the pre-projection row, then apply the
+/// offset/limit window. Decorates via the vectorized evaluator.
+fn sort_exprs(
+  batch : @types.DataBatch,
+  keys : Array[(PhysExpr, Bool, Bool?)],
+  offset : Int?,
+  limit : Int?,
+) -> @types.DataBatch raise @types.SqlError {
+  let n = batch.row_count()
+  let indices : Array[Int] = []
+  for i in 0..<n {
+    indices.push(i)
+  }
+  if keys.length() > 0 {
+    let key_cols : Array[Array[@types.Scalar]] = []
+    let nfs : Array[Bool?] = []
+    for k in keys {
+      let vec = eval_vec(k.0, batch)
+      let vals : Array[@types.Scalar] = []
+      for r in 0..<n {
+        vals.push(vec.get(r))
+      }
+      key_cols.push(vals)
+      nfs.push(k.2)
+    }
+    // cmp_decorated keys on column indexes
+    let kds : Array[(Int, Bool, Bool?)] = []
+    for i, k in keys {
+      kds.push((i, k.1, k.2))
+    }
+    indices.sort_by((a, b) => cmp_decorated(key_cols, kds, nfs, a, b))
+  }
+  take_rows(batch, window(indices, offset, limit))
+}
+
+///|
+/// The offset/limit window of a row-id list: skip `offset`, then take
+/// at most `limit`.
+fn window(indices : Array[Int], offset : Int?, limit : Int?) -> Array[Int] {
+  let skip = match offset {
+    Some(o) => o
+    None => 0
+  }
+  let mut taken = 0
+  let out : Array[Int] = []
+  for i in indices {
+    if taken >= skip {
+      match limit {
+        Some(k) =>
+          if taken - skip < k {
+            out.push(i)
+            taken += 1
+          }
+        None => {
+          out.push(i)
+          taken += 1
         }
       }
-      out
+    } else {
+      taken += 1
     }
-    None => indices
   }
-  take_rows(batch, sel)
+  out
 }
 
 ///|

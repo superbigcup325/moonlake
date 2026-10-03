@@ -1041,3 +1041,51 @@ test "EXISTS and NOT EXISTS gate rows on the subquery" {
   )
   assert_true(err.to_string().contains("unknown column"))
 }
+
+///|
+test "ORDER BY expressions, OFFSET and NULLS placement" {
+  let cat = funcs_catalog()
+  // expression ordering without projecting the key
+  let r = run("SELECT DISTINCT id FROM t ORDER BY -id LIMIT 2", cat)
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(4))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  // ordinal ordering
+  let r2 = run("SELECT id, grade FROM t ORDER BY 2 DESC LIMIT 1", cat)
+  assert_eq(r2.get(0, 1), @types.Str("c"))
+  // expression ordering over aggregates
+  let r3 = run(
+    "SELECT grade, count(*) AS c FROM t GROUP BY grade ORDER BY count(*) DESC, grade LIMIT 1",
+    cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Str("a"))
+  assert_eq(r3.get(0, 1), @types.Int64(2))
+  // NULLS FIRST / NULLS LAST over a nullable column
+  let cat2 = @catalog.Catalog::new()
+  cat2.register(
+    @csv.scan_string("v\n3\n\"\"\n1\n", "n") catch {
+      e => abort("\{e}")
+    },
+  )
+  let first = run("SELECT v FROM n ORDER BY v ASC NULLS FIRST", cat2)
+  assert_eq(first.get(0, 0), @types.Scalar::Null)
+  assert_eq(first.get(1, 0), @types.Int32(1))
+  let last = run("SELECT v FROM n ORDER BY v ASC NULLS LAST", cat2)
+  assert_eq(last.get(2, 0), @types.Scalar::Null)
+  let lastdesc = run("SELECT v FROM n ORDER BY v DESC NULLS FIRST", cat2)
+  assert_eq(lastdesc.get(0, 0), @types.Scalar::Null)
+  assert_eq(lastdesc.get(1, 0), @types.Int32(3))
+}
+
+///|
+test "OFFSET windows past the first rows" {
+  let cat = funcs_catalog()
+  let r = run("SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1", cat)
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(2))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  // OFFSET without LIMIT
+  let r2 = run("SELECT id FROM t ORDER BY id OFFSET 3", cat)
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Int32(4))
+}

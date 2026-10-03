@@ -83,8 +83,10 @@ pub struct BoundQuery {
   priv out_exprs : Array[PhysExpr] // over post-agg layout
   priv names : Array[String]
   priv out_types : Array[@types.DataType]
-  priv order_keys : Array[(Int, Bool)] // output column index, desc
+  priv order_keys : Array[(Int, Bool, Bool?)] // output column index, desc, nulls first?
+  priv order_exprs : Array[(PhysExpr, Bool, Bool?)] // sort before projection
   priv limit : Int?
+  priv offset : Int?
   priv distinct : Bool // SELECT DISTINCT: dedupe projected rows
 } derive(Debug)
 
@@ -286,16 +288,19 @@ fn bind_select(
     }
     None => None
   }
-  let order_keys : Array[(Int, Bool)] = []
+  let order_keys : Array[(Int, Bool, Bool?)] = []
+  let order_exprs : Array[(PhysExpr, Bool, Bool?)] = []
   for item in sel.order_by {
-    // ORDER BY references output columns by name; a qualifier is accepted
-    // and ignored (it can only name the query's own output).
+    // ORDER BY references output columns by name or ordinal; anything
+    // else binds as an expression over the pre-projection row (Flat for
+    // plain queries, AggOut once aggregates are involved), and sorting
+    // happens before projection.
     let key_name : String? = match item.key {
       Col(name) => Some(name)
       ColQ(_, name) => Some(name)
       _ => None
     }
-    let idx : Int? = match key_name {
+    let mut idx : Int? = match key_name {
       Some(name) => {
         let mut found = None
         for i, name2 in names {
@@ -307,12 +312,25 @@ fn bind_select(
       }
       None => None
     }
+    if idx is None {
+      match item.key {
+        Lit(@types.Int32(v)) =>
+          if v >= 1 && v <= names.length() {
+            idx = Some(v - 1)
+          } else {
+            raise @types.SqlError::Bind(
+              "ORDER BY position \{v} is out of range (1..\{names.length()})",
+            )
+          }
+        _ => ()
+      }
+    }
     match idx {
-      Some(i) => order_keys.push((i, item.desc))
-      None =>
-        raise @types.SqlError::Bind(
-          "ORDER BY must reference an output column (v1 subset)",
-        )
+      Some(i) => order_keys.push((i, item.desc, item.nulls_first))
+      None => {
+        let (pe, _) = b.bind(item.key, if agg_mode { AggOut } else { Flat })
+        order_exprs.push((pe, item.desc, item.nulls_first))
+      }
     }
   }
   {
@@ -327,7 +345,9 @@ fn bind_select(
     names,
     out_types,
     order_keys,
+    order_exprs,
     limit: sel.limit,
+    offset: sel.offset,
     distinct: sel.distinct,
   }
 }

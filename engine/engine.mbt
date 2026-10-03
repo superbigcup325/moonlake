@@ -112,13 +112,23 @@ fn run_parsed(
   } else {
     joined
   }
-  let projected = project(
-    concat_batches(kept, bq.steps[bq.steps.length() - 1].out_dtypes),
-    bq.out_exprs,
-    bq.out_types,
-  )
+  // expression ORDER BY sorts the pre-projection row (Flat for plain
+  // queries, AggOut once aggregates are in play); output-column ORDER BY
+  // keeps the post-projection path
+  let pre = concat_batches(kept, bq.steps[bq.steps.length() - 1].out_dtypes)
+  let pre = if bq.order_exprs.length() > 0 {
+    sort_exprs(pre, bq.order_exprs, None, None)
+  } else {
+    pre
+  }
+  let projected = project(pre, bq.out_exprs, bq.out_types)
   let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
-  let batch = order_limit(projected, bq.order_keys, bq.limit)
+  let batch = if bq.order_exprs.length() > 0 {
+    // already sorted; only the window is left to apply
+    sort_exprs(projected, [], bq.offset, bq.limit)
+  } else {
+    order_limit(projected, bq.order_keys, bq.limit, bq.offset)
+  }
   { names: bq.names, types: bq.out_types, batch, }
 }
 

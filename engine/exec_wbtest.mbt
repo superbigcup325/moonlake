@@ -14,7 +14,7 @@ test "order_limit sorts by a single string key" {
   let batch = str_batch([
     "pear", "apple", "mango", "banana", "kiwi", "cherry", "apricot", "blueberry",
   ])
-  let out = order_limit(batch, [(0, false)], None)
+  let out = order_limit(batch, [(0, false, None)], None, None)
   assert_eq(out.row_count(), 8)
   assert_eq(out.columns()[0].get(0), @types.Str("apple"))
   assert_eq(out.columns()[0].get(1), @types.Str("apricot"))
@@ -24,7 +24,7 @@ test "order_limit sorts by a single string key" {
 ///|
 test "order_limit sorts desc with limit" {
   let batch = str_batch(["a", "c", "b"])
-  let out = order_limit(batch, [(0, true)], Some(2))
+  let out = order_limit(batch, [(0, true, None)], Some(2), None)
   assert_eq(out.row_count(), 2)
   assert_eq(out.columns()[0].get(0), @types.Str("c"))
   assert_eq(out.columns()[0].get(1), @types.Str("b"))

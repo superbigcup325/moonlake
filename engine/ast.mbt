@@ -80,6 +80,7 @@ pub extend SelectItem with @debug.Debug::{to_repr}
 pub(all) struct OrderItem {
   key : LExpr
   desc : Bool
+  nulls_first : Bool? // None = engine default (NULLS LAST)
 } derive(Eq, Debug)
 
 ///|
@@ -141,6 +142,7 @@ pub(all) struct Select {
   items : Array[SelectItem]
   order_by : Array[OrderItem]
   limit : Int?
+  offset : Int? // rows skipped before LIMIT applies
   distinct : Bool // SELECT DISTINCT: dedupe the projected rows
 } derive(Eq, Debug)
 
