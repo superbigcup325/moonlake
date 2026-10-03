@@ -47,22 +47,23 @@ same machine, one run, both engines:
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Pricing Summary Report | 461 ms | 3.0 ms |
-| Shipping Priority | 455 ms | 3.1 ms |
-| Local Supplier Volume | 471 ms | 4.5 ms |
-| Forecasting Revenue Change | 391 ms | 0.5 ms |
-| Volume Shipping | 483 ms | 6.6 ms |
-| Returned Item Reporting | 464 ms | 5.7 ms |
-| Shipping Modes and Order Priority | 465 ms | 3.0 ms |
-| Promotion Effect | 397 ms | 1.2 ms |
+| Pricing Summary Report | 205 ms | 3.6 ms |
+| Shipping Priority | 168 ms | 3.5 ms |
+| Local Supplier Volume | 173 ms | 4.1 ms |
+| Forecasting Revenue Change | 137 ms | 1.1 ms |
+| Volume Shipping | 185 ms | 3.4 ms |
+| Returned Item Reporting | 171 ms | 4.8 ms |
+| Shipping Modes and Order Priority | 171 ms | 4.1 ms |
+| Promotion Effect | 146 ms | 1.2 ms |
 
 These are the eight queries `harness/bench.py` runs (it prints the
-same rows labelled q1–q14). Times include process startup and CSV
-parsing, which now dominate: the columnar evaluator (vectorized
-kernels, columnar hash join with int-keyed hash maps, bind-time
-projection pruning, direct-to-vector CSV materialization) roughly
-halved the join-heavy queries against the original row-at-a-time
-build on the same machine.
+same rows labelled q1–q14). Times include process startup and reading
+the CSV from disk. duckdb is in-process over pre-loaded tables — the
+same query from a fresh `read_csv_auto` costs it ~55 ms, where
+moonlake's built-in byte-level reader plus the columnar evaluator
+(vectorized kernels, int-keyed hash joins, projection pruning,
+direct-to-vector CSV materialization) lands at 137–205 ms, down
+5–8x from the original row-at-a-time build on the same machine.
 
 ## Quickstart
 
@@ -112,7 +113,6 @@ sit next to, not on top of, its neighbours:
 | project | what it is | boundary with moonlake |
 |---|---|---|
 | [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) | SQL lexer/parser (AST) | parsing only, no execution; moonlake ships an in-house subset front-end today (sqlparser's select-statement AST is not destructurable cross-package yet) and stays pinned as the future swap-in once its visibility improves |
-| [moonbit-community/NyaCSV](https://github.com/moonbit-community/NyaCSV) | CSV dialect parser | text parsing only; moonlake's CSV source builds typed columnar batches on top of it |
 | [mizchi/parquet](https://github.com/mizchi/parquet) | Parquet reader/writer | format decoding only; moonlake adapts its columnar read into the same vectors the executor consumes |
 | [shunge/arrow](https://github.com/buildliming/MoonArrow) (MoonArrow) | Arrow IPC format read/write | memory-format interchange; a future `to_arrow` bridge is cooperation, not competition |
 | [uiwcvb/moonsql](https://github.com/uiwcvb/moonsql) | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
@@ -138,7 +138,6 @@ matrices plus the TPC-H cross-validation job.
 moonlake is being built on top of these open-source MoonBit packages:
 
 - [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) (Apache-2.0) — SQL lexer/parser
-- [moonbit-community/NyaCSV](https://github.com/moonbit-community/NyaCSV) (Apache-2.0) — CSV parsing
 - [mizchi/parquet](https://github.com/mizchi/parquet) (Apache-2.0) — Parquet reading
 - [moonbitlang/quickcheck](https://github.com/moonbitlang/quickcheck) (Apache-2.0) — property-based testing
 
