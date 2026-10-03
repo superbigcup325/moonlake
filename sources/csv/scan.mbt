@@ -28,8 +28,32 @@ pub fn scan_string(
 
 ///|
 /// Scan a CSV file from disk (native target; wasm targets load files via
-/// the playground bridge instead).
+/// the playground bridge instead). Reads bytes and hands them to NyaCSV
+/// directly — no full-file String decode on the way in.
 pub fn scan_file(
+  path : String,
+  table_name : String,
+) -> @catalog.TableEntry raise @types.SqlError {
+  let content = @fs.read_file_to_bytes(path) catch {
+    _ => raise @types.SqlError::Scan("cannot read file at \{path}")
+  }
+  // UTF-8 BOM (Excel exports): rare, so take the String path when one
+  // is present rather than copying the bytes to shift it off
+  let has_bom = content.length() >= 3 &&
+    content[0].to_int() == 0xEF &&
+    content[1].to_int() == 0xBB &&
+    content[2].to_int() == 0xBF
+  if has_bom {
+    return scan_file_string(path, table_name)
+  }
+  let csv = @NyaCSV.CSV::parse_bytes(content)
+  build_entry(table_name, csv.header(), csv.data())
+}
+
+///|
+/// The String-based path, kept for BOM-carrying files; scan_string
+/// strips the BOM at the character level.
+fn scan_file_string(
   path : String,
   table_name : String,
 ) -> @catalog.TableEntry raise @types.SqlError {
@@ -134,67 +158,150 @@ fn infer_types(
 }
 
 ///|
+/// Parse one column's cells straight into typed arrays — no boxed
+/// Scalars on the way in. Empty cells mark the slot invalid (NULL); an
+/// unparsable non-empty cell is a scan error with row/column context.
+fn build_column(
+  dtype : @types.DataType,
+  rows : Array[Array[String]],
+  start : Int,
+  end : Int,
+  c : Int,
+) -> @types.ColumnVector raise @types.SqlError {
+  let n = end - start
+  match dtype {
+    Int32 => {
+      let d : FixedArray[Int] = FixedArray::make(n, 0)
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        if cell != "" {
+          let i = r - start
+          match @types.parse_i32(cell) {
+            Some(v) => {
+              d[i] = v
+              valid[i] = true
+            }
+            None =>
+              raise @types.SqlError::Scan(
+                "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as int32",
+              )
+          }
+        }
+      }
+      @types.I32(d, valid)
+    }
+    Int64 => {
+      let d : FixedArray[Int64] = FixedArray::make(n, 0L)
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        if cell != "" {
+          let i = r - start
+          match @types.parse_i64(cell) {
+            Some(v) => {
+              d[i] = v
+              valid[i] = true
+            }
+            None =>
+              raise @types.SqlError::Scan(
+                "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as int64",
+              )
+          }
+        }
+      }
+      @types.I64(d, valid)
+    }
+    Float64 => {
+      let d : FixedArray[Double] = FixedArray::make(n, 0.0)
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        if cell != "" {
+          let i = r - start
+          match @types.parse_f64(cell) {
+            Some(v) => {
+              d[i] = v
+              valid[i] = true
+            }
+            None =>
+              raise @types.SqlError::Scan(
+                "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as float64",
+              )
+          }
+        }
+      }
+      @types.F64(d, valid)
+    }
+    Bool => {
+      let d : FixedArray[Bool] = FixedArray::make(n, false)
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        if cell != "" {
+          let i = r - start
+          match @types.parse_bool(cell) {
+            Some(v) => {
+              d[i] = v
+              valid[i] = true
+            }
+            None =>
+              raise @types.SqlError::Scan(
+                "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as bool",
+              )
+          }
+        }
+      }
+      @types.BoolV(d, valid)
+    }
+    Date => {
+      let d : FixedArray[Int] = FixedArray::make(n, 0)
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        if cell != "" {
+          let i = r - start
+          match @types.parse_date(cell) {
+            Some(v) => {
+              d[i] = v
+              valid[i] = true
+            }
+            None =>
+              raise @types.SqlError::Scan(
+                "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as date",
+              )
+          }
+        }
+      }
+      @types.DateV(d, valid)
+    }
+    Str => {
+      // cells arrive as NyaCSV-owned Strings: move them, no re-boxing
+      let d : FixedArray[String] = FixedArray::make(n, "")
+      let valid : FixedArray[Bool] = FixedArray::make(n, false)
+      for r in start..<end {
+        let cell = rows[r][c]
+        let i = r - start
+        if cell != "" {
+          d[i] = cell
+          valid[i] = true
+        }
+      }
+      @types.StrV(d, valid)
+    }
+  }
+}
+
+///|
 fn build_batch(
   dtypes : Array[@types.DataType],
   rows : Array[Array[String]],
   start : Int,
   end : Int,
 ) -> @types.DataBatch raise @types.SqlError {
-  let n = end - start
   let columns : Array[@types.ColumnVector] = []
   for c, dtype in dtypes {
-    let vec = @types.ColumnVector::make(dtype, n)
-    for r in start..<end {
-      let cell = rows[r][c]
-      if cell != "" {
-        match dtype {
-          Int32 =>
-            match @types.parse_i32(cell) {
-              Some(v) => vec.set(r - start, @types.Scalar::Int32(v))
-              None =>
-                raise @types.SqlError::Scan(
-                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as int32",
-                )
-            }
-          Float64 =>
-            match @types.parse_f64(cell) {
-              Some(v) => vec.set(r - start, @types.Scalar::Float64(v))
-              None =>
-                raise @types.SqlError::Scan(
-                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as float64",
-                )
-            }
-          Bool =>
-            match @types.parse_bool(cell) {
-              Some(v) => vec.set(r - start, @types.Scalar::Boolean(v))
-              None =>
-                raise @types.SqlError::Scan(
-                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as bool",
-                )
-            }
-          Date =>
-            match @types.parse_date(cell) {
-              Some(v) => vec.set(r - start, @types.Scalar::Date(v))
-              None =>
-                raise @types.SqlError::Scan(
-                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as date",
-                )
-            }
-          Int64 =>
-            match @types.parse_i64(cell) {
-              Some(v) => vec.set(r - start, @types.Scalar::Int64(v))
-              None =>
-                raise @types.SqlError::Scan(
-                  "row \{r + 1} column \{c}: cannot parse \"\{cell}\" as int64",
-                )
-            }
-          Str => vec.set(r - start, @types.Scalar::Str(cell))
-        }
-      } else {
-        vec.set(r - start, @types.Scalar::Null)
-      }
-    }
-    columns.push(vec)
+    columns.push(build_column(dtype, rows, start, end, c))
   }
-  @types.DataBatch::new(columns, n)
+  @types.DataBatch::new(columns, end - start)
 }
