@@ -1734,3 +1734,39 @@ test "UNION branches reject ORDER BY / LIMIT; the whole union keeps them" {
   assert_eq(r.row_count(), 1)
   assert_eq(r.get(0, 0), @types.Int32(1))
 }
+
+///|
+test "correlated scalar subqueries work in the select list" {
+  let cat = join_catalog()
+  // per-customer max amount; customer 2 has no orders -> NULL
+  let r = run(
+    "SELECT cid, (SELECT max(amount) FROM orders WHERE custkey = c.cid) AS m FROM customers c ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 1), @types.Int32(20))
+  assert_eq(r.get(1, 1), @types.Scalar::Null)
+  assert_eq(r.get(2, 1), @types.Int32(5))
+  // inside a larger expression
+  let r2 = run(
+    "SELECT cid, (SELECT avg(amount) FROM orders WHERE custkey = c.cid) * 2 AS dbl FROM customers c WHERE cid = 1",
+    cat,
+  )
+  match r2.get(0, 1) {
+    @types.Float64(x) => assert_true(x > 29.9 && x < 30.1) // avg(10,20)=15
+    other => fail("expected float, got \{other.to_string()}")
+  }
+  // two correlated scalars in one query: two synthetic tables
+  let r3 = run(
+    "SELECT (SELECT max(amount) FROM orders WHERE custkey = c.cid) AS hi, (SELECT min(amount) FROM orders WHERE custkey = c.cid) AS lo FROM customers c WHERE cid = 1",
+    cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Int32(20))
+  assert_eq(r3.get(0, 1), @types.Int32(10))
+  // uncorrelated scalars keep folding
+  let r4 = run(
+    "SELECT cid, (SELECT max(amount) FROM orders) AS mx FROM customers c ORDER BY cid LIMIT 1",
+    cat,
+  )
+  assert_eq(r4.get(0, 1), @types.Int32(20))
+}

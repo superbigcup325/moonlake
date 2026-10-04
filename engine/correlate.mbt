@@ -50,17 +50,35 @@ fn decorrelate(
 ) -> (Select, Array[@catalog.TableSchema], Array[Array[@types.DataBatch]]) raise @types.SqlError {
   let extra_schemas : Array[@catalog.TableSchema] = []
   let extra_batches : Array[Array[@types.DataBatch]] = []
-  if sel.filter is None {
-    return (sel, extra_schemas, extra_batches)
-  }
   let cor : Correlator = {
     catalog,
     outer_items: sel.from,
     sub_items: [],
     counter: 0,
   }
+  // select items are walked even without a WHERE clause: correlated
+  // scalar subqueries live there too
+  let scalar_items : Array[FromItem] = []
+  let new_exprs : Array[LExpr] = []
+  let mut items_rewritten = false
+  for it in sel.items {
+    let rewritten = rewrite_scalar_items(
+      it.expr,
+      cor,
+      extra_schemas,
+      extra_batches,
+      scalar_items,
+    )
+    if rewritten != it.expr {
+      items_rewritten = true
+    }
+    new_exprs.push(rewritten)
+  }
   let conjuncts : Array[Conjunct] = []
-  split_and(sel.filter.unwrap(), conjuncts, None)
+  match sel.filter {
+    Some(f) => split_and(f, conjuncts, None)
+    None => ()
+  }
   let kept : Array[LExpr] = []
   let extra_items : Array[FromItem] = []
   for cj in conjuncts {
@@ -103,7 +121,7 @@ fn decorrelate(
       _ => kept.push(lexpr)
     }
   }
-  if extra_items.length() == 0 {
+  if extra_items.length() == 0 && scalar_items.length() == 0 {
     return (sel, extra_schemas, extra_batches)
   }
   let filter : LExpr? = match kept.length() {
@@ -120,7 +138,19 @@ fn decorrelate(
   for item in extra_items {
     from.push(item)
   }
-  ({ ..sel, from, filter, }, extra_schemas, extra_batches)
+  for item in scalar_items {
+    from.push(item)
+  }
+  let items = if items_rewritten {
+    let out : Array[SelectItem] = []
+    for i, it in sel.items {
+      out.push({ expr: new_exprs[i], label: it.label, })
+    }
+    out
+  } else {
+    sel.items
+  }
+  ({ ..sel, from, filter, items, }, extra_schemas, extra_batches)
 }
 
 ///|
@@ -333,7 +363,28 @@ fn Correlator::try_scalar(
   if residual.length() > 0 {
     return None
   }
-  // the inner side of every pair is a group key; the value rides along
+  let (item, name) = self.build_scalar_table(
+    sub, pairs, inner_only, extra_schemas, extra_batches,
+  )
+  // the rewritten comparison stays in the WHERE pool and classifies as
+  // the step residual (or a hash key when the comparison is an equality)
+  kept.push(Cmp(op, outer_e, ColQ(name, "__sk\{pairs.length()}")))
+  Some(item)
+}
+
+///|
+/// Shared by the WHERE-conjunct and select-item scalar rewrites: run
+/// the subquery grouped by the correlation keys as a synthetic LEFT
+/// join table; returns the FromItem and the synthetic table name (the
+/// value column is __sk<pairs.length()>).
+fn Correlator::build_scalar_table(
+  self : Correlator,
+  sub : Select,
+  pairs : Array[(LExpr, LExpr)],
+  inner_only : Array[LExpr],
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+) -> (FromItem, String) raise @types.SqlError {
   let items : Array[SelectItem] = []
   let group_by : Array[LExpr] = []
   for p in pairs {
@@ -372,21 +423,129 @@ fn Correlator::try_scalar(
   }
   extra_schemas.push({ table: name, columns, })
   extra_batches.push([inner.batch()])
-  // ON: the correlation equalities; the rewritten comparison stays in
-  // the WHERE pool and classifies as the step residual (or a hash key
-  // when the comparison is an equality)
   let mut on : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
   for i in 1..<pairs.length() {
     on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
   }
-  kept.push(Cmp(op, outer_e, ColQ(name, "__sk\{pairs.length()}")))
-  Some({
+  let item : FromItem = {
     table: Named(name),
     tbl_alias: Some(name),
     col_aliases: None,
     join: Left,
     on: Some(on),
-  })
+  }
+  (item, name)
+}
+
+///|
+/// Classify one correlated scalar subquery appearing in a select item.
+/// Same rules as try_scalar; on bail the subquery stays untouched (the
+/// runner keeps its unsupported-correlation error).
+fn Correlator::try_scalar_item(
+  self : Correlator,
+  sub : Select,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+  extra_items : Array[FromItem],
+) -> LExpr? raise @types.SqlError {
+  if !(sub.group_by.length() == 0) ||
+    sub.having is Some(_) ||
+    sub.limit is Some(_) ||
+    sub.offset is Some(_) ||
+    sub.distinct ||
+    sub.setop is Some(_) {
+    return None
+  }
+  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
+    return None
+  }
+  let (pairs, inner_only, residual) = match self.prepare(sub) {
+    Some(triple) => triple
+    None => return None
+  }
+  if pairs.length() == 0 || residual.length() > 0 {
+    return None
+  }
+  let (item, name) = self.build_scalar_table(
+    sub, pairs, inner_only, extra_schemas, extra_batches,
+  )
+  extra_items.push(item)
+  Some(ColQ(name, "__sk\{pairs.length()}"))
+}
+
+///|
+/// Rewrite every correlated scalar subquery of a select-item expression
+/// into a reference on its synthetic grouped table.
+fn rewrite_scalar_items(
+  e : LExpr,
+  cor : Correlator,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+  extra_items : Array[FromItem],
+) -> LExpr raise @types.SqlError {
+  fn walk(e : LExpr) -> LExpr raise @types.SqlError {
+    match e {
+      ScalarSub(sub) =>
+        match
+          cor.try_scalar_item(sub, extra_schemas, extra_batches, extra_items) {
+          Some(col) => col
+          None => e
+        }
+      Arith(op, l, r) => Arith(op, walk(l), walk(r))
+      Cmp(op, l, r) => Cmp(op, walk(l), walk(r))
+      And(l, r) => And(walk(l), walk(r))
+      Or(l, r) => Or(walk(l), walk(r))
+      Not(x) => Not(walk(x))
+      Between(v, lo, hi) => Between(walk(v), walk(lo), walk(hi))
+      In(v, items) => {
+        let new_items : Array[LExpr] = []
+        for item in items {
+          new_items.push(walk(item))
+        }
+        In(walk(v), new_items)
+      }
+      NotIn(v, items) => {
+        let new_items : Array[LExpr] = []
+        for item in items {
+          new_items.push(walk(item))
+        }
+        NotIn(walk(v), new_items)
+      }
+      Like(v, pat) => Like(walk(v), pat)
+      NotLike(v, pat) => NotLike(walk(v), pat)
+      IsNull(v, n) => IsNull(walk(v), n)
+      Extract(f, x) => Extract(f, walk(x))
+      Case(whens, else_) => {
+        let new_whens : Array[(LExpr, LExpr)] = []
+        for w in whens {
+          new_whens.push((walk(w.0), walk(w.1)))
+        }
+        let new_else = match else_ {
+          Some(x) => Some(walk(x))
+          None => None
+        }
+        Case(new_whens, new_else)
+      }
+      Func(name, args) => {
+        let new_args : Array[LExpr] = []
+        for a in args {
+          new_args.push(walk(a))
+        }
+        Func(name, new_args)
+      }
+      Cast(x, dt) => Cast(walk(x), dt)
+      IntervalLit(_, _) => e
+      Col(_) | ColQ(_, _) | Lit(_) | Star => e
+      Agg(f, inner) =>
+        match inner {
+          Some(x) => Agg(f, Some(walk(x)))
+          None => Agg(f, None)
+        }
+      InSelect(_, _, _) | Exists(_, _) => e
+    }
+  }
+
+  walk(e)
 }
 
 ///|
