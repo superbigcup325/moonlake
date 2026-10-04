@@ -71,6 +71,7 @@ fn show_tok(t : Tok) -> String {
     LParen => "'('"
     RParen => "')'"
     Comma => "','"
+    Semi => "';'"
     Dot => "'.'"
     Star => "'*'"
     Plus => "'+'"
@@ -148,6 +149,10 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
     let right_core = parse_select_body(p)
     // the accumulated chain becomes the LEFT operand of the new op
     sel = { ..right_core, setop: Some((all, sel)), }
+  }
+  // statement terminators: users end SQL with ';' out of habit
+  while p.eat(Semi) {
+    ()
   }
   p.expect(Eof)
   sel

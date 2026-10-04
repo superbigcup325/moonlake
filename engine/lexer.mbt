@@ -65,6 +65,7 @@ priv enum Tok {
   KwMonth
   KwDay
   KwInterval
+  Semi
   Eof
 } derive(Eq)
 
@@ -128,6 +129,10 @@ fn lex_sql(sql : String) -> Array[Tok] raise @types.SqlError {
       }
       ',' => {
         toks.push(Comma)
+        lx.pos += 1
+      }
+      ';' => {
+        toks.push(Semi)
         lx.pos += 1
       }
       '.' => {

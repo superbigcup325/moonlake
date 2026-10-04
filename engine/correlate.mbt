@@ -308,9 +308,6 @@ fn Correlator::try_scalar(
     sub.setop is Some(_) {
     return None
   }
-  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
-    return None
-  }
   // the outer value must not reference the inner tables
   match self.side_of(outer_e) {
     Outer | NoneSide => ()
@@ -320,7 +317,18 @@ fn Correlator::try_scalar(
     Some(triple) => triple
     None => return None
   }
-  if pairs.length() == 0 || residual.length() > 0 {
+  if pairs.length() == 0 {
+    return None // non-correlated: the runner folds it eagerly
+  }
+  // a correlated scalar without an aggregate cannot decorrelate (its
+  // groups would multiply outer rows); fail with a name that says why
+  // instead of letting the runner surface a confusing inner-scope error
+  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
+    raise @types.SqlError::Bind(
+      "correlated scalar subquery must select an aggregate (e.g. min/max/avg/count)",
+    )
+  }
+  if residual.length() > 0 {
     return None
   }
   // the inner side of every pair is a group key; the value rides along

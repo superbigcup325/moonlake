@@ -1482,3 +1482,23 @@ test "WITH defines a CTE referenced like a derived table" {
   assert_eq(r2.row_count(), 1)
   assert_eq(r2.get(0, 0), @types.Int32(2))
 }
+
+///|
+test "a trailing semicolon terminates the statement" {
+  let cat = join_catalog()
+  let r = run("SELECT count(*) AS c FROM customers;", cat)
+  assert_eq(r.get(0, 0), @types.Scalar::Int64(3L))
+  // several terminators are tolerated too
+  let r2 = run("SELECT count(*) AS c FROM customers;;", cat)
+  assert_eq(r2.get(0, 0), @types.Scalar::Int64(3L))
+}
+
+///|
+test "correlated scalar without an aggregate reports itself" {
+  let e = run_err(
+    "SELECT cid FROM customers WHERE (SELECT amount FROM orders WHERE custkey = cid) > 0",
+    join_catalog(),
+  )
+  let msg = e.to_string()
+  assert_true(msg.contains("aggregate"))
+}
