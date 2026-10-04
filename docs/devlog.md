@@ -296,3 +296,40 @@ the playground
   which corrupts 0x80-0x9F and surfaced as a parquet footer mismatch —
   caught immediately by the in-browser end-to-end check. Q6 over a
   dropped 1.9 MB parquet answers in 128 ms, identical to golden.
+
+## Official-text acceptance (2026-10-05): all 22 TPC-H queries on
+## their official texts
+
+- **The adapted texts were hiding four real bugs.** Running the
+  official dbgen texts (annex parameters, duckdb-refereed at SF0.01)
+  flipped the scoreboard from "14/22, 13 on official text" to 8/22 —
+  and every gap it exposed was real. The semi/anti machinery had two
+  soundness holes the adapted goldens could never see: lifted residual
+  refs collided with pair-key synthetic names (any non-equality
+  residual in EXISTS/IN silently compared the wrong column), and
+  `join_semi` gathered row 0 of an empty inner batch (NOT IN over an
+  empty key set aborted the process). Worse, `plan_step` placed
+  WHERE-origin spanning conjuncts as hash keys at LEFT/RIGHT/FULL
+  steps, so NULL-extended rows escaped the predicate entirely — no
+  subqueries needed to reproduce. The repo's own q16/q21 rewrites had
+  been dodging all three (LIKE->=, `<>`->`=`, dropping the nation
+  join); the old q8 rewrite even hardcoded `n2.n_name = 'BRAZIL'`
+  into the inner query, pinning mkt_share at 1.0 by construction.
+- **Four features closed the rest**: DATE +/- INTERVAL (7 queries),
+  correlated scalar aggregate subqueries via grouped LEFT joins
+  (q2/q17/q20), derived-table column alias lists (q13), and
+  statement-level WITH CTEs (q15's sanctioned spelling — the
+  create-view statement form stays out, the engine executes single
+  SELECTs). 21/22 official texts pass outright; q15 is the one
+  documented deviation.
+- **The harness now runs what ships.** `harness/queries/` holds the
+  official texts verbatim, `gen_tpch.py` reads them and generates
+  goldens from the exact bytes moonlake runs, and `check_all.sh`
+  covers 23 goldens at any scale — verified at SF0.1 (23/23, q21 at
+  47 rows instead of SF0.01's 1, q16 at 2762). The SF0.01 weak rows
+  (q8/q18 at 0, q21 at 1) are why scale matters: assertions over
+  empty results prove nothing about semantics.
+- Process note: the pre-commit hook assumes the working tree matches
+  the index (it re-runs `moon info`/`moon fmt` over the tree), so
+  splitting one change into two commits needs `git stash push -- <paths>`
+  between them — plain staged-file discipline trips the freshness gate.

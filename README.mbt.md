@@ -4,7 +4,7 @@
 
 Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet files in-process, with native and WebAssembly builds from one codebase.
 
-> **Status: v1 SQL surface complete, under acceptance hardening.** The
+> **Status: all 22 TPC-H queries pass on official texts.** The
 > evaluator is columnar — vectorized expression kernels, a columnar hash
 > join, and bind-time projection pruning — but APIs may still change.
 
@@ -16,30 +16,26 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory.
 
-### v1 SQL surface
+### SQL surface
 
 - `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
-- `INNER` / `LEFT` / `CROSS` joins (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
-- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, three-valued NULL logic throughout. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL). Integer literals widen int32 → int64 → float64 to stay exact. Identifiers: the DATE-part keywords `year`/`month`/`day`/`date` double as bare column/table/alias names; double-quoted identifiers (`"left"`, with `""` escape) reach every other reserved word
+- `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` joins, `UNION [ALL]` (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
+- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, `date +/- INTERVAL n day/month/year` (calendar-aware, day-of-month clamping), `CAST`, string functions (`substring` — both argument styles, `length`, `upper`, `lower`, `concat`), `abs`, `round`, three-valued NULL logic throughout. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL). Integer literals widen int32 → int64 → float64 to stay exact. Identifiers: the DATE-part keywords `year`/`month`/`day`/`date` double as bare column/table/alias names; double-quoted identifiers (`"left"`, with `""` escape) reach every other reserved word
 - Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
-- Derived tables (`FROM (SELECT ...) AS t`), non-correlated scalar subqueries and `IN` / `NOT IN (SELECT ...)`
-- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At a `LEFT` join, WHERE predicates on the build side stay post-join — filtering build rows would change which probe rows NULL-extend
+- Subqueries: correlated `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` (decorrelated to semi/anti joins, residuals and all) and correlated scalar aggregate subqueries (decorrelated to grouped LEFT joins) — nested to the depth TPC-H asks; derived tables (`FROM (SELECT ...) AS t`), with optional column alias lists (`AS t (a, b)`)
+- `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
+- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
 
-Out of scope for v1: writes (`INSERT`/`UPDATE`/DDL), persistence, transactions, indexes, correlated subqueries, window functions, cost-based optimization.
+Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, window functions, cost-based optimization, multi-statement scripts.
 
 ### TPC-H cross-validation
 
-SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **14 of the 22 queries run** — 13 on their official text, 1 with the sanctioned rewrite (the CTE inlined as a derived table, its max as a scalar subquery) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01:
-
-| runs on the official text | sanctioned rewrite |
-|---|---|
-| Pricing Summary Report, Shipping Priority, Local Supplier Volume, Forecasting Revenue Change, Volume Shipping, National Market Share, Returned Item Reporting, Important Stock Identification, Shipping Modes and Order Priority, Customer Distribution, Promotion Effect, Small-Quantity-Order Customer Scan, Discounted Revenue | Top Supplier |
-
-The whole chain is reproducible and runs in CI (job `tpch` regenerates the data and DuckDB's answers from scratch, then diffs every query):
+SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **all 22 queries pass on their official texts** (annex parameter values; dbgen directives stripped) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01, and the whole chain runs in CI (job `tpch` regenerates the data and DuckDB's answers from scratch, then diffs every query). One documented deviation: Q15's official text materializes a view with `CREATE VIEW ... ; SELECT ...; DROP VIEW ...` and the engine executes single statements, so the harness runs its sanctioned `WITH` spelling of the same query (`harness/queries/q15.sql`), which DuckDB answers identically.
 
 ```bash
 uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
-bash harness/check_all.sh                         # 15 goldens: all PASS
+bash harness/check_all.sh                         # 23 goldens: all PASS (22 + parquet variant)
+MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (regenerate first: gen_tpch.py 0.1)
 ```
 
 Informational benchmark (SF0.01, best of 3, via `harness/bench.py`;

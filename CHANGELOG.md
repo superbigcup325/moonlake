@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-05 acceptance arc — all 22 TPC-H queries now pass on their official texts (annex parameter values, duckdb-diffed within 1e-9 on SF0.01 and SF0.1; q15 in its sanctioned `WITH` form, see `harness/queries/q15.sql`):
+  - `DATE +/- INTERVAL n day|month|year` arithmetic — calendar-aware month/year shifts with day-of-month clamping (`1996-03-31 + interval '1' month` = `1996-04-30`), vectorized, NULL-propagating; an `INTERVAL` literal outside date arithmetic is a bind error, and the TPC-H dbgen precision suffix (`interval '90' day (3)`) parses and is dropped
+  - Correlated scalar subqueries (`expr <op> (SELECT agg(...) ... WHERE inner.col = outer.col ...)`) decorrelate into LEFT joins against the inner query grouped by the correlation keys — empty groups NULL-extend and the comparison filters, which is exactly scalar-subquery NULL semantics; the select item must contain an aggregate so groups stay single-row, and nesting works to the depth q20 asks (two correlation columns one level out)
+  - Derived-table column alias lists (`FROM (SELECT ...) AS t (a, b)`) rename positionally, arity-checked
+  - Non-recursive statement-level `WITH` CTEs: each body re-parses per reference (decorrelation rewrites the AST in place), a CTE name shadows catalog tables and qualifies its columns when no alias is given, later CTEs may reference earlier ones
+  - The harness now carries the official TPC-H texts verbatim (`harness/queries/q1..q22.sql`), goldens are generated from the exact bytes moonlake runs, and `check_all.sh` covers 23 goldens (22 + the parquet variant) at any scale via `MOONLAKE_DATA`
 - MoonBit module skeleton (`superbigcup325/moonlake`): library package and CLI entry point (`cmd/main`)
 - CLI `--version` / `--help` output
 - Engine facade with version metadata and blackbox tests
