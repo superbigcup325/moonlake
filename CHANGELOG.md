@@ -16,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Derived-table column alias lists (`FROM (SELECT ...) AS t (a, b)`) rename positionally, arity-checked
   - Non-recursive statement-level `WITH` CTEs: each body re-parses per reference (decorrelation rewrites the AST in place), a CTE name shadows catalog tables and qualifies its columns when no alias is given, later CTEs may reference earlier ones
   - The harness now carries the official TPC-H texts verbatim (`harness/queries/q1..q22.sql`), goldens are generated from the exact bytes moonlake runs, and `check_all.sh` covers 23 goldens (22 + the parquet variant) at any scale via `MOONLAKE_DATA`
-- MoonBit module skeleton (`superbigcup325/moonlake`): library package and CLI entry point (`cmd/main`)
 - CLI `--version` / `--help` output
 - Engine facade with version metadata and blackbox tests
 - GitHub Actions CI: format check, `moon check`, tests across native / wasm-gc / js targets
