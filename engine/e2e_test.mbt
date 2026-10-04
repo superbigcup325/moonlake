@@ -1461,3 +1461,24 @@ test "derived-table column alias list renames positionally" {
   // a wrong-arity list is a bind error
   let _ = run_err("SELECT x FROM (SELECT cid FROM customers) AS t (x, y)", cat)
 }
+
+///|
+test "WITH defines a CTE referenced like a derived table" {
+  let cat = join_catalog()
+  // the sanctioned Q15 shape: CTE referenced twice, once in FROM and
+  // once inside a scalar subquery over it
+  let r = run(
+    "WITH big AS (SELECT custkey AS cid, amount FROM orders WHERE amount >= 5) SELECT c.cid FROM customers c, big WHERE c.cid = big.cid AND big.amount = (SELECT max(amount) FROM big) ORDER BY c.cid",
+    cat,
+  )
+  // max amount across orders with amount >= 5 is 20, on customer 1
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // two CTEs chain: the second references the first
+  let r2 = run(
+    "WITH a AS (SELECT cid FROM customers WHERE cid > 1), b AS (SELECT cid FROM a WHERE cid < 3) SELECT cid FROM b ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+}

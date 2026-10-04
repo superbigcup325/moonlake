@@ -10,6 +10,9 @@
 priv struct Parser {
   toks : Array[Tok]
   mut pos : Int
+  // WITH cte AS (SELECT ...) name -> body token slice; a reference
+  // re-parses the slice into a fresh derived table per occurrence
+  ctes : Map[String, Array[Tok]]
 }
 
 ///|
@@ -82,6 +85,7 @@ fn show_tok(t : Tok) -> String {
     Gt => "'>'"
     Ge => "'>='"
     KwSelect => "SELECT"
+    KwWith => "WITH"
     KwFrom => "FROM"
     KwWhere => "WHERE"
     KwAs => "AS"
@@ -124,7 +128,8 @@ fn show_tok(t : Tok) -> String {
 
 ///|
 pub fn parse_select(sql : String) -> Select raise @types.SqlError {
-  let p : Parser = { toks: lex_sql(sql), pos: 0, }
+  let p : Parser = { toks: lex_sql(sql), pos: 0, ctes: Map([]), }
+  parse_with_clause(p)
   p.expect(KwSelect)
   let mut sel = parse_select_body(p)
   // UNION [ALL|DISTINCT] chains associate left; per-branch ORDER BY is
@@ -259,6 +264,55 @@ fn ident_like_tok(t : Tok) -> String? {
 }
 
 ///|
+/// WITH name AS (SELECT ...), name2 AS (SELECT ...) — statement-level,
+/// non-recursive. Each CTE body is kept as a token slice and re-parsed
+/// fresh at every reference: the engine's decorrelation rewrites the
+/// AST in place, so sharing one parsed body between references would
+/// double-apply the rewrite.
+fn parse_with_clause(p : Parser) -> Unit raise @types.SqlError {
+  if !p.eat(KwWith) {
+    return
+  }
+  let mut first = true
+  while first || p.eat(Comma) {
+    first = false
+    let t = p.advance()
+    let name = match ident_like_tok(t) {
+      Some(n) => n
+      None => {
+        let found = show_tok(t)
+        raise @types.SqlError::Parse(
+          "expected CTE name after WITH, found \{found}",
+        )
+      }
+    }
+    p.expect(KwAs)
+    p.expect(LParen)
+    let start = p.pos
+    p.expect(KwSelect)
+    let _ = parse_select_body(p)
+    let body : Array[Tok] = []
+    for i in start..<p.pos {
+      body.push(p.toks[i])
+    }
+    body.push(Eof) // the re-parse peek() relies on a terminator
+    p.ctes[name] = body
+    p.expect(RParen)
+  }
+}
+
+///|
+/// Re-parse a stored CTE body into a fresh derived-table select.
+fn Parser::reparse_cte(
+  self : Parser,
+  name : String,
+) -> Select raise @types.SqlError {
+  let sub : Parser = { toks: self.ctes[name], pos: 0, ctes: self.ctes, }
+  sub.expect(KwSelect)
+  parse_select_body(sub)
+}
+
+///|
 fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
   let table : TableRef = if p.peek() is LParen {
     let _ = p.advance()
@@ -267,7 +321,24 @@ fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
     p.expect(RParen)
     Sub(inner)
   } else {
-    Named(parse_table_name(p))
+    match p.peek() {
+      // a WITH name shadows same-named catalog tables
+      Ident(name) =>
+        if p.ctes.contains(name) {
+          let _ = p.advance()
+          let tref : TableRef = Sub(p.reparse_cte(name))
+          // the CTE name is its own qualifier when no alias is given
+          let tbl_alias = match parse_alias_opt(p) {
+            Some(a) => Some(a)
+            None => Some(name)
+          }
+          let col_aliases = parse_col_alias_list(p, tref, tbl_alias)
+          return { table: tref, tbl_alias, col_aliases, join: Inner, on: None, }
+        } else {
+          Named(parse_table_name(p))
+        }
+      _ => Named(parse_table_name(p))
+    }
   }
   let tbl_alias = parse_alias_opt(p)
   let col_aliases = parse_col_alias_list(p, table, tbl_alias)

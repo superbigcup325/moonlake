@@ -28,6 +28,7 @@ priv enum Tok {
   Gt
   Ge
   KwSelect
+  KwWith
   KwFrom
   KwWhere
   KwAs
@@ -250,6 +251,7 @@ fn ascii_lower(word : String) -> String {
 fn keyword_or_ident(word : String) -> Tok {
   match ascii_lower(word) {
     "select" => KwSelect
+    "with" => KwWith
     "from" => KwFrom
     "where" => KwWhere
     "as" => KwAs
