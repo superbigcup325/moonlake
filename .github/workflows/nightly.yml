@@ -25,14 +25,15 @@ jobs:
         run: |
           moon update
           moon install
+      - name: Install duckdb
+        run: python3 -m pip install --quiet duckdb
       - name: Build the native CLI
         run: moon build cmd/main --target native
       - name: Tests (native)
         run: moon test
       - name: Predicate-tree fuzzer (1200 queries, duckdb-refereed)
-        run: python3 -m pip install --quiet duckdb && uv run --with duckdb python harness/fuzz_pushdown.py 1200 20261006
+        run: python3 harness/fuzz_pushdown.py 1200 20261006
       - name: Golden chain
         run: |
-          python3 -m pip install --quiet duckdb
-          uv run --with duckdb python harness/gen_tpch.py
+          python3 harness/gen_tpch.py
           bash harness/check_all.sh
