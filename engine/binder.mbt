@@ -213,6 +213,15 @@ fn bind_select(
   let group_by : Array[LExpr] = []
   for g in sel.group_by {
     let g = match g {
+      Lit(@types.Int32(k)) => {
+        // GROUP BY ordinal: a 1-based reference into the select list
+        if k < 1 || k > sel.items.length() {
+          raise @types.SqlError::Bind(
+            "GROUP BY position \{k} is out of range (1..\{sel.items.length()})",
+          )
+        }
+        sel.items[k - 1].expr
+      }
       Col(name) => {
         let mut hit : LExpr? = None
         for item in sel.items {
@@ -245,6 +254,14 @@ fn bind_select(
   let group_by : Array[LExpr] = []
   for g in sel.group_by {
     let g = match g {
+      Lit(@types.Int32(k)) => {
+        if k < 1 || k > sel.items.length() {
+          raise @types.SqlError::Bind(
+            "GROUP BY position \{k} is out of range (1..\{sel.items.length()})",
+          )
+        }
+        sel.items[k - 1].expr
+      }
       Col(name) => {
         let mut hit : LExpr? = None
         for item in sel.items {

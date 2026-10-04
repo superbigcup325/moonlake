@@ -1,0 +1,38 @@
+# Nightly verification: the randomized evidence lines at larger N than
+# the per-commit budget allows. Property tests here run the same suite
+# (fixed N in-code); the pushdown fuzzer scales via argv.
+name: nightly
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Verify pinned toolchain version
+        run: |
+          moon version --all
+          moon version | grep -F "${{ env.MOONBIT_VERSION }}"
+      - name: Fetch dependencies
+        run: |
+          moon update
+          moon install
+      - name: Build the native CLI
+        run: moon build cmd/main --target native
+      - name: Tests (native)
+        run: moon test
+      - name: Predicate-tree fuzzer (1200 queries, duckdb-refereed)
+        run: python3 -m pip install --quiet duckdb && uv run --with duckdb python harness/fuzz_pushdown.py 1200 20261006
+      - name: Golden chain
+        run: |
+          python3 -m pip install --quiet duckdb
+          uv run --with duckdb python harness/gen_tpch.py
+          bash harness/check_all.sh

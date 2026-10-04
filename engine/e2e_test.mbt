@@ -1844,3 +1844,16 @@ test "INTERSECT and EXCEPT with ALL and DISTINCT semantics" {
   assert_eq(r6.row_count(), 1)
   assert_eq(r6.get(0, 0), @types.Int32(10))
 }
+
+///|
+test "GROUP BY ordinals resolve to select items" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT seg, count(*) AS c FROM customers GROUP BY 1 ORDER BY 1", cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Str("a"))
+  assert_eq(r.get(0, 1), @types.Int64(2L))
+  assert_eq(r.get(1, 0), @types.Str("b"))
+  let _ = run_err("SELECT seg FROM customers GROUP BY 9", cat)
+}
