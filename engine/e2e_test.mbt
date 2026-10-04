@@ -1268,3 +1268,24 @@ test "EXISTS with an inner-only equality decorrelates" {
   assert_eq(r2.get(0, 0), @types.Int32(1))
   assert_eq(r2.get(1, 0), @types.Int32(3))
 }
+
+///|
+test "NOT IN over an empty subquery keeps every probe row" {
+  let cat = join_catalog()
+  // no order has amount > 100: the decorrelated anti join runs against
+  // an empty inner batch, and the output assembly must not gather
+  // row 0 from it (it used to index out of bounds and abort)
+  let r = run(
+    "SELECT cid FROM customers WHERE cid NOT IN (SELECT custkey FROM orders WHERE amount > 100) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(2, 0), @types.Int32(3))
+  // the semi twin over the same empty inner matches nothing
+  let r2 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount > 100) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 0)
+}

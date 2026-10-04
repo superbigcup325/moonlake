@@ -879,13 +879,15 @@ fn join_semi(
   }
   // full-width assembly like a plain join: the layout stays flat so the
   // residual and projection see every column; the projection drops the
-  // inner columns naturally
+  // inner columns naturally. No single inner row belongs to a semi/anti
+  // match, so the inner columns gather id -1 (all-NULL placeholders);
+  // gathering row 0 would also index out of an empty inner batch.
   let columns : Array[@types.ColumnVector] = []
   for c in 0..<left.columns().length() {
     columns.push(gather(left.columns()[c], left_ids))
   }
   for c in 0..<inner_batch.columns().length() {
-    let right_ids : Array[Int] = Array::make(left_ids.length(), 0)
+    let right_ids : Array[Int] = Array::make(left_ids.length(), -1)
     columns.push(gather(inner_batch.columns()[c], right_ids))
   }
   @types.DataBatch::new(columns, left_ids.length())
