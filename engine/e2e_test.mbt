@@ -1204,3 +1204,67 @@ test "correlated IN and NOT IN decorrelate with SQL NULL rules" {
   assert_eq(r4.row_count(), 1)
   assert_eq(r4.get(0, 0), @types.Int32(1))
 }
+
+///|
+test "semi join honors a non-equality residual" {
+  let cat = join_catalog()
+  // the residual (amount <> 10) lifts into a synthetic inner column;
+  // customer 1 matches via order 101 (amount 20), customer 3 via 102
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount <> 10) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  // the anti twin keeps only the customer with no surviving inner row
+  let r2 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount <> 10) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+}
+
+///|
+test "semi/anti residual combines with inner-only conjuncts" {
+  let cat = join_catalog()
+  // q21 shape: a spanning residual AND an inner-only conjunct (the
+  // lifted residual must not collide with the pair-key column names)
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount <> 10 AND amount > 15) ORDER BY cid",
+    cat,
+  )
+  // order 101 (amount 20) is the only row passing both
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  let r2 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount <> 10 AND amount > 15) ORDER BY cid",
+    cat,
+  )
+  // customers 2 and 3 have no candidate passing the residual
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+  assert_eq(r2.get(1, 0), @types.Int32(3))
+}
+
+///|
+test "EXISTS with an inner-only equality decorrelates" {
+  let cat = join_catalog()
+  // amount = 20 is a purely inner conjunct with a literal operand: it
+  // must stay in the inner filter, not abort the decorrelation
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT * FROM orders WHERE custkey = cid AND amount = 20) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // a constant conjunct is side-free and rides along
+  let r2 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT * FROM orders WHERE custkey = cid AND 1 = 1) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Int32(1))
+  assert_eq(r2.get(1, 0), @types.Int32(3))
+}

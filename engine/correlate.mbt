@@ -150,10 +150,14 @@ fn Correlator::prepare(
           (Outer, Inner) => pairs.push((b, a))
           (_, _) =>
             // not a clean correlation equality: purely inner conjuncts
-            // stay in the inner filter, spanning conjuncts fall to the
-            // semi residual, anything else is unsupported
+            // stay in the inner filter (a literal operand is side-free),
+            // spanning conjuncts fall to the semi residual, anything
+            // else is unsupported
             match (self.side_of(a), self.side_of(b)) {
-              (Inner, Inner) => inner_only.push(cj)
+              (Inner, Inner)
+              | (Inner, NoneSide)
+              | (NoneSide, Inner)
+              | (NoneSide, NoneSide) => inner_only.push(cj)
               (Mixed, _) | (_, Mixed) => residual.push(cj)
               (_, _) => return None
             }
@@ -285,7 +289,7 @@ fn Correlator::finish_semi(
   let ref_exprs : Array[LExpr] = [] // the inner expression behind it
   let ref_keys : Array[String] = [] // canonical "qual.col" / "col" key
   for r in residual {
-    lift_inner_refs(r, self, ref_names, ref_exprs, ref_keys)
+    lift_inner_refs(r, self, pairs.length(), ref_names, ref_exprs, ref_keys)
   }
   // the inner side of every pair becomes one output column
   let items : Array[SelectItem] = []
@@ -501,10 +505,13 @@ fn ref_key(qual : String?, name : String) -> String {
 }
 
 ///|
-/// Recursively collect distinct inner-scope column references.
+/// Recursively collect distinct inner-scope column references. The
+/// synthetic names start at `base` = the pair-key column count, so they
+/// line up with the items finish_semi appends after the keys.
 fn lift_inner_refs(
   e : LExpr,
   cor : Correlator,
+  base : Int,
   ref_names : Array[String],
   ref_exprs : Array[LExpr],
   ref_keys : Array[String],
@@ -520,7 +527,7 @@ fn lift_inner_refs(
           }
         }
         if !seen && cor.side_of(Col(name)) is Inner {
-          ref_names.push("__sk\{ref_keys.length()}")
+          ref_names.push("__sk\{base + ref_keys.length()}")
           ref_exprs.push(Col(name))
           ref_keys.push(key)
         }
@@ -534,7 +541,7 @@ fn lift_inner_refs(
           }
         }
         if !seen && cor.side_of(ColQ(q, c)) is Inner {
-          ref_names.push("__sk\{ref_keys.length()}")
+          ref_names.push("__sk\{base + ref_keys.length()}")
           ref_exprs.push(ColQ(q, c))
           ref_keys.push(key)
         }
