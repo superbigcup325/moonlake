@@ -540,7 +540,7 @@ fn join_step(
   if step.kind is Right {
     return join_swapped(acc, right, step)
   }
-  if step.kind is Semi || step.kind is Anti {
+  if step.kind is Semi || step.kind is Anti || step.kind is AntiLoose {
     return join_semi(acc, right, step)
   }
   let right_width = step.right_width
@@ -767,14 +767,17 @@ fn combined_row(
 /// Semi/anti join against a pre-executed inner batch (the
 /// decorrelation of a correlated EXISTS / [NOT] IN): probe rows pass a
 /// SEMI when some inner row shares the (non-null) key and satisfies the
-/// residual, an ANTI when none does and the probe key is non-null.
-/// The inner side contributes no output columns.
+/// residual. Anti flavors differ on a NULL probe key: NOT IN's
+/// comparison is UNKNOWN and drops the row, NOT EXISTS's subquery is
+/// simply empty so only an actual match drops it. The inner side
+/// contributes no output columns.
 fn join_semi(
   acc : Array[@types.DataBatch],
   inner : Array[@types.DataBatch],
   step : JoinStep,
 ) -> @types.DataBatch raise @types.SqlError {
-  let anti = step.kind is Anti
+  let anti = step.kind is Anti || step.kind is AntiLoose
+  let null_key_excludes = step.kind is Anti
   let inner_batch = concat_batches(inner, [])
   let n_inner = inner_batch.row_count()
   let int_map : Map[Int64, Array[Int]] = Map([])
@@ -870,9 +873,14 @@ fn join_semi(
         }
       }
     }
-    // SEMI: keep matches. ANTI: keep non-matches with a non-null key
-    // (a null correlation key is UNKNOWN, which excludes the row)
-    let keep = if anti { !matched && !null_key } else { matched }
+    // SEMI: keep matches. ANTI: keep non-matches — NOT IN additionally
+    // drops a null correlation key (UNKNOWN), NOT EXISTS keeps it (the
+    // subquery is empty regardless)
+    let keep = if anti {
+      !matched && (!null_key || !null_key_excludes)
+    } else {
+      matched
+    }
     if keep {
       left_ids.push(r)
     }

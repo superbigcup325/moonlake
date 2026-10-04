@@ -308,6 +308,7 @@ pub fn explain(
           Full => "full"
           Semi => "semi"
           Anti => "anti"
+          AntiLoose => "anti"
           Cross => "cross"
         },
       )

@@ -114,7 +114,8 @@ pub(all) enum JoinKind {
   Right // RIGHT [OUTER] JOIN ... ON: preserves the joining table
   Full // FULL [OUTER] JOIN ... ON: preserves both sides
   Semi // synthetic: correlated EXISTS decorrelated by the binder
-  Anti // synthetic: correlated NOT EXISTS / NOT IN decorrelated
+  Anti // synthetic: correlated NOT IN decorrelated: a NULL probe key is UNKNOWN and drops the row
+  AntiLoose // synthetic: correlated NOT EXISTS: only a match drops the row
   Cross // CROSS JOIN
 } derive(Eq, Debug)
 

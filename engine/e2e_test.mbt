@@ -1523,3 +1523,42 @@ test "derived tables join with the explicit JOIN syntax" {
   )
   assert_eq(r2.row_count(), 2)
 }
+
+///|
+test "NOT EXISTS keeps null correlation keys, NOT IN drops them" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("id,k\n1,10\n2,\n3,30\n", "c") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("k,w\n10,5\n", "o") catch {
+      e => abort("\{e}")
+    },
+  )
+  // NOT EXISTS over a NULL correlation key: the subquery is empty, so
+  // the row survives (duckdb agrees)
+  let r = run(
+    "SELECT id FROM c WHERE NOT EXISTS (SELECT * FROM o WHERE o.k = c.k) ORDER BY id",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(2))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  // EXISTS over the same key: row 1 only
+  let r2 = run(
+    "SELECT id FROM c WHERE EXISTS (SELECT * FROM o WHERE o.k = c.k) ORDER BY id",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(1))
+  // NOT IN with a NULL probe value: UNKNOWN drops the row (the inner
+  // key set is NULL-free, so only the probe's own NULL excludes it)
+  let r3 = run(
+    "SELECT id FROM c WHERE k NOT IN (SELECT w FROM o) ORDER BY id", cat,
+  )
+  assert_eq(r3.row_count(), 2)
+  assert_eq(r3.get(0, 0), @types.Int32(1))
+  assert_eq(r3.get(1, 0), @types.Int32(3))
+}

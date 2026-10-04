@@ -227,6 +227,7 @@ fn Correlator::try_exists(
           extra_schemas,
           extra_batches,
           false,
+          true,
           sink,
         )
       }
@@ -275,6 +276,7 @@ fn Correlator::try_in(
         extra_schemas,
         extra_batches,
         true,
+        false,
         kept,
       )
     }
@@ -402,6 +404,7 @@ fn Correlator::finish_semi(
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
   check_null_in_key : Bool,
+  from_exists : Bool,
   kept : Array[LExpr],
 ) -> FromItem? raise @types.SqlError {
   let name = "__semi\{self.counter}"
@@ -485,10 +488,10 @@ fn Correlator::finish_semi(
     table: Named(name),
     tbl_alias: Some(name),
     col_aliases: None,
-    join: if negated {
-      Anti
-    } else {
-      Semi
+    join: match (negated, from_exists) {
+      (true, true) => AntiLoose // NOT EXISTS: only a match drops the row
+      (true, false) => Anti // NOT IN: a null probe key is UNKNOWN
+      (false, _) => Semi
     },
     on: Some(on),
   })
