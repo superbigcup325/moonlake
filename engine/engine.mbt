@@ -62,7 +62,8 @@ fn run_parsed(
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   match sel.setop {
-    Some((all, right_sel)) => return run_setop(sel, all, right_sel, catalog)
+    Some((kind, all, right_sel)) =>
+      return run_setop(sel, kind, all, right_sel, catalog)
     None => ()
   }
   if sel.from.length() == 0 {
@@ -187,8 +188,96 @@ fn run_parsed(
 /// DISTINCT, which belongs to the whole union. ORDER BY over a union
 /// resolves output names and ordinals only; column counts and types
 /// must match exactly.
+
+///|
+/// One set operation over two executed branches; the result keeps the
+/// left branch's column names. INTERSECT / EXCEPT compare whole rows
+/// with NULL-safe keys; ALL variants use multiset counts, DISTINCT
+/// dedupes the result.
+fn apply_setop(
+  kind : SetOpKind,
+  all : Bool,
+  left : SelectResult,
+  right : SelectResult,
+) -> SelectResult raise @types.SqlError {
+  let names = left.names()
+  let types = left.types()
+  if names.length() != right.names().length() {
+    raise @types.SqlError::Bind(
+      "set operation requires equal column counts: \{names.length()} vs \{right.names().length()}",
+    )
+  }
+  for c in 0..<names.length() {
+    if types[c] != right.types()[c] {
+      raise @types.SqlError::Bind(
+        "set operation column \{c + 1} type mismatch: \{types[c].to_string()} vs \{right.types()[c].to_string()}",
+      )
+    }
+  }
+  let batch = left.batch()
+  match kind {
+    Union => {
+      let batch = concat_batches([batch, right.batch()], types)
+      let batch = if all {
+        batch
+      } else {
+        dedupe_rows(batch) // bare UNION is DISTINCT
+      }
+      { names, types, batch, }
+    }
+    Intersect => {
+      let counts = row_counts(right.batch())
+      let taken : Map[String, Int] = Map([])
+      let keep : Array[Int] = []
+      for r in 0..<batch.row_count() {
+        let k = row_key(batch, r)
+        let used = match taken.get(k) {
+          Some(v) => v
+          None => 0
+        }
+        let available = match counts.get(k) {
+          Some(v) => v
+          None => 0
+        }
+        if used < available {
+          keep.push(r)
+          taken[k] = used + 1
+        }
+      }
+      let batch = take_rows(batch, keep)
+      let batch = if all { batch } else { dedupe_rows(batch) }
+      { names, types, batch, }
+    }
+    Except => {
+      let counts = row_counts(right.batch())
+      let taken : Map[String, Int] = Map([])
+      let keep : Array[Int] = []
+      for r in 0..<batch.row_count() {
+        let k = row_key(batch, r)
+        let used = match taken.get(k) {
+          Some(v) => v
+          None => 0
+        }
+        let available = match counts.get(k) {
+          Some(v) => v
+          None => 0
+        }
+        taken[k] = used + 1
+        if used >= available {
+          keep.push(r)
+        }
+      }
+      let batch = take_rows(batch, keep)
+      let batch = if all { batch } else { dedupe_rows(batch) }
+      { names, types, batch, }
+    }
+  }
+}
+
+///|
 fn run_setop(
   sel : Select,
+  _kind : SetOpKind,
   _all : Bool,
   _right_sel : Select,
   catalog : @catalog.Catalog,
@@ -198,39 +287,58 @@ fn run_setop(
   let window_sel = sel
   // walk root -> first: the arrays come out in reverse execution order
   let walked : Array[Select] = []
-  let walked_ops : Array[Bool] = []
+  let walked_ops : Array[(SetOpKind, Bool)] = []
   let mut cur = sel
-  while cur.setop is Some((all2, left)) {
+  while cur.setop is Some((kind2, all2, left)) {
     walked.push({ ..cur, setop: None, })
-    walked_ops.push(all2)
+    walked_ops.push((kind2, all2))
     cur = left
   }
   walked.push({ ..cur, setop: None, })
   let cores : Array[Select] = walked.rev()
-  let ops : Array[Bool] = walked_ops.rev() // ops[i-1] joins cores i-1, i
-  let first = run_parsed(cores[0], catalog)
-  let names = first.names()
-  let types = first.types()
-  let mut batch = first.batch()
-  for i in 1..<cores.length() {
-    let right = run_parsed(cores[i], catalog)
-    if names.length() != right.names().length() {
-      raise @types.SqlError::Bind(
-        "UNION requires equal column counts: \{names.length()} vs \{right.names().length()}",
-      )
-    }
-    for c in 0..<names.length() {
-      if types[c] != right.types()[c] {
-        raise @types.SqlError::Bind(
-          "UNION column \{c + 1} type mismatch: \{types[c].to_string()} vs \{right.types()[c].to_string()}",
-        )
+  let ops : Array[(SetOpKind, Bool)] = walked_ops.rev() // ops[i-1] joins cores i-1, i
+  // execute every branch, then apply ops with precedence: INTERSECT
+  // binds tighter and collapses first, UNION / EXCEPT run left-to-right
+  let work_results : Array[SelectResult] = []
+  for c in cores {
+    work_results.push(run_parsed(c, catalog))
+  }
+  let mut work_results = work_results
+  let mut work_ops = ops
+  while work_ops.length() > 0 {
+    let mut j = -1
+    for i, op in work_ops {
+      if j == -1 && op.0 is Intersect {
+        j = i
       }
     }
-    batch = concat_batches([batch, right.batch()], types)
-    if !ops[i - 1] {
-      batch = dedupe_rows(batch) // bare UNION is DISTINCT
+    if j == -1 {
+      j = 0
     }
+    let (kind, all) = work_ops[j]
+    let left = work_results[j]
+    let right = work_results[j + 1]
+    let merged = apply_setop(kind, all, left, right)
+    let nr : Array[SelectResult] = []
+    for i, r in work_results {
+      if i != j + 1 {
+        nr.push(r)
+      }
+    }
+    work_results = nr
+    let no : Array[(SetOpKind, Bool)] = []
+    for i, o in work_ops {
+      if i != j {
+        no.push(o)
+      }
+    }
+    work_ops = no
+    work_results[j] = merged
   }
+  let first_result = work_results[0]
+  let names = first_result.names()
+  let types = first_result.types()
+  let batch = first_result.batch()
   let order_keys : Array[(Int, Bool, Bool?)] = []
   for item in window_sel.order_by {
     let idx : Int? = match item.key {

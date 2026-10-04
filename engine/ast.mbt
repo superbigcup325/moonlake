@@ -166,8 +166,22 @@ pub(all) struct Select {
   limit : Int?
   offset : Int? // rows skipped before LIMIT applies
   distinct : Bool // SELECT DISTINCT: dedupe the projected rows
-  setop : (Bool, Select)? // UNION [ALL] right; ALL = keep duplicates
+  setop : (SetOpKind, Bool, Select)? // setop right; bool = ALL
 } derive(Eq, Debug)
+
+///|
+/// The set-operation kind joining a select into the chain before it.
+pub(all) enum SetOpKind {
+  Union
+  Intersect
+  Except
+} derive(Eq, Debug)
+
+///|
+pub extend SetOpKind with Eq::{equal, not_equal}
+
+///|
+pub extend SetOpKind with @debug.Debug::{to_repr}
 
 ///|
 pub extend Select with Eq::{equal, not_equal}

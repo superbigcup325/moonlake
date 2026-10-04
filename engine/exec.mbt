@@ -1201,3 +1201,27 @@ fn copy_vec_range(
     _ => ()
   }
 }
+
+///|
+/// NULL-safe multiset key of a whole row (set operations compare rows,
+/// so unlike join keys a NULL here is a value that equals itself).
+fn row_key(batch : @types.DataBatch, r : Int) -> String {
+  let kv : Array[@types.Scalar] = []
+  for c in batch.columns() {
+    kv.push(c.get(r))
+  }
+  canonical_key(kv)
+}
+
+///|
+fn row_counts(batch : @types.DataBatch) -> Map[String, Int] {
+  let counts : Map[String, Int] = Map([])
+  for r in 0..<batch.row_count() {
+    let k = row_key(batch, r)
+    match counts.get(k) {
+      Some(v) => counts[k] = v + 1
+      None => counts[k] = 1
+    }
+  }
+  counts
+}

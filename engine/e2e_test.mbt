@@ -1725,7 +1725,7 @@ test "UNION branches reject ORDER BY / LIMIT; the whole union keeps them" {
     "SELECT cid FROM customers WHERE cid = 1 ORDER BY cid LIMIT 1 UNION ALL SELECT cid FROM customers",
     cat,
   )
-  assert_true(e.to_string().contains("UNION branch"))
+  assert_true(e.to_string().contains("set-operation branch"))
   // ORDER BY / LIMIT after the union apply to the whole result
   let r = run(
     "SELECT cid FROM customers WHERE cid = 1 UNION ALL SELECT cid FROM customers WHERE cid = 3 ORDER BY cid LIMIT 1",
@@ -1810,4 +1810,37 @@ test "COALESCE family, SELECT without FROM, bare NULL" {
   // WHERE on the dummy row filters it
   let r7 = run("SELECT 1 AS one WHERE 1 = 0", cat)
   assert_eq(r7.row_count(), 0)
+}
+
+///|
+test "INTERSECT and EXCEPT with ALL and DISTINCT semantics" {
+  let cat = join_catalog()
+  // orders amounts: 10, 20, 5, 7
+  let nums = "SELECT amount AS v FROM orders"
+  let dupes = "SELECT amount AS v FROM orders UNION ALL SELECT amount AS v FROM orders"
+  // INTERSECT binds tighter than UNION: nums I (dupes' first core)
+  // UNION ALL dupes' second core = 4 U ALL 4 = 8
+  let r = run("\{nums} INTERSECT \{dupes} ORDER BY v", cat)
+  assert_eq(r.row_count(), 8)
+  let r2 = run("\{nums} INTERSECT ALL \{dupes} ORDER BY v", cat)
+  assert_eq(r2.row_count(), 8) // (4 I ALL 4) = 4, U ALL 4 = 8
+  let r3 = run("\{nums} EXCEPT \{dupes} ORDER BY v", cat)
+  assert_eq(r3.row_count(), 4) // (4 E 4) = empty, U ALL 4 = 4
+  // EXCEPT ALL over the whole left chain: (8 E ALL 4) = 4
+  let r4 = run("\{dupes} EXCEPT ALL \{nums} ORDER BY v", cat)
+  assert_eq(r4.row_count(), 4)
+  // NULL-safe row comparison
+  let r5 = run(
+    "SELECT custkey AS v FROM orders INTERSECT SELECT custkey AS v FROM orders WHERE custkey IS NULL",
+    cat,
+  )
+  assert_eq(r5.row_count(), 1) // the NULL custkey row
+  // precedence: INTERSECT binds tighter than UNION
+  let r6 = run(
+    "SELECT amount AS v FROM orders WHERE amount = 99 UNION SELECT amount AS v FROM orders WHERE amount = 10 INTERSECT SELECT amount AS v FROM orders",
+    cat,
+  )
+  // union of {99-empty} with intersect{10} = {10}
+  assert_eq(r6.row_count(), 1)
+  assert_eq(r6.get(0, 0), @types.Int32(10))
 }

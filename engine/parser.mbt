@@ -132,40 +132,93 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
   let p : Parser = { toks: lex_sql(sql), pos: 0, ctes: Map([]), }
   parse_with_clause(p)
   p.expect(KwSelect)
-  let mut sel = parse_select_body(p)
-  // UNION [ALL|DISTINCT] chains associate left; per-branch ORDER BY is
-  // not supported (parenthesize into derived tables for that)
-  while p.peek() is Ident(un) && ascii_lower(un) == "union" {
-    // standard SQL: ORDER BY / LIMIT / OFFSET belong to the whole set
-    // operation; a branch carrying them is a syntax error elsewhere and
-    // silently changes meaning here (the branch limits itself first)
-    if sel.order_by.length() > 0 ||
-      sel.limit is Some(_) ||
-      sel.offset is Some(_) {
-      raise @types.SqlError::Parse(
-        "ORDER BY / LIMIT / OFFSET on a UNION branch is not supported; move them to the end of the union",
-      )
-    }
-    let _ = p.advance()
-    let all = if p.eat(KwDistinct) {
-      false
-    } else if p.peek() is Ident(al) && ascii_lower(al) == "all" {
-      let _ = p.advance()
-      true
-    } else {
-      false
-    }
-    p.expect(KwSelect)
-    let right_core = parse_select_body(p)
-    // the accumulated chain becomes the LEFT operand of the new op
-    sel = { ..right_core, setop: Some((all, sel)), }
-  }
+  let sel = parse_setop_expr(p)
   // statement terminators: users end SQL with ';' out of habit
   while p.eat(Semi) {
     ()
   }
   p.expect(Eof)
   sel
+}
+
+///|
+/// Set operations with standard precedence: INTERSECT binds tighter
+/// than UNION / EXCEPT; UNION and EXCEPT are left-associative peers.
+/// Per-branch ORDER BY / LIMIT / OFFSET are rejected (they belong to
+/// the whole chain).
+fn parse_setop_expr(p : Parser) -> Select raise @types.SqlError {
+  let mut sel = parse_setop_term(p)
+  while p.peek() is Ident(uw) &&
+        (ascii_lower(uw) == "union" || ascii_lower(uw) == "except") {
+    if sel.order_by.length() > 0 ||
+      sel.limit is Some(_) ||
+      sel.offset is Some(_) {
+      raise @types.SqlError::Parse(
+        "ORDER BY / LIMIT / OFFSET on a set-operation branch is not supported; move them to the end of the chain",
+      )
+    }
+    let kind = if ascii_lower(uw) == "union" { Union } else { Except }
+    let _ = p.advance()
+    let all = parse_setop_all(p)
+    p.expect(KwSelect)
+    let right_term = parse_setop_term(p)
+    // the accumulated chain becomes the LEFT operand of the new op,
+    // attached at the term's free left end so an INTERSECT chain inside
+    // the term keeps its own links
+    sel = attach_setop_left(right_term, kind, all, sel)
+  }
+  sel
+}
+
+///|
+/// Attach `prev` as the LEFT operand of `op` at the free left end of a
+/// term chain: a term's root may itself carry an INTERSECT link, and
+/// overwriting it would orphan the term's left branch.
+fn attach_setop_left(
+  term : Select,
+  kind : SetOpKind,
+  all : Bool,
+  prev : Select,
+) -> Select {
+  match term.setop {
+    None => { ..term, setop: Some((kind, all, prev)), }
+    Some((k, a, left)) =>
+      { ..term, setop: Some((k, a, attach_setop_left(left, kind, all, prev))), }
+  }
+}
+
+///|
+/// A term: one select core chained by INTERSECT [ALL|DISTINCT].
+fn parse_setop_term(p : Parser) -> Select raise @types.SqlError {
+  let mut sel = parse_select_body(p)
+  while p.peek() is Ident(iw) && ascii_lower(iw) == "intersect" {
+    if sel.order_by.length() > 0 ||
+      sel.limit is Some(_) ||
+      sel.offset is Some(_) {
+      raise @types.SqlError::Parse(
+        "ORDER BY / LIMIT / OFFSET on a set-operation branch is not supported; move them to the end of the chain",
+      )
+    }
+    let _ = p.advance()
+    let all = parse_setop_all(p)
+    p.expect(KwSelect)
+    let right_core = parse_select_body(p)
+    sel = { ..right_core, setop: Some((Intersect, all, sel)), }
+  }
+  sel
+}
+
+///|
+/// The [ALL|DISTINCT] tail of a set operation; DISTINCT is the default.
+fn parse_setop_all(p : Parser) -> Bool {
+  if p.eat(KwDistinct) {
+    return false
+  }
+  if p.peek() is Ident(al) && ascii_lower(al) == "all" {
+    let _ = p.advance()
+    return true
+  }
+  false
 }
 
 ///|
@@ -435,7 +488,9 @@ fn parse_alias_opt(p : Parser) -> String? raise @types.SqlError {
     // FULL join keywords (LEFT/CROSS are keywords already)
     Some(name) if ascii_lower(name) != "union" &&
       ascii_lower(name) != "right" &&
-      ascii_lower(name) != "full" => {
+      ascii_lower(name) != "full" &&
+      ascii_lower(name) != "intersect" &&
+      ascii_lower(name) != "except" => {
       let _ = p.advance()
       Some(name)
     }
@@ -503,8 +558,11 @@ fn parse_item(p : Parser) -> SelectItem raise @types.SqlError {
     }
   } else {
     match ident_like_tok(p.peek()) {
-      // bare alias: SELECT sum(x) revenue FROM ...; never UNION
-      Some(name) if ascii_lower(name) != "union" => {
+      // bare alias: SELECT sum(x) revenue FROM ...; never a setop
+      // keyword (right/full are keywords already)
+      Some(name) if ascii_lower(name) != "union" &&
+        ascii_lower(name) != "intersect" &&
+        ascii_lower(name) != "except" => {
         let _ = p.advance()
         Some(name)
       }
