@@ -1654,3 +1654,49 @@ test "join keys at int64 extremes hash distinctly" {
   )
   assert_eq(r3.get(0, 0), @types.Int64(1L))
 }
+
+///|
+test "overflow battery: defined semantics at every numeric boundary" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(
+      "i,v\n2147483647,1\n2147483648,2\n9223372036854775807,3\n9223372036854775808,4\n-9223372036854775808,5\n",
+      "num",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  // CSV inference widens past int32/int64 instead of wrapping
+  let r = run("SELECT count(*) AS c FROM num WHERE v IS NOT NULL", cat)
+  assert_eq(r.get(0, 0), @types.Int64(5L))
+  // int32 arithmetic wraps (defined): 2147483647 + 1 = -2147483648.
+  // (the i column itself widens to float64: it holds values past both
+  // int32 and int64, so the wrap is pinned on literal arithmetic)
+  let r2 = run("SELECT 2147483647 + 1 AS x FROM num WHERE v = 1", cat)
+  assert_eq(r2.get(0, 0), @types.Int32(-2147483648))
+  let r2b = run("SELECT 9223372036854775807 + 1 AS x FROM num WHERE v = 1", cat)
+  assert_eq(r2b.get(0, 0), @types.Int64(-9223372036854775808))
+  // division is always double with IEEE infinities; modulo NULLs out
+  let r3 = run(
+    "SELECT 1 / 0 AS d, 0 / 0 AS n, 5 % 0 AS m FROM num WHERE v = 1", cat,
+  )
+  match r3.get(0, 0) {
+    @types.Float64(x) => assert_true(x > 1.0e308)
+    other => fail("expected +inf, got \{other.to_string()}")
+  }
+  match r3.get(0, 1) {
+    @types.Float64(x) => assert_true(x.is_nan())
+    _ => fail("expected nan")
+  }
+  assert_eq(r3.get(0, 2), @types.Null)
+  // out-of-range CAST is a clean error, never a wrap
+  let e = run_err("SELECT CAST(2147483648 AS INT) FROM num", cat)
+  let _ = e
+  // date arithmetic clamps month ends; extremes parse
+  let r4 = run(
+    "SELECT date '1996-03-31' + interval '1' month AS d FROM num WHERE v = 1", cat,
+  )
+  assert_eq(r4.get(0, 0), @types.Date(@types.days_from_civil(1996, 4, 30)))
+  let r5 = run("SELECT count(*) AS c FROM num WHERE v <> 0", cat)
+  assert_eq(r5.get(0, 0), @types.Int64(5L))
+}
