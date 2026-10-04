@@ -94,6 +94,36 @@ moonlake 的约束：进程内库 + native CLI 双发布、wasm/js playground �
   物化仍是内存大头。设计稿需决定扫描懒化的范围（外部文件按批供数即可，
   不动 catalog 语义）还是先以"算子 spill + 大表走查询内多次扫描"过渡。
 
+## 3.5 落盘格式 bake-off（2026-10-04，分支实测）
+
+§4 的拍板点②不再靠纸面判断：两个分支各实现了同接口的 spill 格式，
+同一负载（SF0.01 lineitem，60175 行 × 16 列，含 int/date/string/double
+与 NULL）、同一两段式驱动（write 扫 CSV 序列化，read 反序列化并重算
+标量流 FNV 校验和，write/read 校验和跨臂一致 = 语义等价）、best-of-3
+墙钟 + 隔离 getrusage maxRSS（release 构建，过程含 CSV 扫描基线）：
+
+| 分支 | write | read | 文件 | write RSS | read RSS |
+|---|---|---|---|---|---|
+| `spill/raw-fmt`（自写 MLSPILL1） | 158 ms | 114 ms | 8.48 MB | 66.4 MB | 32.2 MB |
+| `spill/parquet-fmt`（mizchi/parquet 包裹） | 248 ms | 125 ms | 7.53 MB | 48.6 MB | 32.6 MB |
+
+扣掉共同扫描基线（~115 ms），格式本身的写成本约 43 ms vs 133 ms——
+parquet 臂 ~3 倍，主因是上游写路径只有行式（new_parquet_file 收
+Array[Array[Value]]，列式结构在包外无法构造），每批付一次列→行转码。
+
+比数字更硬的是过程中出土的两个上游事实（0.2.2）：
+
+1. **writer 类型覆盖 = Int32 | Int64 | String | Binary**。Double 和
+   Boolean 直接写不了，parquet 臂靠位模式 hack（Double→Int64 IEEE 位、
+   Bool→Int32 0/1）才通过 round-trip——在 upstream writer 补类型前，
+   "复用 writer"不是慢，是语义不成立。
+2. 读路径（read_bytes_columnar）是列式的且工作良好，文件还小 11%
+   （字符串压缩）；配合 mizchi/parquet#4 落地行组级读取后，spill run
+   与行组天然对齐——**作为将来的再评估项保留，不是现在**。
+
+结论：**自写精简格式胜出**——写入快 1.6 倍、读持平、类型零 hack、
+无信封、热路径不依赖上游版本。两分支保留作证据与将来复评基线。
+
 ## 4. 设计稿的接续点
 
 专场起草时从三个拍板点切入：① 预算注入的接口形状（DataFusion 预留制
