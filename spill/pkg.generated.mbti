@@ -1,0 +1,22 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "superbigcup325/moonlake/spill"
+
+import {
+  "superbigcup325/moonlake/engine",
+}
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct FsStore {
+  dir : String
+  mut next : Int
+}
+pub fn FsStore::new(String) -> Self raise
+pub fn FsStore::store(Self) -> @engine.SpillStore
+
+// Type aliases
+
+// Traits

@@ -14,7 +14,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 
 - Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool, date, string) — out-of-range values widen, never wrap.
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
-- No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory.
+- No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back (spill milestone M1).
 
 ### SQL surface
 
@@ -28,6 +28,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
 - Scalar functions: `coalesce` / `nullif` / `greatest` / `least`, `date_trunc(unit, date)`, `date_diff(unit, start, end)`; `SELECT` works without FROM and a bare `NULL` select item reads as INTEGER
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
+- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking `ORDER BY` of non-aggregate queries — sorted runs spill to disk and the final merge streams into projection/DISTINCT/OFFSET/LIMIT, so a LIMIT query holds only its output window (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
 
 Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, explicit window frame clauses (the default frame is supported), cost-based optimization, multi-statement scripts.
 

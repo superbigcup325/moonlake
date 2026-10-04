@@ -20,6 +20,8 @@ pub fn parse_select(String) -> Select raise @types.SqlError
 
 pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError
 
+pub fn run_select_opts(String, @catalog.Catalog, ExecOptions) -> SelectResult raise @types.SqlError
+
 // Errors
 
 // Types and methods
@@ -46,6 +48,12 @@ pub struct BoundQuery {
   // private fields
 } derive(@debug.Debug)
 pub fn BoundQuery::to_repr(Self) -> @debug.Repr
+
+pub(all) struct ExecOptions {
+  budget : Int
+  spill : SpillStore?
+}
+pub fn ExecOptions::in_memory() -> Self
 
 pub(all) enum ExtractField {
   Year
@@ -193,6 +201,12 @@ pub(all) enum SetOpKind {
 pub fn SetOpKind::equal(Self, Self) -> Bool
 pub fn SetOpKind::not_equal(Self, Self) -> Bool
 pub fn SetOpKind::to_repr(Self) -> @debug.Repr
+
+pub(all) struct SpillStore {
+  write : (Bytes) -> Int raise @types.SqlError
+  read : (Int) -> Bytes raise @types.SqlError
+  remove : (Int) -> Unit raise @types.SqlError
+}
 
 pub(all) enum TableRef {
   Named(String)

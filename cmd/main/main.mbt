@@ -34,6 +34,8 @@ fn exec_command(args : Array[String]) -> Unit raise {
   let mut analyze = false
   let mut json = false
   let mut sql_file : String? = None
+  let mut memory : Int = 0
+  let mut spill_dir : String? = None
   let mut i = 2
   let n = args.length()
   let mut reading = true
@@ -56,6 +58,14 @@ fn exec_command(args : Array[String]) -> Unit raise {
     } else if args[i] == "--json" {
       json = true
       i += 1
+    } else if args[i] == "--memory" && i + 1 < n {
+      memory = parse_memory(args[i + 1]) catch {
+        msg => raise cli_fail(msg.to_string())
+      }
+      i += 2
+    } else if args[i] == "--spill-dir" && i + 1 < n {
+      spill_dir = Some(args[i + 1])
+      i += 2
     } else if args[i] == "--file" && i + 1 < n {
       sql_file = Some(args[i + 1])
       i += 2
@@ -153,7 +163,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
     println(rendered)
     return
   }
-  let result = @moonlake.execute(sql, cat) catch {
+  let result = run_query(sql, cat, memory, spill_dir) catch {
     err => raise cli_fail(err.to_string())
   }
   if json {
@@ -177,6 +187,93 @@ fn cli_fail(msg : String) -> @types.SqlError {
   eprintln(msg)
   @sys.exit(1)
   abort("") // unreachable: exit terminates the process
+}
+
+///|
+/// Run the query under the memory options: a positive budget spills the
+/// blocking ORDER BY to a per-run directory (default under TMPDIR).
+/// The directory is removed best-effort once the query ends.
+fn run_query(
+  sql : String,
+  cat : @catalog.Catalog,
+  memory : Int,
+  spill_dir : String?,
+) -> @engine.SelectResult raise @types.SqlError {
+  if memory <= 0 {
+    return @moonlake.execute(sql, cat)
+  }
+  let dir = match spill_dir {
+    Some(d) => d
+    None => pick_spill_dir()
+  }
+  let fs = @spill.FsStore::new(dir) catch {
+    err => raise cli_fail(err.to_string())
+  }
+  errdefer {
+    let _ = @fs.remove_dir(dir) catch { _ => () }
+  }
+  let result = @moonlake.execute_with(sql, cat, {
+    budget: memory,
+    spill: Some(fs.store()),
+  })
+  let _ = @fs.remove_dir(dir) catch { _ => () }
+  result
+}
+
+///|
+/// A fresh per-run directory under TMPDIR (or /tmp): bump a suffix
+/// until create_dir succeeds, so concurrent processes do not collide.
+fn pick_spill_dir() -> String raise @types.SqlError {
+  let base = match @env.get_env_var("TMPDIR") {
+    Some(d) => d
+    None => "/tmp"
+  }
+  let mut n = 0
+  while n < 1000 {
+    let dir = "\{base}/moonlake-spill-\{n}"
+    if !@fs.path_exists(dir) {
+      @fs.create_dir(dir) catch {
+        @fs.IOError(_) => {
+          n += 1
+          continue
+        }
+      }
+      return dir
+    }
+    n += 1
+  }
+  raise @types.SqlError::Execute("no free spill directory under \{base}")
+}
+
+///|
+/// Bytes with an optional K/M/G suffix (case-insensitive).
+fn parse_memory(text : String) -> Int raise @types.SqlError {
+  if text.length() == 0 {
+    raise @types.SqlError::Execute("--memory: empty value")
+  }
+  let last = text[text.length() - 1].to_int()
+  let mult = match last {
+    75 | 107 => Some(1024) // K / k
+    77 | 109 => Some(1024 * 1024) // M / m
+    71 | 103 => Some(1024 * 1024 * 1024) // G / g
+    _ => None
+  }
+  let digits = match mult {
+    Some(_) => text[:text.length() - 1].to_owned()
+    None => text
+  }
+  let m = mult.unwrap_or(1)
+  let mut v = 0
+  for ch in digits {
+    let d = ch.to_int() - 48
+    if d < 0 || d > 9 {
+      raise @types.SqlError::Execute(
+        "--memory: expected <n>[K|M|G], got \"\{text}\"",
+      )
+    }
+    v = v * 10 + d
+  }
+  v * m
 }
 
 ///|
@@ -359,6 +456,9 @@ fn usage() -> String {
     #|      --explain             print the physical plan instead of running
     #|      --analyze             run it: plan plus actual rows per stage
     #|      --json                emit the result as one JSON array line
+    #|      --memory <n>[K|M|G]   budget for the blocking ORDER BY; beyond
+    #|                            it runs spill to disk (external sort)
+    #|      --spill-dir <dir>     where run files go (default: TMPDIR)
     #|
     #|Options:
     #|  --version   Print version and exit

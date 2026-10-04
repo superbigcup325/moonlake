@@ -61,6 +61,20 @@ fn write_i64(out : @buffer.Buffer, v : Int64) -> Unit {
 }
 
 ///|
+fn read_i32_checked(
+  buf : Bytes,
+  pos : Int,
+  what : String,
+) -> Int raise SqlError {
+  if pos + 4 > buf.length() {
+    raise SqlError::Execute(
+      "spill read: truncated at \{what} (pos \{pos}, len \{buf.length()})",
+    )
+  }
+  read_i32(buf, pos)
+}
+
+///|
 fn read_i32(buf : Bytes, pos : Int) -> Int {
   let b0 = buf[pos].to_int()
   let b1 = buf[pos + 1].to_int()
@@ -107,7 +121,9 @@ pub fn DataBatch::to_spill_bytes(batches : Array[DataBatch]) -> Bytes {
     write_i32(out, cols.length())
     for col in cols {
       out.write_byte(dtype_code(col.dtype()))
-      let n = col.len()
+      // row count, not the vector's allocated capacity: builders hand
+      // out capacity-sized vectors with only part of it filled
+      let n = batch.row_count()
       let nulls : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=n)
       let payload : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=n * 8)
       for r in 0..<n {
@@ -152,7 +168,7 @@ fn read_col(
   start : Int,
   dt : DataType,
   n : Int,
-) -> (ColumnVector, Int) {
+) -> (ColumnVector, Int) raise SqlError {
   let vec = ColumnVector::make(dt, n)
   let flags = start
   let mut pos = start + n
@@ -183,8 +199,18 @@ fn read_col(
         pos += 1
       }
       Str => {
+        if pos + 4 > buf.length() {
+          raise SqlError::Execute(
+            "spill read: truncated string header at \{pos} (len \{buf.length()})",
+          )
+        }
         let len = read_i32(buf, pos)
         pos += 4
+        if pos + len > buf.length() {
+          raise SqlError::Execute(
+            "spill read: truncated string body at \{pos}+\{len} (len \{buf.length()})",
+          )
+        }
         vec.set(r, Str(@utf8.decode_lossy(buf[pos:pos + len])))
         pos += len
       }
@@ -205,13 +231,18 @@ pub fn DataBatch::from_spill_bytes(
   let batch_count = read_i32(buf, 8)
   let mut pos = 12
   let out : Array[DataBatch] = []
-  for _ in 0..<batch_count {
-    let rows = read_i32(buf, pos)
+  for b in 0..<batch_count {
+    let rows = read_i32_checked(buf, pos, "batch \{b} row count")
     pos += 4
-    let ncols = read_i32(buf, pos)
+    let ncols = read_i32_checked(buf, pos, "batch \{b} column count")
     pos += 4
     let cols : Array[ColumnVector] = []
-    for _ in 0..<ncols {
+    for c in 0..<ncols {
+      if pos + 1 > buf.length() {
+        raise SqlError::Execute(
+          "spill read: truncated at batch \{b} column \{c} (pos \{pos}, len \{buf.length()})",
+        )
+      }
       let dt = code_dtype(buf[pos])
       pos += 1
       let (vec, next) = read_col(buf, pos, dt, rows)

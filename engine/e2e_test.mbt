@@ -2264,3 +2264,137 @@ test "window function misuse fails with clear errors" {
     ),
   )
 }
+
+///|
+/// External-sort fixture: 2400 rows, values designed to repeat (37 is
+/// coprime to 1000) so ORDER BY ties exercise cross-run stability.
+fn spill_catalog() -> @catalog.Catalog {
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<2400 {
+    sb.write_string("g\{i % 5},\{(i * 37) % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+priv struct MemBox {
+  mut next : Int
+  files : Map[Int, Bytes]
+}
+
+///|
+/// A hermetic in-memory SpillStore for engine tests.
+fn mem_store() -> @engine.SpillStore {
+  let box : MemBox = { next: 0, files: Map([]), }
+  {
+    write: fn(b : Bytes) -> Int {
+      let id = box.next
+      box.next += 1
+      box.files[id] = b
+      id
+    },
+    read: fn(id : Int) -> Bytes raise @types.SqlError {
+      match box.files.get(id) {
+        Some(b) => b
+        None => raise @types.SqlError::Execute("mem store: missing \{id}")
+      }
+    },
+    remove: fn(id : Int) -> Unit { let _ = box.files.remove(id) },
+  }
+}
+
+///|
+fn run_opts(
+  sql : String,
+  cat : @catalog.Catalog,
+  opts : @engine.ExecOptions,
+) -> @engine.SelectResult {
+  @engine.run_select_opts(sql, cat, opts) catch {
+    e => abort("\{e}")
+  }
+}
+
+///|
+fn assert_same_result(
+  a : @engine.SelectResult,
+  b : @engine.SelectResult,
+) -> Unit raise {
+  assert_eq(a.names(), b.names())
+  assert_eq(a.row_count(), b.row_count())
+  for r in 0..<a.row_count() {
+    for c in 0..<a.names().length() {
+      assert_eq(a.get(r, c), b.get(r, c))
+    }
+  }
+}
+
+///|
+test "external sort under a tiny budget matches the in-memory result" {
+  let cat = spill_catalog()
+  // LIMIT: the streaming merge stops after the output window
+  let q = "SELECT k, v FROM t ORDER BY v DESC, k LIMIT 5"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 1500, spill: Some(mem_store()), }),
+  )
+  // no LIMIT: the full sorted result streams through
+  let q2 = "SELECT k, v FROM t ORDER BY v, k DESC"
+  assert_same_result(
+    run(q2, cat),
+    run_opts(q2, cat, { budget: 1500, spill: Some(mem_store()), }),
+  )
+  // OFFSET shifts the window inside the merge
+  let q3 = "SELECT k, v FROM t ORDER BY v, k LIMIT 7 OFFSET 2390"
+  assert_same_result(
+    run(q3, cat),
+    run_opts(q3, cat, { budget: 1500, spill: Some(mem_store()), }),
+  )
+}
+
+///|
+test "external sort honors DISTINCT and desc/asc mixes" {
+  let cat = spill_catalog()
+  let q = "SELECT DISTINCT k FROM t ORDER BY k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 900, spill: Some(mem_store()), }),
+  )
+  let q2 = "SELECT k, v FROM t ORDER BY k ASC, v DESC LIMIT 30"
+  assert_same_result(
+    run(q2, cat),
+    run_opts(q2, cat, { budget: 900, spill: Some(mem_store()), }),
+  )
+}
+
+///|
+test "a budget without a spill store is a clear error" {
+  let cat = spill_catalog()
+  let _ = @engine.run_select_opts(
+    "SELECT k, v FROM t ORDER BY v LIMIT 3",
+    cat,
+    { budget: 1500, spill: None, },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("no spill store is configured"))
+      return
+    }
+  }
+  abort("expected an error")
+}
+
+///|
+test "aggregate ORDER BY stays in-memory under a budget" {
+  let cat = spill_catalog()
+  let q = "SELECT k, sum(v) AS s1 FROM t GROUP BY k ORDER BY k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 900, spill: Some(mem_store()), }),
+  )
+}

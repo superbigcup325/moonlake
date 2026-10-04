@@ -16,6 +16,7 @@ priv struct Correlator {
   outer_items : Array[FromItem]
   mut sub_items : Array[FromItem] // the inner query's FROM, per attempt
   mut counter : Int
+  opts : ExecOptions
 }
 
 ///|
@@ -47,6 +48,7 @@ fn RefSide::merge(self : RefSide, other : RefSide) -> RefSide {
 fn decorrelate(
   sel : Select,
   catalog : @catalog.Catalog,
+  opts : ExecOptions,
 ) -> (Select, Array[@catalog.TableSchema], Array[Array[@types.DataBatch]]) raise @types.SqlError {
   let extra_schemas : Array[@catalog.TableSchema] = []
   let extra_batches : Array[Array[@types.DataBatch]] = []
@@ -55,6 +57,7 @@ fn decorrelate(
     outer_items: sel.from,
     sub_items: [],
     counter: 0,
+    opts,
   }
   // select items are walked even without a WHERE clause: correlated
   // scalar subqueries live there too
@@ -328,7 +331,7 @@ fn Correlator::try_exists_grouped(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [])
+  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
   let name = "__semi\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -504,7 +507,7 @@ fn Correlator::build_scalar_table(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [])
+  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
   let name = "__scalar\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -698,7 +701,7 @@ fn Correlator::finish_semi(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [])
+  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
   // NOT IN poison: a NULL anywhere in the inner key column makes every
   // comparison unknown, so the whole conjunct becomes constant false
   if check_null_in_key && negated {

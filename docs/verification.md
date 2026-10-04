@@ -117,6 +117,33 @@ string_agg/median/count DISTINCT）、NULL 分区键归组、GROUP BY 交互
 复现：数据与脚本见提交记录（`t.csv` 8 行 + 29 条查询清单）；e2e 期望值
 手算钉死在 `engine/e2e_test.mbt` 窗口节。
 
+## 5.5 外排里程碑 M1：ORDER BY 外排序（2026-10-04）
+
+机制：`ExecOptions { budget, spill }` 注入预算与落盘存储（engine 保持零
+fs，`SpillStore` 为函数字段结构体，native CLI 注入 `spill.FsStore`，
+wasm 落在"预算必须配存储"的明确报错上）。非聚合查询的 ORDER BY 在预算
+下走外排：批内排序 → ~budget/4 刷成有序 run → 两两归并降到 ≤8 路 →
+最终 k 路归并**流式**喂进投影/DISTINCT/OFFSET/LIMIT——带 LIMIT 时内存
+里只有输出窗口，不带 LIMIT 时物化的就是查询结果本身。查询结束（含出
+错路径，errdefer）删除全部 run 文件。
+
+验证：
+- wire 格式（`types.spillfmt`，MLSPILL1）round-trip 覆盖全部 dtype +
+  NULL + int64/double 极值；解析带截断防御（越界是带位置的 Execute
+  错误，不再是 range panic——调试期发现并修复的 bug：序列化用了向量
+  容量而非批行数，builder 产出的部分填充向量会写垃圾尾巴，e2e 等价
+  测试当场抓获）
+- e2e：2400 行重复值 fixture，预算 900/1500 强制多 run + 归并，LIMIT /
+  无 LIMIT / OFFSET / DISTINCT / 混合升降序 五种形态与内存路径逐格相等
+- 金标准链新增自洽检查：SF0.01 lineitem 全量非聚合 ORDER BY 在
+  `--memory 200K` 下与内存路径逐行一致（`check_all.sh` 末尾）
+- 语义边界（如实声明）：预算约束 run 状态，不约束基表物化（扫描懒化
+  另立），不约束无 LIMIT 的最终结果
+
+CLI：`exec --memory <n>[K|M|G]`（配 `--spill-dir <dir>`，默认 TMPDIR 下
+按后缀探测的 per-run 目录，查询结束移除）。库形态：`execute_with(sql,
+catalog, opts)`。
+
 ## 6. 并发
 
 - **全局状态审计**：engine/types/catalog/sources 无任何包级可变全局

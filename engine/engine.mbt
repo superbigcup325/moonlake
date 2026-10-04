@@ -44,8 +44,18 @@ pub fn run_select(
   sql : String,
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
+  run_select_opts(sql, catalog, ExecOptions::in_memory())
+}
+
+///|
+/// Execute with explicit options (memory budget + spill store).
+pub fn run_select_opts(
+  sql : String,
+  catalog : @catalog.Catalog,
+  opts : ExecOptions,
+) -> SelectResult raise @types.SqlError {
   let sel = parse_select(sql)
-  run_parsed(sel, catalog, [])
+  run_parsed(sel, catalog, [], opts)
 }
 
 ///|
@@ -56,15 +66,16 @@ fn run_parsed(
   sel : Select,
   catalog : @catalog.Catalog,
   stats : Array[(String, Int)],
+  opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
   // pre-executed synthetic tables before anything else runs
-  let (sel, extra_schemas, extra_batches) = decorrelate(sel, catalog)
+  let (sel, extra_schemas, extra_batches) = decorrelate(sel, catalog, opts)
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   match sel.setop {
     Some((kind, all, right_sel)) =>
-      return run_setop(sel, kind, all, right_sel, catalog)
+      return run_setop(sel, kind, all, right_sel, catalog, opts)
     None => ()
   }
   if sel.from.length() == 0 {
@@ -107,7 +118,7 @@ fn run_parsed(
         }
       }
       Sub(inner) => {
-        let r = run_parsed(inner, catalog, [])
+        let r = run_parsed(inner, catalog, [], opts)
         let names = r.names()
         let types = r.types()
         // an explicit column alias list renames the outputs positionally
@@ -142,7 +153,7 @@ fn run_parsed(
       }
     }
   }
-  let runner : SubqueryRunner = { catalog, }
+  let runner : SubqueryRunner = { catalog, opts, }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
   let bq = plan.bq
   // drop unreferenced columns up front; the kept vectors are shared
@@ -175,6 +186,44 @@ fn run_parsed(
     [grouped]
   } else {
     joined
+  }
+  // Spill milestone M1: a non-aggregate ORDER BY under a budget sorts
+  // externally (runs on disk, streaming merge into the projection and
+  // the OFFSET/LIMIT window). Aggregate outputs are one small batch and
+  // window functions materialize the pre row anyway — both stay
+  // in-memory.
+  if opts.budget > 0 &&
+    !bq.aggregate &&
+    bq.windows.length() == 0 &&
+    bq.order_by.length() > 0 {
+    match opts.spill {
+      Some(store) => {
+        let keys : Array[(PhysExpr, Bool, Bool?)] = []
+        for spec in bq.order_by {
+          keys.push((spec.expr, spec.desc, spec.nulls_first))
+        }
+        let batch = external_sort_project(
+          kept,
+          keys,
+          bq.out_exprs,
+          bq.out_types,
+          bq.distinct,
+          bq.offset,
+          bq.limit,
+          opts.budget,
+          store,
+          stats,
+        )
+        if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
+          stats.push(("result", batch.row_count()))
+        }
+        return { names: bq.names, types: bq.out_types, batch, }
+      }
+      None =>
+        raise @types.SqlError::Execute(
+          "query has a memory budget but no spill store is configured (pass --spill-dir)",
+        )
+    }
   }
   // Window functions append their output columns before projection;
   // the select list's markers resolve to them.
@@ -229,7 +278,12 @@ pub fn explain_analyze(
   catalog : @catalog.Catalog,
 ) -> String raise @types.SqlError {
   let stats : Array[(String, Int)] = []
-  let result = run_parsed(parse_select(sql), catalog, stats)
+  let result = run_parsed(
+    parse_select(sql),
+    catalog,
+    stats,
+    ExecOptions::in_memory(),
+  )
   let sb = StringBuilder()
   sb.write_string(explain(sql, catalog))
   sb.write_string("\n-- actual rows")
@@ -340,6 +394,7 @@ fn run_setop(
   _all : Bool,
   _right_sel : Select,
   catalog : @catalog.Catalog,
+  opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
   // the root carries the trailing window (ORDER BY / LIMIT / OFFSET /
   // DISTINCT written after the last core)
@@ -360,7 +415,7 @@ fn run_setop(
   // binds tighter and collapses first, UNION / EXCEPT run left-to-right
   let work_results : Array[SelectResult] = []
   for c in cores {
-    work_results.push(run_parsed(c, catalog, []))
+    work_results.push(run_parsed(c, catalog, [], opts))
   }
   let mut work_results = work_results
   let mut work_ops = ops
@@ -458,11 +513,15 @@ pub fn explain(
         )
     }
   }
-  let runner : SubqueryRunner = { catalog, }
+  let runner : SubqueryRunner = { catalog, opts: ExecOptions::in_memory(), }
   // the executed plan includes decorrelated semi/anti joins; explain
   // must render the same thing (the pass executes the inner queries,
   // which the plan depends on anyway)
-  let (sel, extra_schemas, _extra_batches) = decorrelate(sel, catalog)
+  let (sel, extra_schemas, _extra_batches) = decorrelate(
+    sel,
+    catalog,
+    ExecOptions::in_memory(),
+  )
   for t in extra_schemas {
     schemas.push(t)
   }

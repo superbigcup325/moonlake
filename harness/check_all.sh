@@ -56,4 +56,12 @@ check_in harness/data/multigroup mgfull --parquet harness/data/multigroup/multig
 check_in harness/data/multigroup mgfilter --parquet harness/data/multigroup/multigroup.parquet --date-col d
 check_in harness/data/multigroup mgagg --parquet harness/data/multigroup/multigroup.parquet --date-col d
 check_in harness/data/multigroup mgwin --parquet harness/data/multigroup/multigroup.parquet --date-col d
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet)"
+# external-sort equivalence: the same non-aggregate ORDER BY under a
+# tiny memory budget must match the in-memory run row-for-row
+echo "== spillorder (external sort == in-memory)"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" "$(cat harness/queries/spillorder.sql)" \
+  > "$work/spillorder_plain.txt"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
+  "$(cat harness/queries/spillorder.sql)" > "$work/spillorder_spilled.txt"
+python3 harness/compare.py "$work/spillorder_plain.txt" "$work/spillorder_spilled.txt"
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort equivalence check"

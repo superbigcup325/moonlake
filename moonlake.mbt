@@ -24,3 +24,15 @@ pub fn execute(
 ) -> @engine.SelectResult raise @types.SqlError {
   @engine.run_select(sql, catalog)
 }
+
+///|
+/// Execute with explicit options: a memory budget turns the blocking
+/// ORDER BY of non-aggregate queries into an external sort backed by
+/// `opts.spill`. See `@engine.ExecOptions`.
+pub fn execute_with(
+  sql : String,
+  catalog : @catalog.Catalog,
+  opts : @engine.ExecOptions,
+) -> @engine.SelectResult raise @types.SqlError {
+  @engine.run_select_opts(sql, catalog, opts)
+}

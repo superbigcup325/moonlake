@@ -4,6 +4,7 @@ import {
   "superbigcup325/moonlake/engine",
   "superbigcup325/moonlake/sources/csv",
   "superbigcup325/moonlake/sources/parquet" @pq,
+  "superbigcup325/moonlake/spill",
   "superbigcup325/moonlake/types",
   "moonbitlang/core/env",
   "moonbitlang/x/fs",
