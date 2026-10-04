@@ -1,0 +1,1 @@
+SELECT v FROM multigroup WHERE v >= 200000 AND v < 300047 ORDER BY v

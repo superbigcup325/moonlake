@@ -14,12 +14,16 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 check() { # <name> <csv...>
-  local name=$1
-  shift
+  check_in "$DATA" "$@"
+}
+
+check_in() { # <golden-dir> <name> <csv...>
+  local dir=$1 name=$2
+  shift 2
   echo "== $name"
   moon run cmd/main -- exec "$@" "$(cat "harness/queries/$name.sql")" \
     > "$work/$name.txt"
-  python3 harness/compare.py "$DATA/${name}_golden.txt" "$work/$name.txt"
+  python3 harness/compare.py "$dir/${name}_golden.txt" "$work/$name.txt"
 }
 
 check q6 --csv "$DATA/lineitem.csv"
@@ -45,4 +49,11 @@ check q18 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv" --csv "$DATA/linei
 check q20 --csv "$DATA/supplier.csv" --csv "$DATA/nation.csv" --csv "$DATA/partsupp.csv" --csv "$DATA/part.csv" --csv "$DATA/lineitem.csv"
 check q21 --csv "$DATA/supplier.csv" --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --csv "$DATA/nation.csv"
 check q22 --csv "$DATA/customer.csv" --csv "$DATA/orders.csv"
-echo "all 23 golden queries pass (22 TPC-H queries + the parquet variant)"
+# multi-row-group parquet fixture (scale-independent, not part of $DATA):
+# the SF0.01 parquet export is a single row group, so the reader's
+# multi-group path gets its own file with known per-group bounds
+check_in harness/data/multigroup mgfull --parquet harness/data/multigroup/multigroup.parquet --date-col d
+check_in harness/data/multigroup mgfilter --parquet harness/data/multigroup/multigroup.parquet --date-col d
+check_in harness/data/multigroup mgagg --parquet harness/data/multigroup/multigroup.parquet --date-col d
+check_in harness/data/multigroup mgwin --parquet harness/data/multigroup/multigroup.parquet --date-col d
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet)"

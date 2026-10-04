@@ -36,4 +36,5 @@ jobs:
       - name: Golden chain
         run: |
           python3 harness/gen_tpch.py
+          python3 harness/gen_multigroup.py
           bash harness/check_all.sh

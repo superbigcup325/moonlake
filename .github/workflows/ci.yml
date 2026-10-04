@@ -82,6 +82,8 @@ jobs:
       - name: Install duckdb
         run: python3 -m pip install --quiet duckdb
       - name: Generate TPC-H data and golden answers
-        run: python3 harness/gen_tpch.py
+        run: |
+          python3 harness/gen_tpch.py
+          python3 harness/gen_multigroup.py
       - name: Cross-validate golden queries
         run: bash harness/check_all.sh
