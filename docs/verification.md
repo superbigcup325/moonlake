@@ -126,6 +126,17 @@ string_agg/median/count DISTINCT）、NULL 分区键归组、GROUP BY 交互
 - **并行进程确定性**：8 个并发 CLI 进程对同一数据集执行 q5，输出
   md5 全部一致（1 个唯一哈希）。
 - MoonBit 语言层未向用户暴露线程原语，进程内并行不在契约范围。
+- **语言层并行能力调研**（2026-10-04，moon 0.1.20260920）：进程内数据
+  并行当前**不可表达**，这是语言/工具链限制而非引擎设计缺口——
+  moonbitlang/async 自述 "single-threaded, cooperative multitasking"，
+  "user code can only utilize one hardware processor"（内部线程仅用于
+  IO worker）；core builtin 与 moonbitlang/x 全量无 thread/spawn/atomic
+  原语；社区 actor 库（fuwaroid 型）同为单串行循环。native FFI
+  (`extern "C"`) 理论上可挂 C 线程，但 GC 托管对象无法跨 FFI 线程共享，
+  退化为带更差工程性的进程级并行——不如直接多进程。结论：并行化维持
+  进程级契约（每线程独立 Catalog / 外部同步只读共享），同一查询内并行
+  等语言层提供用户线程或 wasm 共享内存线程后再立项；列式布局下
+  scan/join/agg 按分区并行是自然的切入点。
 
 ## 7. 复现命令
 
