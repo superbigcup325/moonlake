@@ -160,6 +160,13 @@ fn Correlator::prepare(
   self : Correlator,
   sub : Select,
 ) -> (Array[(LExpr, LExpr)], Array[LExpr], Array[LExpr])? {
+  // a windowed subquery is never rewritten: lifting touches the WHERE
+  // conjuncts and the select list, not the window definitions, so a
+  // correlated one would silently keep outer references. Uncorrelated
+  // windowed subqueries bail here too and run normally via the binder.
+  if sub.windows.length() > 0 {
+    return None
+  }
   for item in sub.from {
     if !(item.table is Named(_)) {
       return None
@@ -318,6 +325,7 @@ fn Correlator::try_exists_grouped(
     limit: None,
     offset: None,
     distinct: false,
+    windows: [],
     setop: None,
   }
   let inner = run_parsed(inner_sel, self.catalog, [])
@@ -493,6 +501,7 @@ fn Correlator::build_scalar_table(
     limit: None,
     offset: None,
     distinct: false,
+    windows: [],
     setop: None,
   }
   let inner = run_parsed(inner_sel, self.catalog, [])
@@ -686,6 +695,7 @@ fn Correlator::finish_semi(
     limit: None,
     offset: None,
     distinct: false,
+    windows: [],
     setop: None,
   }
   let inner = run_parsed(inner_sel, self.catalog, [])

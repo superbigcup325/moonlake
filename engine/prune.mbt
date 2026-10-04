@@ -84,10 +84,24 @@ fn prune_bound(
     for e in bq.out_exprs {
       mark_flat(e)
     }
-    // expression ORDER BY sorts the pre-projection row: its columns are
+    // ORDER BY keys sort the pre-projection row: their columns are
     // needed even when nothing else references them
-    for k in bq.order_exprs {
-      mark_flat(k.0)
+    for k in bq.order_by {
+      mark_flat(k.expr)
+    }
+    // window partition/order/input keys read the pre-projection row the
+    // same way (their WinRef outputs mark no base columns)
+    for w in bq.windows {
+      match w.spec.input {
+        Some(e) => mark_flat(e)
+        None => ()
+      }
+      for e in w.partition {
+        mark_flat(e)
+      }
+      for k in w.order {
+        mark_flat(k.0)
+      }
     }
   }
   // fast path: every column of every table is referenced
@@ -193,10 +207,41 @@ fn prune_bound(
   } else {
     rewrite_all(bq.out_exprs, fn(i) { flat_map[i] })
   }
-  let order_exprs = if bq.aggregate {
-    bq.order_exprs
+  let order_by = if bq.aggregate {
+    bq.order_by
   } else {
-    rewrite_order_exprs(bq.order_exprs, fn(i) { flat_map[i] })
+    let out : Array[OrderSpec] = []
+    for k in bq.order_by {
+      out.push({
+        expr: rewrite_refs(k.expr, fn(i) { flat_map[i] }),
+        desc: k.desc,
+        nulls_first: k.nulls_first,
+        out_col: k.out_col,
+      })
+    }
+    out
+  }
+  let windows = if bq.aggregate {
+    bq.windows
+  } else {
+    let out : Array[BoundWin] = []
+    for w in bq.windows {
+      out.push({
+        kind: w.kind,
+        spec: {
+          kind: w.spec.kind,
+          input: match w.spec.input {
+            Some(e) => Some(rewrite_refs(e, fn(i) { flat_map[i] }))
+            None => None
+          },
+          out_type: w.spec.out_type,
+          sep: w.spec.sep,
+        },
+        partition: rewrite_all(w.partition, fn(i) { flat_map[i] }),
+        order: rewrite_order_exprs(w.order, fn(i) { flat_map[i] }),
+      })
+    }
+    out
   }
   {
     bq: {
@@ -208,10 +253,10 @@ fn prune_bound(
       aggs,
       having: bq.having,
       out_exprs,
+      windows,
       names: bq.names,
       out_types: bq.out_types,
-      order_keys: bq.order_keys,
-      order_exprs,
+      order_by,
       limit: bq.limit,
       offset: bq.offset,
       distinct: bq.distinct,
@@ -271,6 +316,9 @@ fn collect_refs(
       }
     CastE(inner, _) => collect_refs(inner, resolve, needed)
     DateArithE(inner, _, _) => collect_refs(inner, resolve, needed)
+    // a window output marker marks no base columns; the window's own
+    // partition/order/input expressions are marked separately
+    WinRef(_, _) => ()
     CaseE(whens, else_, _) => {
       for w in whens {
         collect_refs(w.0, resolve, needed)
@@ -342,6 +390,9 @@ fn rewrite_refs(e : PhysExpr, m : (Int) -> Int) -> PhysExpr {
     CastE(inner, dt) => CastE(rewrite_refs(inner, m), dt)
     DateArithE(inner, qty, unit) =>
       DateArithE(rewrite_refs(inner, m), qty, unit)
+    // window output markers survive pruning untouched: they index the
+    // appended window columns, not the flat layout
+    WinRef(i, dt) => WinRef(i, dt)
     CaseE(whens, else_, dt) => {
       let new_whens : Array[(PhysExpr, PhysExpr)] = []
       for w in whens {

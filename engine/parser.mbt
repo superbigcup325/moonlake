@@ -2,7 +2,9 @@
 //   SELECT item [, item]* FROM table [WHERE expr] [GROUP BY expr[, expr]*]
 //   [HAVING expr] [ORDER BY key [ASC|DESC][, ...]] [LIMIT n]
 // Aggregates parse as function calls (sum/avg/min/max/count, with count(*)
-// and count(DISTINCT x) forms).
+// and count(DISTINCT x) forms). An OVER clause after an aggregate or a
+// ranking function (row_number / rank / dense_rank) records a window
+// definition and leaves an indexed `__win` marker as the select item.
 // Precedence (low to high): OR, AND, NOT, comparison/BETWEEN/IN/LIKE,
 // + -, * / %, unary -.
 
@@ -13,6 +15,10 @@ priv struct Parser {
   // WITH cte AS (SELECT ...) name -> body token slice; a reference
   // re-parses the slice into a fresh derived table per occurrence
   ctes : Map[String, Array[Tok]]
+  // window definitions in parse order across the whole statement; each
+  // select body drains its own suffix (stack discipline: bodies nest
+  // strictly inside their items) and renumbers the `__win` markers
+  windows : Array[WindowSpec]
 }
 
 ///|
@@ -123,13 +129,15 @@ fn show_tok(t : Tok) -> String {
     KwYear => "YEAR"
     KwMonth => "MONTH"
     KwDay => "DAY"
+    KwOver => "OVER"
+    KwPartition => "PARTITION"
     Eof => "end of input"
   }
 }
 
 ///|
 pub fn parse_select(sql : String) -> Select raise @types.SqlError {
-  let p : Parser = { toks: lex_sql(sql), pos: 0, ctes: Map([]), }
+  let p : Parser = { toks: lex_sql(sql), pos: 0, ctes: Map([]), windows: [], }
   parse_with_clause(p)
   p.expect(KwSelect)
   let sel = parse_setop_expr(p)
@@ -223,13 +231,18 @@ fn parse_setop_all(p : Parser) -> Bool {
 
 ///|
 /// Parse everything after SELECT (no Eof check — the caller may be
-/// inside a derived table).
+/// inside a derived table). Window definitions (`fn(...) OVER (...)`)
+/// parse into the shared `p.windows` array; this body drains the suffix
+/// accumulated by its own select list and renumbers the item markers to
+/// body-local indexes. Window functions are a select-list feature: the
+/// other clauses are checked marker-free.
 fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
+  let win_base = p.windows.length()
   let distinct = p.eat(KwDistinct)
-  let items : Array[SelectItem] = []
-  items.push(parse_item(p))
+  let items_raw : Array[SelectItem] = []
+  items_raw.push(parse_item(p))
   while p.eat(Comma) {
-    items.push(parse_item(p))
+    items_raw.push(parse_item(p))
   }
   // FROM is optional: `SELECT 1` evaluates its items over one dummy row
   let from : Array[FromItem] = []
@@ -289,17 +302,196 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   } else {
     None
   }
+  // window markers may only appear in the select list; the sub-select
+  // bodies of ScalarSub / IN / EXISTS own their markers, so the walk
+  // stops at their boundaries
+  match filter {
+    Some(f) =>
+      if contains_win_marker(f) {
+        raise @types.SqlError::Parse(
+          "window functions are only allowed in the SELECT list",
+        )
+      }
+    None => ()
+  }
+  for g in group_by {
+    if contains_win_marker(g) {
+      raise @types.SqlError::Parse(
+        "window functions are only allowed in the SELECT list",
+      )
+    }
+  }
+  match having {
+    Some(h) =>
+      if contains_win_marker(h) {
+        raise @types.SqlError::Parse(
+          "window functions are only allowed in the SELECT list",
+        )
+      }
+    None => ()
+  }
+  for o in order_by {
+    if contains_win_marker(o.key) {
+      raise @types.SqlError::Parse(
+        "window functions are only allowed in the SELECT list; order by the output alias instead",
+      )
+    }
+  }
+  // drain this body's window definitions (truncating the shared array
+  // back to this body's base — otherwise a parent body would re-drain a
+  // nested subquery's leftovers) and make the item markers body-local
+  let windows : Array[WindowSpec] = []
+  for i in win_base..<p.windows.length() {
+    windows.push(p.windows[i])
+  }
+  p.windows.truncate(win_base)
+  let items : Array[SelectItem] = []
+  for it in items_raw {
+    items.push({
+      expr: reindex_win_markers(it.expr, win_base),
+      label: it.label,
+    })
+  }
   {
     from,
     filter,
     group_by,
     having,
     items,
+    windows,
     order_by,
     limit,
     offset,
     distinct,
     setop: None,
+  }
+}
+
+///|
+/// True when the expression contains a `__win` select-list marker.
+/// Subquery boundaries stop the walk: a nested select body numbered its
+/// own markers and owns them.
+fn contains_win_marker(e : LExpr) -> Bool {
+  match e {
+    Func("__win", _) => true
+    Col(_) | ColQ(_, _) | Lit(_) | Star | IntervalLit(_, _) => false
+    Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
+      contains_win_marker(l) || contains_win_marker(r)
+    Not(x) => contains_win_marker(x)
+    Between(v, lo, hi) =>
+      contains_win_marker(v) ||
+      contains_win_marker(lo) ||
+      contains_win_marker(hi)
+    In(v, items) | NotIn(v, items) => {
+      let mut found = contains_win_marker(v)
+      for item in items {
+        if contains_win_marker(item) {
+          found = true
+        }
+      }
+      found
+    }
+    Like(v, _) | NotLike(v, _) => contains_win_marker(v)
+    IsNull(v, _) => contains_win_marker(v)
+    Extract(_, x) => contains_win_marker(x)
+    Cast(x, _) => contains_win_marker(x)
+    Agg(_, inner) =>
+      match inner {
+        Some(x) => contains_win_marker(x)
+        None => false
+      }
+    Case(whens, else_) => {
+      let mut found = false
+      for w in whens {
+        if contains_win_marker(w.0) || contains_win_marker(w.1) {
+          found = true
+        }
+      }
+      match else_ {
+        Some(x) => found || contains_win_marker(x)
+        None => found
+      }
+    }
+    Func(_, args) => {
+      let mut found = false
+      for a in args {
+        if contains_win_marker(a) {
+          found = true
+        }
+      }
+      found
+    }
+    // nested select bodies drain and number their own windows
+    ScalarSub(_) | InSelect(_, _, _) | Exists(_, _) => false
+  }
+}
+
+///|
+/// Renumber `__win` markers from statement-wide to select-body-local
+/// indexes (`g -> g - base`). Subquery boundaries stop the walk.
+fn reindex_win_markers(e : LExpr, base : Int) -> LExpr {
+  match e {
+    Func("__win", [Lit(@types.Int32(g))]) =>
+      Func("__win", [Lit(@types.Scalar::Int32(g - base))])
+    Col(_) | ColQ(_, _) | Lit(_) | Star | IntervalLit(_, _) => e
+    Arith(op, l, r) =>
+      Arith(op, reindex_win_markers(l, base), reindex_win_markers(r, base))
+    Cmp(op, l, r) =>
+      Cmp(op, reindex_win_markers(l, base), reindex_win_markers(r, base))
+    And(l, r) => And(reindex_win_markers(l, base), reindex_win_markers(r, base))
+    Or(l, r) => Or(reindex_win_markers(l, base), reindex_win_markers(r, base))
+    Not(x) => Not(reindex_win_markers(x, base))
+    Between(v, lo, hi) =>
+      Between(
+        reindex_win_markers(v, base),
+        reindex_win_markers(lo, base),
+        reindex_win_markers(hi, base),
+      )
+    In(v, items) => {
+      let new_items : Array[LExpr] = []
+      for item in items {
+        new_items.push(reindex_win_markers(item, base))
+      }
+      In(reindex_win_markers(v, base), new_items)
+    }
+    NotIn(v, items) => {
+      let new_items : Array[LExpr] = []
+      for item in items {
+        new_items.push(reindex_win_markers(item, base))
+      }
+      NotIn(reindex_win_markers(v, base), new_items)
+    }
+    Like(v, pat) => Like(reindex_win_markers(v, base), pat)
+    NotLike(v, pat) => NotLike(reindex_win_markers(v, base), pat)
+    IsNull(v, n) => IsNull(reindex_win_markers(v, base), n)
+    Extract(f, x) => Extract(f, reindex_win_markers(x, base))
+    Cast(x, dt) => Cast(reindex_win_markers(x, base), dt)
+    Agg(f, inner) =>
+      match inner {
+        Some(x) => Agg(f, Some(reindex_win_markers(x, base)))
+        None => Agg(f, None)
+      }
+    Case(whens, else_) => {
+      let new_whens : Array[(LExpr, LExpr)] = []
+      for w in whens {
+        new_whens.push(
+          (reindex_win_markers(w.0, base), reindex_win_markers(w.1, base)),
+        )
+      }
+      let new_else = match else_ {
+        Some(x) => Some(reindex_win_markers(x, base))
+        None => None
+      }
+      Case(new_whens, new_else)
+    }
+    Func(name, args) => {
+      let new_args : Array[LExpr] = []
+      for a in args {
+        new_args.push(reindex_win_markers(a, base))
+      }
+      Func(name, new_args)
+    }
+    ScalarSub(_) | InSelect(_, _, _) | Exists(_, _) => e
   }
 }
 
@@ -377,7 +569,12 @@ fn Parser::reparse_cte(
   self : Parser,
   name : String,
 ) -> Select raise @types.SqlError {
-  let sub : Parser = { toks: self.ctes[name], pos: 0, ctes: self.ctes, }
+  let sub : Parser = {
+    toks: self.ctes[name],
+    pos: 0,
+    ctes: self.ctes,
+    windows: [],
+  }
   sub.expect(KwSelect)
   parse_select_body(sub)
 }
@@ -826,7 +1023,9 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
         p.expect(RParen)
         Exists(sub, false) // NOT EXISTS arrives as Not(Exists)
       } else if p.peek() is LParen {
-        parse_function(p, name)
+        // OVER binds at call level: `sum(x) OVER () + 1` chains on the
+        // window result
+        parse_over_opt(p, parse_function(p, name))
       } else if p.peek() is Dot {
         parse_qualified(p, name)
       } else {
@@ -886,6 +1085,79 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
       raise @types.SqlError::Parse("unexpected \{found} in expression")
     }
   }
+}
+
+///|
+/// OVER clause: `fn(args) OVER ( [PARTITION BY expr, ...]
+/// [ORDER BY key [ASC|DESC] [NULLS FIRST|LAST], ...] )`. Records the
+/// window definition in `p.windows` and returns an indexed `__win`
+/// marker for the select item. Only aggregates and the three ranking
+/// functions take OVER; explicit frame clauses are rejected (the
+/// default frame is implied and supported for aggregates).
+fn parse_over_opt(p : Parser, expr : LExpr) -> LExpr raise @types.SqlError {
+  if !p.eat(KwOver) {
+    return expr
+  }
+  let fn_ : WinFn = match expr {
+    Agg(f, inner) => WinFn::Agg(f, inner)
+    Func(nm, args) =>
+      match ascii_lower(nm) {
+        "row_number" =>
+          if args.length() == 0 {
+            RowNumber
+          } else {
+            raise @types.SqlError::Parse("row_number() takes no arguments")
+          }
+        "rank" =>
+          if args.length() == 0 {
+            Rank
+          } else {
+            raise @types.SqlError::Parse("rank() takes no arguments")
+          }
+        "dense_rank" =>
+          if args.length() == 0 {
+            DenseRank
+          } else {
+            raise @types.SqlError::Parse("dense_rank() takes no arguments")
+          }
+        _ =>
+          raise @types.SqlError::Parse(
+            "only aggregates and ranking functions (row_number, rank, dense_rank) support OVER, found \"\{nm}\"",
+          )
+      }
+    _ =>
+      raise @types.SqlError::Parse(
+        "OVER must follow an aggregate or ranking function call",
+      )
+  }
+  p.expect(LParen)
+  let mut partition : Array[LExpr] = []
+  let order : Array[(LExpr, Bool, Bool?)] = []
+  if p.eat(KwPartition) {
+    p.expect(KwBy)
+    partition = parse_expr_list(p)
+  }
+  if p.eat(KwOrder) {
+    p.expect(KwBy)
+    for o in parse_order_list(p) {
+      order.push((o.key, o.desc, o.nulls_first))
+    }
+  }
+  match p.peek() {
+    Ident(w) =>
+      match ascii_lower(w) {
+        "rows" | "range" | "groups" =>
+          raise @types.SqlError::Parse(
+            "window frame clauses (ROWS/RANGE) are not supported; the default frame (RANGE UNBOUNDED PRECEDING TO CURRENT ROW) is used",
+          )
+        _ => ()
+      }
+    _ => ()
+  }
+  p.expect(RParen)
+  let idx = p.windows.length()
+  p.windows.push({ fn_, partition, order, })
+  Func("__win", [Lit(@types.Scalar::Int32(idx))])
 }
 
 ///|
@@ -1012,47 +1284,47 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
     "sum" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(Sum, Some(inner))
+      LExpr::Agg(AggFn::Sum, Some(inner))
     }
     "avg" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(Avg, Some(inner))
+      LExpr::Agg(AggFn::Avg, Some(inner))
     }
     "min" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(Min, Some(inner))
+      LExpr::Agg(AggFn::Min, Some(inner))
     }
     "max" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(Max, Some(inner))
+      LExpr::Agg(AggFn::Max, Some(inner))
     }
     "stddev" | "stddev_samp" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(SdSamp, Some(inner))
+      LExpr::Agg(AggFn::SdSamp, Some(inner))
     }
     "variance" | "var_samp" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(VarSamp, Some(inner))
+      LExpr::Agg(AggFn::VarSamp, Some(inner))
     }
     "stddev_pop" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(SdPop, Some(inner))
+      LExpr::Agg(AggFn::SdPop, Some(inner))
     }
     "var_pop" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(VarPop, Some(inner))
+      LExpr::Agg(AggFn::VarPop, Some(inner))
     }
     "median" => {
       let inner = parse_or(p)
       p.expect(RParen)
-      Agg(Median, Some(inner))
+      LExpr::Agg(AggFn::Median, Some(inner))
     }
     "string_agg" => {
       // two arguments; the separator must be a string literal and is
@@ -1061,20 +1333,20 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
       p.expect(Comma)
       let sep = parse_or(p)
       p.expect(RParen)
-      Agg(StringAgg, Some(Func("__string_agg", [value, sep])))
+      LExpr::Agg(AggFn::StringAgg, Some(Func("__string_agg", [value, sep])))
     }
     "count" =>
       if p.eat(Star) {
         p.expect(RParen)
-        Agg(CountStar, None)
+        LExpr::Agg(AggFn::CountStar, None)
       } else if p.eat(KwDistinct) {
         let inner = parse_or(p)
         p.expect(RParen)
-        Agg(CountDistinct, Some(inner))
+        LExpr::Agg(AggFn::CountDistinct, Some(inner))
       } else {
         let inner = parse_or(p)
         p.expect(RParen)
-        Agg(Count, Some(inner))
+        LExpr::Agg(AggFn::Count, Some(inner))
       }
     "cast" => {
       // CAST(expr AS type): AS binds inside the call
@@ -1120,7 +1392,12 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
     | "least"
     | "nullif"
     | "date_trunc"
-    | "date_diff" => {
+    | "date_diff"
+    // ranking functions parse as plain calls; a binder error explains
+    // the missing OVER when one never follows
+    | "row_number"
+    | "rank"
+    | "dense_rank" => {
       let args : Array[LExpr] = []
       if !(p.peek() is RParen) {
         args.push(parse_or(p))

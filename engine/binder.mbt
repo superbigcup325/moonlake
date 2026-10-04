@@ -32,10 +32,26 @@ pub(all) enum PhysExpr {
   CastE(PhysExpr, @types.DataType) // CAST(expr AS type)
   // date +/- interval, quantity sign folded at bind (Sub negates)
   DateArithE(PhysExpr, Int64, IntervalUnit)
+  // select-list window marker: reads the Nth window output column
+  // appended after the pre-projection row (exec_windows resolves it to
+  // a plain ColRef once that column exists)
+  WinRef(Int, @types.DataType)
 } derive(Debug)
 
 ///|
 pub extend PhysExpr with @debug.Debug::{to_repr}
+
+///|
+/// One resolved ORDER BY key, in written order. Output-column keys
+/// (out_col = Some(i)) carry the projected expression too so the
+/// executor can sort the pre-projection rows uniformly; `expr` is then
+/// redundant with out_exprs[i] and only pruning touches it.
+priv struct OrderSpec {
+  expr : PhysExpr
+  desc : Bool
+  nulls_first : Bool?
+  out_col : Int?
+} derive(Debug)
 
 ///|
 priv enum AggKind {
@@ -61,6 +77,35 @@ priv struct AggSpec {
   out_type : @types.DataType
   sep : String? // string_agg's literal separator
 } derive(Debug)
+
+///|
+/// Which window computation fills the output column. The three ranking
+/// kinds ignore `spec`.
+priv enum WinKind {
+  WRowNumber
+  WRank
+  WDenseRank
+  WAgg
+} derive(Debug)
+
+///|
+/// One bound window definition: the computation kind with its aggregate
+/// spec, plus partition and order keys over the pre-projection row
+/// (Flat for plain queries, AggOut for grouped ones).
+priv struct BoundWin {
+  kind : WinKind
+  spec : AggSpec
+  partition : Array[PhysExpr]
+  order : Array[(PhysExpr, Bool, Bool?)]
+} derive(Debug)
+
+///|
+fn BoundWin::out_type(self : BoundWin) -> @types.DataType {
+  match self.kind {
+    WRowNumber | WRank | WDenseRank => @types.Int64
+    WAgg => self.spec.out_type
+  }
+}
 
 ///|
 /// One hash-join step: table `table` joins the accumulated row. keys_l
@@ -90,10 +135,10 @@ pub struct BoundQuery {
   priv aggs : Array[AggSpec]
   priv having : PhysExpr? // over post-agg layout
   priv out_exprs : Array[PhysExpr] // over post-agg layout
+  priv windows : Array[BoundWin] // window output columns, in marker order
   priv names : Array[String]
   priv out_types : Array[@types.DataType]
-  priv order_keys : Array[(Int, Bool, Bool?)] // output column index, desc, nulls first?
-  priv order_exprs : Array[(PhysExpr, Bool, Bool?)] // sort before projection
+  priv order_by : Array[OrderSpec] // written-order sort keys
   priv limit : Int?
   priv offset : Int?
   priv distinct : Bool // SELECT DISTINCT: dedupe projected rows
@@ -112,6 +157,7 @@ priv struct Binder {
   group_types : Array[@types.DataType]
   aggs : Array[AggSpec]
   agg_keys : Array[(AggFn, LExpr?)] // written shape of each spec, for dedup
+  mut wins : Array[BoundWin] // bound window defs, set before items bind
 }
 
 ///|
@@ -255,6 +301,7 @@ fn bind_select(
     group_types: [],
     aggs: [],
     agg_keys: [],
+    wins: [],
   }
   // GROUP BY may reference select-list aliases (Q22's group by
   // cntrycode): substitute the aliased expression structurally
@@ -311,6 +358,14 @@ fn bind_select(
     }
   }
   let item_space : Space = if agg_mode { AggOut } else { Flat }
+  // window definitions bind against the item space before the items so
+  // the markers can resolve (and a window's aggregate arguments extend
+  // the aggregate list in AggOut space)
+  let bwins : Array[BoundWin] = []
+  for w in sel.windows {
+    bwins.push(b.bind_window(w, item_space))
+  }
+  b.wins = bwins
   // expand a bare `*` select item into every FROM column, each table in
   // FROM order (qualified refs keep duplicate names resolvable); in
   // aggregate mode the plain columns then fail binding with the usual
@@ -343,7 +398,11 @@ fn bind_select(
     names.push(
       match item.label {
         Some(a) => a
-        None => default_name(item.expr, i)
+        None =>
+          match win_marker_index(item.expr) {
+            Some(k) => win_default_name(bwins[k], i)
+            None => default_name(item.expr, i)
+          }
       },
     )
     out_types.push(dt)
@@ -365,8 +424,7 @@ fn bind_select(
     }
     None => None
   }
-  let order_keys : Array[(Int, Bool, Bool?)] = []
-  let order_exprs : Array[(PhysExpr, Bool, Bool?)] = []
+  let order_by : Array[OrderSpec] = []
   for item in sel.order_by {
     // ORDER BY references output columns by name or ordinal; anything
     // else binds as an expression over the pre-projection row (Flat for
@@ -403,10 +461,21 @@ fn bind_select(
       }
     }
     match idx {
-      Some(i) => order_keys.push((i, item.desc, item.nulls_first))
+      Some(i) =>
+        order_by.push({
+          expr: out_exprs[i],
+          desc: item.desc,
+          nulls_first: item.nulls_first,
+          out_col: Some(i),
+        })
       None => {
         let (pe, _) = b.bind(item.key, if agg_mode { AggOut } else { Flat })
-        order_exprs.push((pe, item.desc, item.nulls_first))
+        order_by.push({
+          expr: pe,
+          desc: item.desc,
+          nulls_first: item.nulls_first,
+          out_col: None,
+        })
       }
     }
   }
@@ -419,10 +488,10 @@ fn bind_select(
     aggs: b.aggs,
     having,
     out_exprs,
+    windows: bwins,
     names,
     out_types,
-    order_keys,
-    order_exprs,
+    order_by,
     limit: sel.limit,
     offset: sel.offset,
     distinct: sel.distinct,
@@ -484,17 +553,7 @@ fn default_name(expr : LExpr, index : Int) -> String {
     Col(name) => name
     ColQ(_, name) => name
     Agg(fn_, _) => {
-      let label = match fn_ {
-        Sum => "sum"
-        Avg => "avg"
-        Count | CountStar | CountDistinct => "count"
-        StringAgg => "string_agg"
-        SdSamp | VarSamp => "stddev"
-        SdPop | VarPop => "stddev_pop"
-        Median => "median"
-        Min => "min"
-        Max => "max"
-      }
+      let label = agg_label(fn_)
       if index == 0 {
         label
       } else {
@@ -502,6 +561,63 @@ fn default_name(expr : LExpr, index : Int) -> String {
       }
     }
     _ => "col_\{index + 1}"
+  }
+}
+
+///|
+/// Column-name label of an aggregate function (DuckDB-style lowercase).
+fn agg_label(fn_ : AggFn) -> String {
+  match fn_ {
+    Sum => "sum"
+    Avg => "avg"
+    Count | CountStar | CountDistinct => "count"
+    StringAgg => "string_agg"
+    SdSamp | VarSamp => "stddev"
+    SdPop | VarPop => "stddev_pop"
+    Median => "median"
+    Min => "min"
+    Max => "max"
+  }
+}
+
+///|
+/// The marker index of a select-list window item, None for anything else.
+fn win_marker_index(e : LExpr) -> Int? {
+  match e {
+    Func("__win", [Lit(@types.Int32(k))]) => Some(k)
+    _ => None
+  }
+}
+
+///|
+/// Default output name of a window item (row_number, rank, ..., or the
+/// aggregate label), index-suffixed like aggregates.
+fn win_default_name(w : BoundWin, index : Int) -> String {
+  let label = match w.kind {
+    WRowNumber => "row_number"
+    WRank => "rank"
+    WDenseRank => "dense_rank"
+    WAgg => agg_label_of_kind(w.spec.kind)
+  }
+  if index == 0 {
+    label
+  } else {
+    "\{label}_\{index + 1}"
+  }
+}
+
+///|
+fn agg_label_of_kind(kind : AggKind) -> String {
+  match kind {
+    Sum => "sum"
+    Avg => "avg"
+    Count | CountStar | CountDistinct => "count"
+    StringAgg => "string_agg"
+    SdSamp | VarSamp => "stddev"
+    SdPop | VarPop => "stddev_pop"
+    Median => "median"
+    Min => "min"
+    Max => "max"
   }
 }
 
@@ -1060,7 +1176,7 @@ fn Binder::agg_ref(
       return (ColRef(col, dt), dt)
     }
   }
-  let spec = self.bind_agg(fn_, inner)
+  let spec = self.bind_agg(fn_, inner, Flat)
   self.aggs.push(spec)
   self.agg_keys.push((fn_, inner))
   let col = self.group_types.length() + self.aggs.length() - 1
@@ -1072,6 +1188,7 @@ fn Binder::bind_agg(
   self : Binder,
   fn_ : AggFn,
   inner : LExpr?,
+  space : Space,
 ) -> AggSpec raise @types.SqlError {
   if fn_ is CountStar {
     return { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
@@ -1086,7 +1203,7 @@ fn Binder::bind_agg(
     // only a literal separator survives the fold
     match inner {
       Some(Func("__string_agg", [v, Lit(@types.Str(sep))])) => {
-        let (pe, vdt) = self.bind(v, Flat)
+        let (pe, vdt) = self.bind(v, space)
         if vdt != @types.Str {
           raise @types.SqlError::Bind(
             "string_agg() value must be a string, got \{vdt.to_string()} (cast it explicitly)",
@@ -1105,7 +1222,12 @@ fn Binder::bind_agg(
         )
     }
   }
-  let (pe, dt) = self.bind(lexpr, Flat) // no nested aggregates
+  if contains_win_marker(lexpr) {
+    raise @types.SqlError::Bind(
+      "window functions cannot appear inside aggregate arguments",
+    )
+  }
+  let (pe, dt) = self.bind(lexpr, space) // no nested aggregates
   let out_type = match fn_ {
     Sum =>
       match dt {
@@ -1160,6 +1282,53 @@ fn Binder::bind_agg(
     StringAgg => StringAgg // unreachable: returned early
   }
   { kind, input: Some(pe), out_type, sep: None, }
+}
+
+///|
+/// Bind one window definition. The function binds against the item
+/// space: Flat for plain queries; AggOut lets a grouped query window
+/// over its aggregate outputs (Postgres-style `sum(sum(x)) OVER ()`,
+/// while a bare column argument still fails the GROUP BY check).
+/// Partition and order keys bind in the same space.
+fn Binder::bind_window(
+  self : Binder,
+  w : WindowSpec,
+  space : Space,
+) -> BoundWin raise @types.SqlError {
+  let spec : AggSpec = match w.fn_ {
+    RowNumber | Rank | DenseRank =>
+      { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
+    WinFn::Agg(f, inner) => self.bind_agg(f, inner, space)
+  }
+  fn check_no_nesting(e : LExpr) -> Unit raise @types.SqlError {
+    if contains_win_marker(e) {
+      raise @types.SqlError::Bind("nested window functions are not allowed")
+    }
+  }
+
+  let partition : Array[PhysExpr] = []
+  for p in w.partition {
+    check_no_nesting(p)
+    let (pe, _) = self.bind(p, space)
+    partition.push(pe)
+  }
+  let order : Array[(PhysExpr, Bool, Bool?)] = []
+  for o in w.order {
+    check_no_nesting(o.0)
+    let (pe, _) = self.bind(o.0, space)
+    order.push((pe, o.1, o.2))
+  }
+  match w.fn_ {
+    WinFn::Agg(_, Some(arg)) => check_no_nesting(arg)
+    _ => ()
+  }
+  let kind : WinKind = match w.fn_ {
+    RowNumber => WRowNumber
+    Rank => WRank
+    DenseRank => WDenseRank
+    WinFn::Agg(_, _) => WAgg
+  }
+  { kind, spec, partition, order, }
 }
 
 ///|
@@ -1496,6 +1665,14 @@ fn Binder::bind(
         @types.Bool,
       )
     }
+    Func("__win", [Lit(@types.Int32(k))]) =>
+      // select-list window marker, valid anywhere in an item expression
+      if k >= 0 && k < self.wins.length() {
+        let wdt = self.wins[k].out_type()
+        (WinRef(k, wdt), wdt)
+      } else {
+        raise @types.SqlError::Bind("internal: window marker \{k} out of range")
+      }
     Func(name, args) => self.bind_func(name, args, space)
     Cast(e, dt) =>
       // CAST(NULL AS t) is a typed NULL like Cmp/Arith's NULL operands
@@ -1587,6 +1764,12 @@ fn Binder::bind_func(
     (pe, got)
   }
   match name {
+    "row_number" | "rank" | "dense_rank" =>
+      // reachable only without OVER: the parser turns fn() OVER ()
+      // into a window marker before binding
+      raise @types.SqlError::Bind(
+        "\{name}() requires an OVER clause (window functions are select-list only)",
+      )
     "length" => {
       if arity != 1 {
         raise @types.SqlError::Bind("length() takes exactly one argument")

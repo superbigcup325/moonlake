@@ -65,6 +65,8 @@ priv enum Tok {
   KwMonth
   KwDay
   KwInterval
+  KwOver
+  KwPartition
   Semi
   Eof
 } derive(Eq)
@@ -295,6 +297,8 @@ fn keyword_or_ident(word : String) -> Tok {
     "year" => KwYear
     "month" => KwMonth
     "day" => KwDay
+    "over" => KwOver
+    "partition" => KwPartition
     _ => Ident(word)
   }
 }

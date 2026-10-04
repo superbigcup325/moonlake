@@ -1974,3 +1974,293 @@ test "explain_analyze reports actual rows per stage" {
   assert_true(text.contains("aggregate: 1"))
   assert_true(text.contains("result: 1"))
 }
+
+///|
+/// Window-function fixture: the same shape the DuckDB differential
+/// battery validated — ties for rank peers, a NULL value, three
+/// partitions, duplicate strings.
+fn window_catalog() -> @catalog.Catalog {
+  let content = "k,v,s\n" +
+    "a,10,x\n" +
+    "a,20,y\n" +
+    "a,20,z\n" +
+    "b,5,x\n" +
+    "b,,y\n" +
+    "c,7,y\n" +
+    "c,7,z\n" +
+    "c,12,x\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "t") catch { e => abort("\{e}") })
+  cat
+}
+
+///|
+fn col_scalars(
+  result : @engine.SelectResult,
+  col : Int,
+) -> Array[@types.Scalar] {
+  let out : Array[@types.Scalar] = []
+  for r in 0..<result.row_count() {
+    out.push(result.get(r, col))
+  }
+  out
+}
+
+///|
+test "row_number partitions and orders with stable ties" {
+  let cat = window_catalog()
+  let result = run(
+    "SELECT k, v, row_number() OVER (ORDER BY v DESC) AS rn FROM t ORDER BY k, v",
+    cat,
+  )
+  assert_eq(result.names(), ["k", "v", "rn"])
+  assert_eq(result.types()[2], @types.Int64)
+  // desc: 20,20 (ties keep written order), 12, 10, 7,7, 5, NULL last
+  assert_eq(col_scalars(result, 2), [
+    Int64(4),
+    Int64(1),
+    Int64(2),
+    Int64(7),
+    Int64(8),
+    Int64(5),
+    Int64(6),
+    Int64(3),
+  ])
+  let parted = run(
+    "SELECT k, row_number() OVER (PARTITION BY k ORDER BY v) AS rn FROM t ORDER BY k, v",
+    cat,
+  )
+  assert_eq(col_scalars(parted, 1), [
+    Int64(1),
+    Int64(2),
+    Int64(3),
+    Int64(1),
+    Int64(2),
+    Int64(1),
+    Int64(2),
+    Int64(3),
+  ])
+}
+
+///|
+test "rank and dense_rank share peer values" {
+  let cat = window_catalog()
+  let ranked = run(
+    "SELECT v, rank() OVER (ORDER BY v) AS r FROM t ORDER BY v NULLS LAST", cat,
+  )
+  // asc, NULL last: 5 -> 1; 7,7 share 2; 10 -> 4; 12 -> 5; 20,20
+  // share 6; NULL -> 8
+  assert_eq(col_scalars(ranked, 1), [
+    Int64(1),
+    Int64(2),
+    Int64(2),
+    Int64(4),
+    Int64(5),
+    Int64(6),
+    Int64(6),
+    Int64(8),
+  ])
+  let dense = run(
+    "SELECT v, dense_rank() OVER (ORDER BY v) AS d FROM t ORDER BY v NULLS LAST",
+    cat,
+  )
+  assert_eq(col_scalars(dense, 1), [
+    Int64(1),
+    Int64(2),
+    Int64(2),
+    Int64(3),
+    Int64(4),
+    Int64(5),
+    Int64(5),
+    Int64(6),
+  ])
+}
+
+///|
+test "aggregate windows: partition, running frame, count star" {
+  let cat = window_catalog()
+  // whole-partition aggregate per group; NULL inputs are skipped
+  let parts = run(
+    "SELECT k, sum(v) OVER (PARTITION BY k) AS s1 FROM t ORDER BY k, v NULLS LAST",
+    cat,
+  )
+  assert_eq(col_scalars(parts, 1), [
+    Int64(50),
+    Int64(50),
+    Int64(50),
+    Int64(5),
+    Int64(5),
+    Int64(26),
+    Int64(26),
+    Int64(26),
+  ])
+  // RANGE UNBOUNDED PRECEDING TO CURRENT ROW: peers share the running
+  // total through the end of their peer group
+  let running = run(
+    "SELECT v, sum(v) OVER (ORDER BY v) AS run FROM t ORDER BY v NULLS LAST", cat,
+  )
+  assert_eq(col_scalars(running, 1), [
+    Int64(5),
+    Int64(19),
+    Int64(19),
+    Int64(29),
+    Int64(41),
+    Int64(81),
+    Int64(81),
+    Int64(81),
+  ])
+  let stars = run(
+    "SELECT k, count(*) OVER (PARTITION BY k) AS c FROM t ORDER BY k, v NULLS LAST",
+    cat,
+  )
+  assert_eq(col_scalars(stars, 1), [
+    Int64(3),
+    Int64(3),
+    Int64(3),
+    Int64(2),
+    Int64(2),
+    Int64(3),
+    Int64(3),
+    Int64(3),
+  ])
+}
+
+///|
+test "windows compose with GROUP BY, DISTINCT, WHERE and LIMIT" {
+  let cat = window_catalog()
+  // grouped rows then a running window over the group sums
+  let grouped = run(
+    "SELECT k, sum(sum(v)) OVER (ORDER BY k) AS run FROM t GROUP BY k ORDER BY k",
+    cat,
+  )
+  assert_eq(col_scalars(grouped, 1), [Int64(50), Int64(55), Int64(81)])
+  // DISTINCT dedupes the projected rows including window values
+  let distinct = run(
+    "SELECT DISTINCT k, sum(v) OVER (PARTITION BY k) AS s1 FROM t ORDER BY k", cat,
+  )
+  assert_eq(distinct.row_count(), 3)
+  // LIMIT applies after the window computation
+  let limited = run(
+    "SELECT k, v, row_number() OVER (ORDER BY v) AS rn FROM t ORDER BY rn LIMIT 3",
+    cat,
+  )
+  assert_eq(limited.row_count(), 3)
+  assert_eq(col_scalars(limited, 2), [Int64(1), Int64(2), Int64(3)])
+  // window output participates in row expressions
+  let combo = run(
+    "SELECT v + sum(v) OVER (PARTITION BY k) AS x FROM t ORDER BY x", cat,
+  )
+  assert_eq(
+    col_scalars(combo, 0),
+    // NULL v stays NULL and sorts last (default NULLS LAST); the rest
+    // add their partition sum
+    [
+      Int64(5 + 5),
+      Int64(7 + 26),
+      Int64(7 + 26),
+      Int64(12 + 26),
+      Int64(10 + 50),
+      Int64(20 + 50),
+      Int64(20 + 50),
+      Null,
+    ],
+  )
+}
+
+///|
+test "window output is referenceable by alias and ordinals" {
+  let cat = window_catalog()
+  let result = run(
+    "SELECT k, v, row_number() OVER (ORDER BY v DESC) AS rn FROM t ORDER BY rn LIMIT 2",
+    cat,
+  )
+  assert_eq(col_scalars(result, 2), [Int64(1), Int64(2)])
+  assert_eq(result.names()[2], "rn")
+  // default names come from the window function
+  let named = run("SELECT rank() OVER (ORDER BY v) FROM t", cat)
+  assert_eq(named.names()[0], "rank")
+}
+
+///|
+test "uncorrelated windowed subqueries execute on the runner path" {
+  let cat = window_catalog()
+  // derived table: the window computed inside, pruned columns outside
+  let derived = run(
+    "SELECT x FROM (SELECT max(v) OVER () AS m FROM t) AS d(x)", cat,
+  )
+  assert_eq(col_scalars(derived, 0), [
+    Int32(20),
+    Int32(20),
+    Int32(20),
+    Int32(20),
+    Int32(20),
+    Int32(20),
+    Int32(20),
+    Int32(20),
+  ])
+  // EXISTS folding executes the inner query as-is
+  let exists = run(
+    "SELECT k FROM t WHERE EXISTS (SELECT 1 FROM t AS t2 WHERE t2.k = 'c') ORDER BY k LIMIT 1",
+    cat,
+  )
+  assert_eq(exists.row_count(), 1)
+}
+
+///|
+fn expect_window_error(sql : String) -> String {
+  let _ = @engine.run_select(sql, window_catalog()) catch {
+    e => return e.to_string()
+  }
+  abort("expected an error for: \{sql}")
+}
+
+///|
+test "window function misuse fails with clear errors" {
+  // missing OVER
+  assert_true(
+    expect_window_error("SELECT rank() FROM t").contains(
+      "requires an OVER clause",
+    ),
+  )
+  // OVER outside the select list
+  assert_true(
+    expect_window_error("SELECT k FROM t WHERE rank() OVER () > 1").contains(
+      "only allowed in the SELECT list",
+    ),
+  )
+  assert_true(
+    expect_window_error(
+      "SELECT k FROM t ORDER BY row_number() OVER (ORDER BY v)",
+    ).contains("only allowed in the SELECT list"),
+  )
+  // explicit frame clauses
+  assert_true(
+    expect_window_error(
+      "SELECT sum(v) OVER (ORDER BY v ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t",
+    ).contains("frame clauses"),
+  )
+  // OVER on a non-aggregate, non-ranking function
+  assert_true(
+    expect_window_error("SELECT upper(k) OVER () FROM t").contains(
+      "aggregates and ranking functions",
+    ),
+  )
+  // nested window functions
+  assert_true(
+    expect_window_error(
+      "SELECT row_number() OVER (PARTITION BY row_number() OVER ()) FROM t",
+    ).contains("nested window"),
+  )
+  // window inside an aggregate argument
+  assert_true(
+    expect_window_error("SELECT sum(row_number() OVER ()) FROM t").contains(
+      "inside aggregate arguments",
+    ),
+  )
+  // a windowed bare column still obeys GROUP BY rules
+  assert_true(
+    expect_window_error("SELECT sum(v) OVER () FROM t GROUP BY k").contains(
+      "must appear in GROUP BY",
+    ),
+  )
+}

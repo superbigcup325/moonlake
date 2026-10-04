@@ -158,6 +158,7 @@ fn expr_dtype(e : PhysExpr) -> @types.DataType {
     CastE(_, dt) => dt
     CaseE(_, _, dt) => dt
     DateArithE(_, _, _) => @types.Date
+    WinRef(_, dt) => dt // resolved by exec_windows before projection
   }
 }
 

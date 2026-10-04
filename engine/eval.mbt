@@ -109,6 +109,11 @@ fn eval_with(
           )
         _ => @types.Null
       }
+    // exec_windows resolves window markers before any evaluation runs
+    WinRef(_, _) =>
+      raise @types.SqlError::Execute(
+        "internal: window marker reached evaluation unresolved",
+      )
   }
 }
 

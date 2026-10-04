@@ -159,6 +159,39 @@ pub extend FromItem with Eq::{equal, not_equal}
 pub extend FromItem with @debug.Debug::{to_repr}
 
 ///|
+/// The function of one window definition. Agg carries the aggregate
+/// name with its input (None only for count(*)); the parser only lets
+/// aggregates and the three ranking functions take OVER.
+pub(all) enum WinFn {
+  RowNumber
+  Rank
+  DenseRank
+  Agg(AggFn, LExpr?)
+} derive(Eq, Debug)
+
+///|
+pub extend WinFn with Eq::{equal, not_equal}
+
+///|
+pub extend WinFn with @debug.Debug::{to_repr}
+
+///|
+/// One `fn(...) OVER (PARTITION BY ... ORDER BY ...)` definition in the
+/// select list. The select item itself carries an index marker; the
+/// binder lowers the spec against the item's binding space.
+pub(all) struct WindowSpec {
+  fn_ : WinFn
+  partition : Array[LExpr]
+  order : Array[(LExpr, Bool, Bool?)] // expr, desc, nulls_first
+} derive(Eq, Debug)
+
+///|
+pub extend WindowSpec with Eq::{equal, not_equal}
+
+///|
+pub extend WindowSpec with @debug.Debug::{to_repr}
+
+///|
 /// W2 subset: the full select pipeline over a FROM chain joined in
 /// written order (left-deep; comma lists behave as INNER joins with the
 /// join conditions supplied by WHERE).
@@ -168,6 +201,7 @@ pub(all) struct Select {
   group_by : Array[LExpr]
   having : LExpr?
   items : Array[SelectItem]
+  windows : Array[WindowSpec] // select-list window definitions, index = marker index
   order_by : Array[OrderItem]
   limit : Int?
   offset : Int? // rows skipped before LIMIT applies

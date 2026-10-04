@@ -8,10 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-04 window functions — `row_number()` / `rank()` / `dense_rank()` and every aggregate as `agg(expr) OVER (PARTITION BY ... ORDER BY ...) [NULLS FIRST|LAST]` in the select list, duckdb-diffed over a 29-query battery (ranking ties, NULL partition/order keys, running RANGE frames with peer sharing, GROUP BY interplay via `sum(sum(x)) OVER ()`, DISTINCT/WHERE/LIMIT composition); window markers compose inside item expressions (`v + sum(v) OVER (...)`) and outputs are referenceable by alias; explicit frame clauses and window placement outside the select list are pointed errors
 - 2026-10-06 SQL-surface arc (audit gaps closed): `INTERSECT` / `EXCEPT` with ALL / DISTINCT (INTERSECT binds tighter, NULL-safe row comparison, multiset counts); correlated scalar subqueries in the select list; `EXISTS` / `NOT EXISTS` with a HAVING clause; `coalesce` / `nullif` / `greatest` / `least`; `date_trunc` / `date_diff`; `string_agg` (literal separator); `stddev` (+samp/pop), `variance` (+samp/pop), `median` (Welford); `GROUP BY` ordinals; `SELECT` without FROM; bare `NULL` select items as INTEGER
 
 ### Fixed
 
+- 2026-10-04 mixed `ORDER BY output_col, expression` dropped the output-column key whenever an expression key was present (a two-phase sort applied only the expression keys); the binder now resolves both shapes into one written-order key list that sorts jointly — caught by the window-function tests
 - 2026-10-06 silent-wrong-answer guards: `sum()` over int64 raises on overflow instead of wrapping (duckdb promotes to HUGEINT); ORDER BY / LIMIT / OFFSET on a UNION branch is a parse error instead of silently truncating that branch
 
 ### Added

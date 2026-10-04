@@ -104,6 +104,19 @@ maxRSS 降至旧基线以下：
 参考值。复现：`moon build cmd/main --target native && python3
 harness/measure.py`。
 
+## 5.5 窗口函数（差分 battery）
+
+2026-10-04 窗口函数落地时，用同款小数据集（含并列值、NULL 值、三分区）
+对 29 条查询做了 moonlake vs DuckDB 的行多重集比对（浮点 1e-9 相对容差），
+29/29 一致。覆盖：三个排名函数（并列/NULL 排序键）、整分区与 RANGE
+UNBOUNDED PRECEDING TO CURRENT ROW 运行帧（同侪共享值，count/sum/min/
+string_agg/median/count DISTINCT）、NULL 分区键归组、GROUP BY 交互
+（`sum(sum(x)) OVER ()`）、窗口值参与行表达式、DISTINCT/WHERE/LIMIT/
+别名 ORDER BY 组合、多条窗口共存。报错路径（缺 OVER、SELECT 列表外、
+显式帧子句、嵌套窗口、聚合参数内窗口、GROUP BY 约束）各有确定性报错。
+复现：数据与脚本见提交记录（`t.csv` 8 行 + 29 条查询清单）；e2e 期望值
+手算钉死在 `engine/e2e_test.mbt` 窗口节。
+
 ## 6. 并发
 
 - **全局状态审计**：engine/types/catalog/sources 无任何包级可变全局
@@ -117,7 +130,7 @@ harness/measure.py`。
 ## 7. 复现命令
 
 ```bash
-moon test                                            # 111 项（含全部性质）
+moon test                                            # 131 项（含全部性质）
 uv run --with duckdb python harness/gen_tpch.py      # SF0.01 数据+金标准
 bash harness/check_all.sh                            # 23 goldens
 uv run --with duckdb python harness/gen_tpch.py 0.1  # SF0.1

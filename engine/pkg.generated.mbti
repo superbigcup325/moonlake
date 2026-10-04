@@ -146,6 +146,7 @@ pub(all) enum PhysExpr {
   FuncE(String, Array[PhysExpr], @types.DataType)
   CastE(PhysExpr, @types.DataType)
   DateArithE(PhysExpr, Int64, IntervalUnit)
+  WinRef(Int, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 
@@ -155,6 +156,7 @@ pub(all) struct Select {
   group_by : Array[LExpr]
   having : LExpr?
   items : Array[SelectItem]
+  windows : Array[WindowSpec]
   order_by : Array[OrderItem]
   limit : Int?
   offset : Int?
@@ -199,6 +201,25 @@ pub(all) enum TableRef {
 pub fn TableRef::equal(Self, Self) -> Bool
 pub fn TableRef::not_equal(Self, Self) -> Bool
 pub fn TableRef::to_repr(Self) -> @debug.Repr
+
+pub(all) enum WinFn {
+  RowNumber
+  Rank
+  DenseRank
+  Agg(AggFn, LExpr?)
+} derive(Eq, @debug.Debug)
+pub fn WinFn::equal(Self, Self) -> Bool
+pub fn WinFn::not_equal(Self, Self) -> Bool
+pub fn WinFn::to_repr(Self) -> @debug.Repr
+
+pub(all) struct WindowSpec {
+  fn_ : WinFn
+  partition : Array[LExpr]
+  order : Array[(LExpr, Bool, Bool?)]
+} derive(Eq, @debug.Debug)
+pub fn WindowSpec::equal(Self, Self) -> Bool
+pub fn WindowSpec::not_equal(Self, Self) -> Bool
+pub fn WindowSpec::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

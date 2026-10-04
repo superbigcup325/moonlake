@@ -176,22 +176,42 @@ fn run_parsed(
   } else {
     joined
   }
-  // expression ORDER BY sorts the pre-projection row (Flat for plain
-  // queries, AggOut once aggregates are in play); output-column ORDER BY
-  // keeps the post-projection path
+  // Window functions append their output columns before projection;
+  // the select list's markers resolve to them.
   let pre = concat_batches(kept, bq.steps[bq.steps.length() - 1].out_dtypes)
-  let pre = if bq.order_exprs.length() > 0 {
-    sort_exprs(pre, bq.order_exprs, None, None)
+  let mut out_exprs = bq.out_exprs
+  let pre = if bq.windows.length() > 0 {
+    let (pre2, resolved) = exec_windows(pre, bq.windows, out_exprs)
+    out_exprs = resolved
+    if stats.length() > 0 {
+      stats.push(("windows", pre2.row_count()))
+    }
+    pre2
   } else {
     pre
   }
-  let projected = project(pre, bq.out_exprs, bq.out_types)
-  let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
-  let batch = if bq.order_exprs.length() > 0 {
-    // already sorted; only the window is left to apply
+  // ORDER BY keys sort the pre-projection rows in written order: an
+  // output-column key evaluates as its projection expression (the same
+  // values the projected column holds), an expression key as bound.
+  // Sorting once, jointly, is what makes mixed keys keep their written
+  // priority — the previous two-phase sort silently dropped one side.
+  let keys : Array[(PhysExpr, Bool, Bool?)] = []
+  for spec in bq.order_by {
+    let ke = match spec.out_col {
+      Some(i) => out_exprs[i]
+      None => spec.expr
+    }
+    keys.push((ke, spec.desc, spec.nulls_first))
+  }
+  let batch = if keys.length() > 0 {
+    let sorted = sort_exprs(pre, keys, None, None)
+    let projected = project(sorted, out_exprs, bq.out_types)
+    let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
     sort_exprs(projected, [], bq.offset, bq.limit)
   } else {
-    order_limit(projected, bq.order_keys, bq.limit, bq.offset)
+    let projected = project(pre, out_exprs, bq.out_types)
+    let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
+    order_limit(projected, [], bq.limit, bq.offset)
   }
   if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
     stats.push(("result", batch.row_count()))
@@ -535,6 +555,37 @@ pub fn explain(
       None => ()
     }
   }
+  for w in bq.windows {
+    sb.write_string("\nwindow ")
+    sb.write_string(
+      match w.kind {
+        WRowNumber => "row_number()"
+        WRank => "rank()"
+        WDenseRank => "dense_rank()"
+        WAgg => {
+          let lbl = agg_label_of_kind(w.spec.kind)
+          "\{lbl}(...)"
+        }
+      },
+    )
+    if w.partition.length() > 0 {
+      sb.write_string(" partition by")
+      for e in w.partition {
+        sb.write_string(" ")
+        sb.write_string(e.to_repr().to_string())
+      }
+    }
+    if w.order.length() > 0 {
+      sb.write_string(" order by")
+      for k in w.order {
+        sb.write_string(" ")
+        sb.write_string(k.0.to_repr().to_string())
+        if k.1 {
+          sb.write_string(" desc")
+        }
+      }
+    }
+  }
   sb.write_string("\nproject: ")
   for i, name in bq.names {
     if i > 0 {
@@ -544,12 +595,17 @@ pub fn explain(
     sb.write_string(":")
     sb.write_string(bq.out_types[i].to_string())
   }
-  if bq.order_keys.length() > 0 {
+  if bq.order_by.length() > 0 {
     sb.write_string("\norder by")
-    for kv in bq.order_keys {
+    for spec in bq.order_by {
       sb.write_string(" ")
-      sb.write_string(bq.names[kv.0])
-      sb.write_string(if kv.1 { " desc" } else { " asc" })
+      match spec.out_col {
+        Some(i) => sb.write_string(bq.names[i])
+        None => sb.write_string(spec.expr.to_repr().to_string())
+      }
+      if spec.desc {
+        sb.write_string(" desc")
+      }
     }
   }
   match bq.limit {
