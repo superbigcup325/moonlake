@@ -84,20 +84,23 @@ moonlake -9753 vs duckdb -7743。fuzzer 特意包含该判别性模板（WHERE �
 ## 5. 性能与内存
 
 `harness/measure.py`（native 二进制直接测量，非 `moon run`；隔离子进程
-`getrusage(RUSAGE_CHILDREN)` 取 maxRSS；best-of-3）：
+`getrusage(RUSAGE_CHILDREN)` 取 maxRSS；best-of-3）。数字为
+2026-10-06 CSV 摄入装箱消除（cell offsets 迁入 trimmed FixedArray）
+之后的复测：摄入 SF0.1 -16%（1374 -> 1150 ms），端到端查询 -11~18%，
+maxRSS 降至旧基线以下：
 
 | 查询 | SF0.01 | SF0.1 | 时间比 | RSS SF0.01 | RSS SF0.1 |
 |---|---|---|---|---|---|
-| q1（聚合扫全表） | 198 ms | 2099 ms | 10.6x | 41.3 MB | 370.6 MB |
-| q6（选择性过滤） | 140 ms | 1476 ms | 10.5x | 41.3 MB | 370.3 MB |
-| q5（6 表连接） | 167 ms | 1813 ms | 10.9x | 47.3 MB | 405.4 MB |
-| q2（相关标量子查询） | 24 ms | 281 ms | 11.7x | 13.3 MB | 67.2 MB |
-| q17（相关聚合子查询） | 161 ms | 1727 ms | 10.7x | 41.3 MB | 377.2 MB |
-| 摄入（lineitem LIMIT 0） | 142 ms | 1374 ms | 9.7x | 41.1 MB | 377.2 MB |
+| q1（聚合扫全表） | 184 ms | 1847 ms | 10.0x | 41.4 MB | 353.3 MB |
+| q6（选择性过滤） | 124 ms | 1213 ms | 9.8x | 41.3 MB | 353.2 MB |
+| q5（6 表连接） | 149 ms | 1531 ms | 10.3x | 45.3 MB | 426.2 MB |
+| q2（相关标量子查询） | 24 ms | 281 ms | 11.7x | 12.3 MB | 63.1 MB |
+| q17（相关聚合子查询） | 148 ms | 1539 ms | 10.4x | 41.4 MB | 353.2 MB |
+| 摄入（lineitem LIMIT 0） | 115 ms | 1150 ms | 10.0x | 41.3 MB | 353.2 MB |
 
-结论：时间与内存对数据量**近线性**（10 倍数据 → 8.5–11.7 倍时间、~9 倍
-内存）；全量物化（eager）的架构使 RSS ≈ 数据体量的常数倍（SF0.1 约
-370 MB / 60 万行 lineitem）。测试机：本地 Linux，单次运行，数字为该机
+结论：时间与内存对数据量**近线性**（10 倍数据 → 9.8–11.7 倍时间、
+~8.5 倍内存）；全量物化（eager）的架构使 RSS ≈ 数据体量的常数倍
+（SF0.1 约 353 MB / 60 万行 lineitem）。测试机：本地 Linux，单次运行，数字为该机
 参考值。复现：`moon build cmd/main --target native && python3
 harness/measure.py`。
 

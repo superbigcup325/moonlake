@@ -39,18 +39,19 @@ MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (reg
 ```
 
 Informational benchmark (SF0.01, best of 3, via `harness/bench.py`;
-same machine, one run, both engines:
+same machine, one run, both engines; refreshed 2026-10-06 after the
+unboxed-CSV-ingest pass:
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Pricing Summary Report | 205 ms | 3.6 ms |
-| Shipping Priority | 168 ms | 3.5 ms |
-| Local Supplier Volume | 173 ms | 4.1 ms |
-| Forecasting Revenue Change | 137 ms | 1.1 ms |
-| Volume Shipping | 185 ms | 3.4 ms |
-| Returned Item Reporting | 171 ms | 4.8 ms |
-| Shipping Modes and Order Priority | 171 ms | 4.1 ms |
-| Promotion Effect | 146 ms | 1.2 ms |
+| Pricing Summary Report | 183 ms | 3.3 ms |
+| Shipping Priority | 142 ms | 4.1 ms |
+| Local Supplier Volume | 151 ms | 4.1 ms |
+| Forecasting Revenue Change | 124 ms | 0.8 ms |
+| Volume Shipping | 166 ms | 4.7 ms |
+| Returned Item Reporting | 143 ms | 7.4 ms |
+| Shipping Modes and Order Priority | 147 ms | 3.3 ms |
+| Promotion Effect | 122 ms | 1.4 ms |
 
 These are the eight queries `harness/bench.py` runs (it prints the
 same rows labelled q1–q14). Times include process startup and reading
@@ -58,8 +59,9 @@ the CSV from disk. duckdb is in-process over pre-loaded tables — the
 same query from a fresh `read_csv_auto` costs it ~55 ms, where
 moonlake's built-in byte-level reader plus the columnar evaluator
 (vectorized kernels, int-keyed hash joins, projection pruning,
-direct-to-vector CSV materialization) lands at 137–205 ms, down
-5–8x from the original row-at-a-time build on the same machine.
+direct-to-vector CSV materialization) lands at 122–183 ms, down
+3.4–6x from the original row-at-a-time build on the same machine
+(539–995 ms on the four queries benchmarked then).
 
 ## Quickstart
 
