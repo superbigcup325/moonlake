@@ -51,6 +51,7 @@ pub fn ExtractField::to_repr(Self) -> @debug.Repr
 pub(all) struct FromItem {
   table : TableRef
   tbl_alias : String?
+  col_aliases : Array[String]?
   join : JoinKind
   on : LExpr?
 } derive(Eq, @debug.Debug)

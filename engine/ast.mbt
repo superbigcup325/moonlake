@@ -140,6 +140,7 @@ pub extend TableRef with @debug.Debug::{to_repr}
 pub(all) struct FromItem {
   table : TableRef
   tbl_alias : String? // `tbl name` / `tbl AS name`; column qualifier
+  col_aliases : Array[String]? // derived-table column list: AS t (a, b)
   join : JoinKind
   on : LExpr? // ON condition for explicit joins
 } derive(Eq, Debug)

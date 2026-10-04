@@ -270,7 +270,53 @@ fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
     Named(parse_table_name(p))
   }
   let tbl_alias = parse_alias_opt(p)
-  { table, tbl_alias, join: Inner, on: None, }
+  let col_aliases = parse_col_alias_list(p, table, tbl_alias)
+  { table, tbl_alias, col_aliases, join: Inner, on: None, }
+}
+
+///|
+/// Derived-table column alias list: `AS t (a, b)` or bare `t (a, b)`.
+/// Only valid right after a derived table, and it requires the alias.
+fn parse_col_alias_list(
+  p : Parser,
+  table : TableRef,
+  tbl_alias : String?,
+) -> Array[String]? raise @types.SqlError {
+  if !(table is Sub(_)) || !(p.peek() is LParen) {
+    return None
+  }
+  if tbl_alias is None {
+    raise @types.SqlError::Parse(
+      "derived-table column list needs a table alias",
+    )
+  }
+  let _ = p.advance() // (
+  let names : Array[String] = []
+  fn parse_col_name(
+    p : Parser,
+    names : Array[String],
+  ) -> Unit raise @types.SqlError {
+    let t = p.advance()
+    match ident_like_tok(t) {
+      Some(name) => names.push(name)
+      None => {
+        let found = show_tok(t)
+        raise @types.SqlError::Parse(
+          "expected column name in derived-table column list, found \{found}",
+        )
+      }
+    }
+  }
+
+  parse_col_name(p, names)
+  while p.eat(Comma) {
+    parse_col_name(p, names)
+  }
+  p.expect(RParen)
+  if names.length() == 0 {
+    raise @types.SqlError::Parse("empty derived-table column list")
+  }
+  Some(names)
 }
 
 ///|
@@ -340,7 +386,7 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
     p.expect(KwOn)
     Some(parse_or(p))
   }
-  Some({ table, tbl_alias, join: kind, on, })
+  Some({ table, tbl_alias, col_aliases: None, join: kind, on, })
 }
 
 ///|

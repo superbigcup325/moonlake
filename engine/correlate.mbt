@@ -370,7 +370,13 @@ fn Correlator::try_scalar(
     on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
   }
   kept.push(Cmp(op, outer_e, ColQ(name, "__sk\{pairs.length()}")))
-  Some({ table: Named(name), tbl_alias: Some(name), join: Left, on: Some(on), })
+  Some({
+    table: Named(name),
+    tbl_alias: Some(name),
+    col_aliases: None,
+    join: Left,
+    on: Some(on),
+  })
 }
 
 ///|
@@ -470,6 +476,7 @@ fn Correlator::finish_semi(
   Some({
     table: Named(name),
     tbl_alias: Some(name),
+    col_aliases: None,
     join: if negated {
       Anti
     } else {

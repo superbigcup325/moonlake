@@ -91,10 +91,22 @@ fn run_parsed(
         let r = run_parsed(inner, catalog)
         let names = r.names()
         let types = r.types()
+        // an explicit column alias list renames the outputs positionally
+        let final_names : Array[String] = match item.col_aliases {
+          Some(aliases) => {
+            if aliases.length() != names.length() {
+              raise @types.SqlError::Bind(
+                "derived table has \{names.length()} columns but \{aliases.length()} column aliases were given",
+              )
+            }
+            aliases
+          }
+          None => names
+        }
         let columns : Array[@catalog.Column] = []
-        for i, name in names {
+        for i, name in final_names {
           for j in 0..<i {
-            if names[j] == name {
+            if final_names[j] == name {
               raise @types.SqlError::Bind(
                 "duplicate column \"\{name}\" in derived table",
               )

@@ -1443,3 +1443,21 @@ test "a correlated scalar without an aggregate stays a clean error" {
     join_catalog(),
   )
 }
+
+///|
+test "derived-table column alias list renames positionally" {
+  let cat = join_catalog()
+  // the official Q13 shape: the inner select's outputs take the names
+  // from the parenthesized list
+  let r = run(
+    "SELECT c_count, count(*) AS custdist FROM (SELECT cid, count(oid) FROM customers LEFT JOIN orders ON custkey = cid GROUP BY cid) AS c_orders (cid, c_count) GROUP BY c_count ORDER BY c_count",
+    cat,
+  )
+  // orders per customer: 1 -> 2, 2 -> 0, 3 -> 1
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 0), @types.Int64(0))
+  assert_eq(r.get(1, 0), @types.Int64(1))
+  assert_eq(r.get(2, 0), @types.Int64(2))
+  // a wrong-arity list is a bind error
+  let _ = run_err("SELECT x FROM (SELECT cid FROM customers) AS t (x, y)", cat)
+}
