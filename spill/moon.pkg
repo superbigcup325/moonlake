@@ -1,0 +1,7 @@
+import {
+  "superbigcup325/moonlake/types",
+  "mizchi/parquet" @pq,
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/x/fs",
+}

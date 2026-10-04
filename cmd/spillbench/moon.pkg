@@ -1,0 +1,9 @@
+import {
+  "superbigcup325/moonlake/sources/csv",
+  "superbigcup325/moonlake/spill",
+  "superbigcup325/moonlake/types",
+  "moonbitlang/core/env",
+  "moonbitlang/x/sys",
+}
+
+pkgtype(kind: "executable")
