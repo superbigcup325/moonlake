@@ -65,9 +65,26 @@ fn run_parsed(
     Some((all, right_sel)) => return run_setop(sel, all, right_sel, catalog)
     None => ()
   }
+  if sel.from.length() == 0 {
+    // SELECT without FROM: a zero-column one-row dummy table drives the
+    // pipeline like any single table
+    sel.from.push({
+      table: Named("__one"),
+      tbl_alias: None,
+      col_aliases: None,
+      join: Inner,
+      on: None,
+    })
+  }
   for item in sel.from {
     match item.table {
       Named(name) => {
+        if name == "__one" {
+          schemas.push({ table: name, columns: [], })
+          let cols : Array[@types.ColumnVector] = []
+          tables.push([@types.DataBatch::new(cols, 1)])
+          continue
+        }
         // synthetic semi/anti tables live here, not in the catalog
         let mut hit = false
         for i in 0..<extra_schemas.length() {

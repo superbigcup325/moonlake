@@ -115,6 +115,49 @@ fn eval_with(
 ///|
 /// Scalar string and math functions. Every function propagates NULL.
 fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
+  // NULL-aware functions: they interpret NULL instead of propagating it
+  match name {
+    "coalesce" =>
+      for v in vals {
+        if !(v is @types.Null) {
+          return v
+        }
+      }
+    "nullif" =>
+      match (vals[0], vals[1]) {
+        (@types.Null, _) => return @types.Null
+        (a, @types.Null) => return a
+        (a, b) =>
+          return match @types.Scalar::compare(a, b) {
+            Some(o) => if o == 0 { @types.Null } else { a }
+            None => @types.Null
+          }
+      }
+    "greatest" | "least" => {
+      let want_max = name == "greatest"
+      let mut best : @types.Scalar = @types.Null
+      for v in vals {
+        if v is @types.Null {
+          continue // duckdb's greatest/least ignore NULLs
+        }
+        best = match best {
+          @types.Null => v
+          b =>
+            match @types.Scalar::compare(v, b) {
+              Some(o) =>
+                if (want_max && o > 0) || (!want_max && o < 0) {
+                  v
+                } else {
+                  b
+                }
+              None => b
+            }
+        }
+      }
+      return best
+    }
+    _ => ()
+  }
   for v in vals {
     if v is @types.Null {
       return @types.Null

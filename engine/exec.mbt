@@ -516,6 +516,10 @@ fn exec_joins(
   steps : Array[JoinStep],
   deferred : PhysExpr?,
 ) -> Array[@types.DataBatch] raise @types.SqlError {
+  if steps.length() == 0 {
+    let cols : Array[@types.ColumnVector] = []
+    return filter_batches([@types.DataBatch::new(cols, 1)], deferred)
+  }
   let mut acc = tables[steps[0].table]
   for i, step in steps {
     if i == 0 {

@@ -178,18 +178,20 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   while p.eat(Comma) {
     items.push(parse_item(p))
   }
-  p.expect(KwFrom)
+  // FROM is optional: `SELECT 1` evaluates its items over one dummy row
   let from : Array[FromItem] = []
-  from.push(parse_table_item(p))
-  let mut joining = true
-  while joining {
-    if p.eat(Comma) {
-      from.push(parse_table_item(p))
-    } else {
-      let item = parse_join_item(p)
-      match item {
-        Some(it) => from.push(it)
-        None => joining = false
+  if p.eat(KwFrom) {
+    from.push(parse_table_item(p))
+    let mut joining = true
+    while joining {
+      if p.eat(Comma) {
+        from.push(parse_table_item(p))
+      } else {
+        let item = parse_join_item(p)
+        match item {
+          Some(it) => from.push(it)
+          None => joining = false
+        }
       }
     }
   }
@@ -1020,7 +1022,11 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
     | "sqrt"
     | "floor"
     | "ceil"
-    | "round" => {
+    | "round"
+    | "coalesce"
+    | "greatest"
+    | "least"
+    | "nullif" => {
       let args : Array[LExpr] = []
       if !(p.peek() is RParen) {
         args.push(parse_or(p))

@@ -307,7 +307,14 @@ fn bind_select(
   let names : Array[String] = []
   let out_types : Array[@types.DataType] = []
   for i, item in items {
-    let (pe, dt) = b.bind(item.expr, item_space)
+    // an untyped NULL literal in the select list is INTEGER, matching
+    // duckdb; elsewhere (comparisons, arithmetic) the live operand
+    // still fixes the type
+    let (pe, dt) = if item.expr is Lit(@types.Null) {
+      (Const(@types.Null), @types.DataType::Int32)
+    } else {
+      b.bind(item.expr, item_space)
+    }
     out_exprs.push(pe)
     names.push(
       match item.label {
@@ -1581,6 +1588,57 @@ fn Binder::bind_func(
         pes.push(dpe)
       }
       (FuncE("round", pes, @types.Float64), @types.Float64)
+    }
+    "coalesce" | "greatest" | "least" => {
+      if arity == 0 {
+        raise @types.SqlError::Bind("\{name}() takes at least one argument")
+      }
+      // unify the argument types; NULL literals fit any target
+      let pes : Array[PhysExpr] = []
+      let mut dt : @types.DataType? = None
+      for a in args {
+        if a is Lit(@types.Null) {
+          pes.push(Const(@types.Null))
+          continue
+        }
+        let (pe, got) = self.bind(a, space)
+        match dt {
+          None => dt = Some(got)
+          Some(cur) =>
+            match unify(cur, got) {
+              Some(u) => dt = Some(u)
+              None =>
+                raise @types.SqlError::Bind(
+                  "\{name}() argument types do not unify: \{cur.to_string()} vs \{got.to_string()}",
+                )
+            }
+        }
+        pes.push(promote_to(pe, got, dt.unwrap()))
+      }
+      let out = dt.unwrap_or(@types.Str) // all-NULL args: type is moot
+      (FuncE(name, pes, out), out)
+    }
+    "nullif" => {
+      if arity != 2 {
+        raise @types.SqlError::Bind("nullif() takes exactly two arguments")
+      }
+      let (pe, ldt) = self.bind(args[0], space)
+      let (qe, rdt) = self.bind(args[1], space)
+      let out = match unify(ldt, rdt) {
+        Some(u) => u
+        None =>
+          raise @types.SqlError::Bind(
+            "nullif() argument types do not unify: \{ldt.to_string()} vs \{rdt.to_string()}",
+          )
+      }
+      (
+        FuncE(
+          "nullif",
+          [promote_to(pe, ldt, out), promote_to(qe, rdt, out)],
+          out,
+        ),
+        out,
+      )
     }
     other => raise @types.SqlError::Bind("unknown function \"\{other}\"")
   }

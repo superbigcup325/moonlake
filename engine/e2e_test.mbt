@@ -1770,3 +1770,44 @@ test "correlated scalar subqueries work in the select list" {
   )
   assert_eq(r4.get(0, 1), @types.Int32(20))
 }
+
+///|
+test "COALESCE family, SELECT without FROM, bare NULL" {
+  let cat = join_catalog()
+  // coalesce picks the first non-NULL; greatest/least ignore NULLs
+  let r = run(
+    "SELECT coalesce(NULL, amount, 0) AS c, greatest(amount, 7) AS g, least(amount, 7, NULL) AS l FROM orders WHERE oid = 100",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Int32(10))
+  assert_eq(r.get(0, 1), @types.Int32(10))
+  assert_eq(r.get(0, 2), @types.Int32(7))
+  // all-NULL inputs stay NULL; nullif folds equal to NULL
+  let r2 = run(
+    "SELECT coalesce(NULL, NULL) AS c, nullif(amount, 10) AS n FROM orders WHERE oid = 100",
+    cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Scalar::Null)
+  assert_eq(r2.get(0, 1), @types.Scalar::Null)
+  // numeric widening across arguments
+  let r3 = run(
+    "SELECT coalesce(amount, 0.5) AS c FROM orders WHERE oid = 100", cat,
+  )
+  assert_eq(r3.types()[0], @types.Float64)
+  // SELECT without FROM evaluates over one dummy row
+  let r4 = run("SELECT 1 AS one, 'x' AS s, coalesce(NULL, 2) AS c", cat)
+  assert_eq(r4.row_count(), 1)
+  assert_eq(r4.get(0, 0), @types.Int32(1))
+  assert_eq(r4.get(0, 1), @types.Str("x"))
+  assert_eq(r4.get(0, 2), @types.Int32(2))
+  // aggregates over the dummy row follow SQL: count(*) = 1
+  let r5 = run("SELECT count(*) AS c FROM (SELECT 1 AS one)", cat)
+  assert_eq(r5.get(0, 0), @types.Int64(1L))
+  // a bare NULL select item is INTEGER and reads back as NULL
+  let r6 = run("SELECT NULL AS n, 1 AS one", cat)
+  assert_eq(r6.types()[0], @types.Int32)
+  assert_eq(r6.get(0, 0), @types.Scalar::Null)
+  // WHERE on the dummy row filters it
+  let r7 = run("SELECT 1 AS one WHERE 1 = 0", cat)
+  assert_eq(r7.row_count(), 0)
+}
