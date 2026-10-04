@@ -115,3 +115,38 @@ test "reader dialect: CRLF, blank lines, escapes, no trailing newline" {
   let e8 = @csv.scan_string("s\ncafé ☕\n", "t8")
   assert_eq(e8.batches[0].columns()[0].get(0), @types.Str("café ☕"))
 }
+
+///|
+test "scan_files concatenates same-schema files into one table" {
+  let dir = temp_dir()
+  let p1 = dir + "/part-1.csv"
+  let p2 = dir + "/part-2.csv"
+  @fs.write_bytes_to_file(p1, @utf8.encode("k,v\n1,10\n"))
+  @fs.write_bytes_to_file(p2, @utf8.encode("k,v\n2,20\n3,30\n"))
+  let entry = @csv.scan_files([p1, p2], "parts") catch { e => abort("\{e}") }
+  assert_eq(entry.schema.table, "parts")
+  let mut rows = 0
+  for b in entry.batches {
+    rows += b.row_count()
+  }
+  assert_eq(rows, 3)
+  // a drifted header is a clean scan error naming the file
+  let p3 = dir + "/part-3.csv"
+  @fs.write_bytes_to_file(p3, @utf8.encode("k,w\n4,40\n"))
+  let _ = @csv.scan_files([p1, p3], "parts") catch {
+    e => {
+      assert_true(e.to_string().contains("part-3"))
+      return
+    }
+  }
+  abort("expected a header-mismatch error")
+}
+
+///|
+fn temp_dir() -> String {
+  let d = "target/csv_glob_test"
+  @fs.create_dir(d) catch {
+    _ => ()
+  }
+  d
+}

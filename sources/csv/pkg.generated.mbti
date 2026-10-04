@@ -9,6 +9,8 @@ import {
 // Values
 pub fn scan_file(String, String) -> @catalog.TableEntry raise @types.SqlError
 
+pub fn scan_files(Array[String], String) -> @catalog.TableEntry raise @types.SqlError
+
 pub fn scan_string(String, String) -> @catalog.TableEntry raise @types.SqlError
 
 // Errors

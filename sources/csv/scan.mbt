@@ -34,6 +34,110 @@ pub fn scan_file(
 }
 
 ///|
+/// Scan several CSV files into ONE table: the first file's header and
+/// inferred types drive everything, and every later file must repeat
+/// the same header (clean scan error otherwise). Partitioned datasets
+/// (`--csv 'parts/part-*.csv'`) land as a single relation.
+pub fn scan_files(
+  paths : Array[String],
+  table_name : String,
+) -> @catalog.TableEntry raise @types.SqlError {
+  if paths.length() == 0 {
+    raise @types.SqlError::Scan("no CSV files to scan")
+  }
+  let first = read_bytes(paths[0])
+  let raw = scan_csv(strip_bom(first))
+  if raw.n_rows() == 0 {
+    raise @types.SqlError::Scan("CSV has no header row")
+  }
+  let header : Array[String] = []
+  for i in raw.row_start(0)..<raw.row_start(1) {
+    header.push(raw.decode(i))
+  }
+  let dtypes = infer_types(header, strip_bom(first), raw)
+  let columns : Array[@catalog.Column] = []
+  for i, h in header {
+    columns.push({ name: h, dtype: dtypes[i], })
+  }
+  let schema : @catalog.TableSchema = { table: table_name, columns, }
+  let batches : Array[@types.DataBatch] = []
+  for i, path in paths {
+    let content = if i == 0 { first } else { read_bytes(path) }
+    if i > 0 {
+      validate_header(path, content, header)
+    }
+    append_batches(batches, dtypes, content, header)
+  }
+  if batches.length() == 0 {
+    batches.push(build_batch(dtypes, first, raw, 0, 0))
+  }
+  { schema, batches, }
+}
+
+///|
+fn read_bytes(path : String) -> Bytes raise @types.SqlError {
+  @fs.read_file_to_bytes(path) catch {
+    _ => raise @types.SqlError::Scan("cannot read file at \{path}")
+  }
+}
+
+///|
+fn strip_bom(content : Bytes) -> Bytes {
+  if content.length() >= 3 &&
+    content[0].to_int() == 0xEF &&
+    content[1].to_int() == 0xBB &&
+    content[2].to_int() == 0xBF {
+    content[3:].to_owned()
+  } else {
+    content
+  }
+}
+
+///|
+/// Every appended file must repeat the first file's header verbatim —
+/// a drifted column list would silently misalign the typed vectors.
+fn validate_header(
+  path : String,
+  content : Bytes,
+  header : Array[String],
+) -> Unit raise @types.SqlError {
+  let raw = scan_csv(strip_bom(content))
+  if raw.n_rows() == 0 {
+    raise @types.SqlError::Scan("\{path}: CSV has no header row")
+  }
+  for i, name in header {
+    let cell = raw.row_start(0) + i
+    if raw.row_start(1) - raw.row_start(0) != header.length() ||
+      raw.decode(cell) != name {
+      raise @types.SqlError::Scan(
+        "\{path}: header does not match the first file (expected \{header.join(",")})",
+      )
+    }
+  }
+}
+
+///|
+/// Materialize one file's data rows as whole batches appended to the
+/// table. Types come from the first file; an unparsable cell is a
+/// clean scan error with the file's own row context.
+fn append_batches(
+  batches : Array[@types.DataBatch],
+  dtypes : Array[@types.DataType],
+  content : Bytes,
+  _header : Array[String],
+) -> Unit raise @types.SqlError {
+  let content = strip_bom(content)
+  let raw = scan_csv(content)
+  let n = raw.n_rows() - 1
+  let mut start = 0
+  while start < n {
+    let end = if start + BATCH_SIZE < n { start + BATCH_SIZE } else { n }
+    batches.push(build_batch(dtypes, content, raw, start, end))
+    start = end
+  }
+}
+
+///|
 fn scan_bytes(
   content : Bytes,
   table_name : String,

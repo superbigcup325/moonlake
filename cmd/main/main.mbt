@@ -62,6 +62,26 @@ fn exec_command(args : Array[String]) -> Unit raise {
   if paths.length() == 0 || (i >= n && sql_file is None) {
     raise cli_fail(exec_usage())
   }
+  // --csv globs expand to their matches; several matches scan into ONE
+  // table named after the pattern (partitioned-dataset shape).
+  // --parquet stays single-file.
+  let groups : Array[(String, String, Array[String])] = []
+  for pair in paths {
+    if pair.0 == "csv" && pair.1.contains("*") {
+      let hits = expand_glob(pair.1)
+      if hits.length() == 0 {
+        raise cli_fail("the --csv pattern \{pair.1} matched no files")
+      }
+      let name = if hits.length() == 1 {
+        table_stem(hits[0])
+      } else {
+        pattern_stem(pair.1)
+      }
+      groups.push((name, "csv", hits))
+    } else {
+      groups.push((table_stem(pair.1), pair.0, [pair.1]))
+    }
+  }
   if sql_file is Some(_) && i < n {
     raise cli_fail("pass the SQL either inline or via --file, not both")
   }
@@ -80,15 +100,21 @@ fn exec_command(args : Array[String]) -> Unit raise {
     None => args[i]
   }
   let cat = @catalog.Catalog::new()
-  for pair in paths {
-    let entry = match pair.0 {
+  for (name, kind, files) in groups {
+    let entry = match kind {
       "parquet" =>
-        @pq.scan_file(pair.1, table_stem(pair.1), date_cols) catch {
+        @pq.scan_file(files[0], name, date_cols) catch {
           err => raise cli_fail(err.to_string())
         }
       _ =>
-        @csv.scan_file(pair.1, table_stem(pair.1)) catch {
-          err => raise cli_fail(err.to_string())
+        if files.length() > 1 {
+          @csv.scan_files(files, name) catch {
+            err => raise cli_fail(err.to_string())
+          }
+        } else {
+          @csv.scan_file(files[0], name) catch {
+            err => raise cli_fail(err.to_string())
+          }
         }
     }
     cat.register(entry)
@@ -169,6 +195,109 @@ fn join_row(result : @engine.SelectResult, r : Int) -> String {
 }
 
 ///|
+/// Expand one --csv glob pattern into sorted file paths. Only a single
+/// `*` (matching any run within one directory level) is supported;
+/// directories are skipped.
+fn expand_glob(pattern : String) -> Array[String] raise {
+  let mut slash = -1
+  for i, ch in pattern {
+    if ch == '/' {
+      slash = i
+    }
+  }
+  let dir = if slash >= 0 { pattern[:slash + 1].to_owned() } else { "" }
+  let pat = pattern[slash + 1:].to_owned()
+  let entries = @fs.read_dir(if dir == "" { "." } else { dir }) catch {
+    _ => raise cli_fail("cannot read directory at \{dir}")
+  }
+  let hits : Array[String] = []
+  for name in entries {
+    if glob_match(pat, name) && @fs.is_file(dir + name) {
+      hits.push(dir + name)
+    }
+  }
+  hits.sort()
+  hits
+}
+
+///|
+/// Classic single-star glob match: `*` spans any run of characters,
+/// everything else compares literally.
+fn glob_match(pattern : String, name : String) -> Bool {
+  let ps : Array[Char] = []
+  for ch in pattern {
+    ps.push(ch)
+  }
+  let ns : Array[Char] = []
+  for ch in name {
+    ns.push(ch)
+  }
+  let mut pi = 0
+  let mut ni = 0
+  let mut star = -1
+  let mut mark = 0
+  while ni < ns.length() {
+    if pi < ps.length() && (ps[pi] == '*' || ps[pi] == ns[ni]) {
+      if ps[pi] == '*' {
+        star = pi
+        mark = ni
+        pi += 1
+      } else {
+        pi += 1
+        ni += 1
+      }
+    } else if star >= 0 {
+      pi = star + 1
+      mark += 1
+      ni = mark
+    } else {
+      return false
+    }
+  }
+  while pi < ps.length() && ps[pi] == '*' {
+    pi += 1
+  }
+  pi == ps.length()
+}
+
+///|
+/// Table name for a multi-file glob pattern: the basename with `*`
+/// removed ("parts/part-*.csv" scans into table "part-.csv"? no —
+/// into "part-", keeping the suffix strip of table_stem).
+fn pattern_stem(pattern : String) -> String {
+  let mut start = 0
+  for i, ch in pattern {
+    if ch == '/' {
+      start = i + 1
+    }
+  }
+  let base = pattern[start:].to_owned()
+  let mut stem = ""
+  for ch in base {
+    if ch != '*' {
+      stem = stem + ch.to_string()
+    }
+  }
+  for suffix in [".csv", ".parquet"] {
+    if stem.has_suffix(suffix) {
+      stem = stem[:stem.length() - suffix.length()].to_owned()
+    }
+  }
+  // "part-*.csv" -> "part": the star leaves a separator behind that
+  // would force quoting in every query
+  let mut end = stem.length()
+  while end > 0 {
+    let last = stem[end - 1]
+    if last == '-' || last == '_' || last == '.' {
+      end -= 1
+    } else {
+      break
+    }
+  }
+  stem[:end].to_owned()
+}
+
+///|
 /// File stem: strip directories and a trailing ".csv" or ".parquet".
 fn table_stem(path : String) -> String {
   let mut start = 0
@@ -193,7 +322,9 @@ fn exec_usage() -> String {
     #|
     #|CSV: first row is the header, types inferred. Parquet: DATE columns
     #|are declared with --date-col (epoch-day int32). File stems become
-    #|table names; pass one --csv/--parquet per joined table. The SQL is
+    #|table names; pass one --csv/--parquet per joined table. A --csv
+    #|argument may carry one `*`: the matches scan into one table
+    #|named by the pattern. The SQL is
     #|one quoted argument, or a file with --file (handy to skip shell
     #|quoting; a trailing semicolon is fine).
     #|Examples:
@@ -233,4 +364,14 @@ test {
   assert_eq(table_stem("lineitem.csv"), "lineitem")
   assert_eq(table_stem("/tmp/data/lineitem.csv"), "lineitem")
   assert_eq(table_stem("plain.tsv"), "plain.tsv")
+  // single-star glob matching
+  assert_true(glob_match("part-*.csv", "part-001.csv"))
+  assert_true(glob_match("*.csv", "anything.csv"))
+  assert_true(glob_match("a*b.csv", "aXxYb.csv"))
+  assert_false(glob_match("part-*.csv", "part-001.tsv"))
+  assert_false(glob_match("part-*.csv", "xpart-001.csv"))
+  assert_false(glob_match("a*b.csv", "abcsv"))
+  // pattern stem: star removed, suffix stripped, separator trimmed
+  assert_eq(pattern_stem("parts/part-*.csv"), "part")
+  assert_eq(pattern_stem("data-*.csv"), "data") // trailing separator trimmed
 }
