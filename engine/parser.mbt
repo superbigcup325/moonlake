@@ -1029,6 +1029,31 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
       p.expect(RParen)
       Agg(Max, Some(inner))
     }
+    "stddev" | "stddev_samp" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Agg(SdSamp, Some(inner))
+    }
+    "variance" | "var_samp" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Agg(VarSamp, Some(inner))
+    }
+    "stddev_pop" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Agg(SdPop, Some(inner))
+    }
+    "var_pop" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Agg(VarPop, Some(inner))
+    }
+    "median" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      Agg(Median, Some(inner))
+    }
     "count" =>
       if p.eat(Star) {
         p.expect(RParen)

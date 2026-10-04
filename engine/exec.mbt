@@ -59,6 +59,8 @@ priv enum Acc {
   AvgF(Double, Int64) // sum, count of non-null inputs
   CountOf(Int64)
   Distinct(Map[String, Bool])
+  VarF(Double, Double, Int64) // Welford mean, m2, count
+  MedV(Array[Double])
   MinMax(@types.Scalar, Bool)
 }
 
@@ -76,6 +78,8 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
         Avg => AvgF(0.0, 0L)
         Count | CountStar => CountOf(0L)
         CountDistinct => Distinct({})
+        SdSamp | SdPop | VarSamp | VarPop => VarF(0.0, 0.0, 0L)
+        Median => MedV([])
         Min | Max => MinMax(@types.Null, false)
       },
     )
@@ -140,6 +144,25 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
               None => acc
             }
           CountOf(c) => CountOf(c + 1L)
+          VarF(mean, m2, c) =>
+            match as_double(v) {
+              Some(x) => {
+                // Welford: numerically stable online variance
+                let c2 = c + 1L
+                let delta = x - mean
+                let mean2 = mean + delta / c2.to_double()
+                VarF(mean2, m2 + delta * (x - mean2), c2)
+              }
+              None => acc
+            }
+          MedV(vals) =>
+            match as_double(v) {
+              Some(x) => {
+                vals.push(x)
+                acc
+              }
+              None => acc
+            }
           Distinct(seen) => {
             seen[scalar_key(v)] = true
             acc
@@ -164,13 +187,51 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
 }
 
 ///|
-fn acc_finish(acc : Acc) -> @types.Scalar raise @types.SqlError {
+fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError {
   match acc {
     SumI(_, _, true) =>
       raise @types.SqlError::Execute(
         "sum() overflows int64; widen the input or filter values",
       )
     SumI(s, seen, _) => if seen { @types.Int64(s) } else { @types.Null }
+    VarF(_, m2, c) => {
+      // samp needs a second observation; pop needs a first
+      let ok = if spec.kind is SdSamp || spec.kind is VarSamp {
+        c >= 2L
+      } else {
+        c >= 1L
+      }
+      if !ok {
+        @types.Null
+      } else {
+        let denom = if spec.kind is SdSamp || spec.kind is VarSamp {
+          (c - 1L).to_double()
+        } else {
+          c.to_double()
+        }
+        let variance = m2 / denom
+        // the Sd* kinds are the square root; Var* stay as variance
+        @types.Float64(
+          if spec.kind is SdSamp || spec.kind is SdPop {
+            variance.sqrt()
+          } else {
+            variance
+          },
+        )
+      }
+    }
+    MedV(vals) => {
+      if vals.length() == 0 {
+        return @types.Null
+      }
+      vals.sort()
+      let n = vals.length()
+      if n % 2 == 1 {
+        @types.Float64(vals[n / 2])
+      } else {
+        @types.Float64((vals[n / 2 - 1] + vals[n / 2]) / 2.0)
+      }
+    }
     SumF(s, seen) => if seen { @types.Float64(s) } else { @types.Null }
     AvgF(s, c) =>
       if c > 0L {
@@ -303,7 +364,7 @@ fn aggregate(
   for i in 0..<m {
     let vec = @types.ColumnVector::make(aggs[i].out_type, n)
     for r in 0..<n {
-      vec.set(r, acc_finish(acc_rows[r][i]))
+      vec.set(r, acc_finish(acc_rows[r][i], aggs[i]))
     }
     columns.push(vec)
   }

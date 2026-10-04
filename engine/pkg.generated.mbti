@@ -27,6 +27,11 @@ pub(all) enum AggFn {
   Count
   CountStar
   CountDistinct
+  SdSamp
+  SdPop
+  VarSamp
+  VarPop
+  Median
   Min
   Max
 } derive(Eq, @debug.Debug)

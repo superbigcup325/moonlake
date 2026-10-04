@@ -1857,3 +1857,35 @@ test "GROUP BY ordinals resolve to select items" {
   assert_eq(r.get(1, 0), @types.Str("b"))
   let _ = run_err("SELECT seg FROM customers GROUP BY 9", cat)
 }
+
+///|
+test "variance family and median match textbook values" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("v\n2\n4\n4\n4\n5\n5\n7\n9\n", "nums") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r = run(
+    "SELECT stddev_pop(v) AS sp, stddev_samp(v) AS ss, var_pop(v) AS vp, var_samp(v) AS vs, median(v) AS m FROM nums",
+    cat,
+  )
+  fn near_f(x : @types.Scalar, want : Double) -> Bool {
+    match x {
+      @types.Float64(v) => v - want < 1.0e-12 && want - v < 1.0e-12
+      _ => false
+    }
+  }
+
+  assert_true(near_f(r.get(0, 0), 2.0)) // stddev_pop
+  assert_true(near_f(r.get(0, 1), 2.138089935299395)) // stddev_samp
+  assert_true(near_f(r.get(0, 2), 4.0)) // var_pop
+  assert_true(near_f(r.get(0, 3), 32.0 / 7.0)) // var_samp
+  assert_true(near_f(r.get(0, 4), 4.5)) // median of 8 values
+  // NULLs are skipped; a single value has a pop stddev but no samp
+  let r2 = run(
+    "SELECT stddev_pop(v) AS sp, stddev_samp(v) AS ss FROM nums WHERE v = 2", cat,
+  )
+  assert_true(near_f(r2.get(0, 0), 0.0))
+  assert_eq(r2.get(0, 1), @types.Scalar::Null)
+}

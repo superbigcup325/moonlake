@@ -44,6 +44,11 @@ priv enum AggKind {
   Count
   CountStar
   CountDistinct
+  SdSamp
+  SdPop
+  VarSamp
+  VarPop
+  Median
   Min
   Max
 } derive(Debug)
@@ -481,6 +486,9 @@ fn default_name(expr : LExpr, index : Int) -> String {
         Sum => "sum"
         Avg => "avg"
         Count | CountStar | CountDistinct => "count"
+        SdSamp | VarSamp => "stddev"
+        SdPop | VarPop => "stddev_pop"
+        Median => "median"
         Min => "min"
         Max => "max"
       }
@@ -1090,6 +1098,14 @@ fn Binder::bind_agg(
           )
       }
     Count | CountDistinct => @types.DataType::Int64
+    SdSamp | SdPop | VarSamp | VarPop | Median =>
+      match dt {
+        @types.Int32 | @types.Int64 | @types.Float64 => @types.DataType::Float64
+        other =>
+          raise @types.SqlError::Bind(
+            "aggregates do not support input type \{other.to_string()}",
+          )
+      }
     Min | Max =>
       match dt {
         @types.Bool =>
@@ -1106,6 +1122,11 @@ fn Binder::bind_agg(
     Count => Count
     CountStar => CountStar
     CountDistinct => CountDistinct
+    SdSamp => SdSamp
+    SdPop => SdPop
+    VarSamp => VarSamp
+    VarPop => VarPop
+    Median => Median
     Min => Min
     Max => Max
   }

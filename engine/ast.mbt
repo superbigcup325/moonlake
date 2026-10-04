@@ -8,6 +8,11 @@ pub(all) enum AggFn {
   Count // count(expr): counts non-null inputs
   CountStar // count(*): counts rows
   CountDistinct
+  SdSamp // stddev / stddev_samp
+  SdPop // stddev_pop
+  VarSamp // variance / var_samp
+  VarPop // var_pop
+  Median
   Min
   Max
 } derive(Eq, Debug)
