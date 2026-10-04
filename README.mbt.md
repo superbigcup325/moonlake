@@ -19,11 +19,13 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 ### SQL surface
 
 - `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
-- `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` joins, `UNION [ALL]` (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
+- `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` joins, `UNION [ALL]` / `INTERSECT` / `EXCEPT` (INTERSECT binds tighter; ALL keeps multisets) (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
 - Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, `date +/- INTERVAL n day/month/year` (calendar-aware, day-of-month clamping), `CAST`, string functions (`substring` — both argument styles, `length`, `upper`, `lower`, `concat`), `abs`, `round`, three-valued NULL logic throughout. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL). Integer literals widen int32 → int64 → float64 to stay exact. Identifiers: the DATE-part keywords `year`/`month`/`day`/`date` double as bare column/table/alias names; double-quoted identifiers (`"left"`, with `""` escape) reach every other reserved word
-- Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)`
-- Subqueries: correlated `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` (decorrelated to semi/anti joins, residuals and all) and correlated scalar aggregate subqueries (decorrelated to grouped LEFT joins) — nested to the depth TPC-H asks; derived tables (`FROM (SELECT ...) AS t`), with optional column alias lists (`AS t (a, b)`)
+- Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)` / `stddev` (+samp/pop) / `variance` (+samp/pop) / `median` / `string_agg` (literal separator); aggregates over int64 that overflow raise instead of wrapping
+- `GROUP BY 1` ordinals resolve to select items
+- Subqueries: correlated `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` — including a HAVING inside the EXISTS (decorrelated to grouped semi/anti joins, residuals and all) — and correlated scalar aggregate subqueries in WHERE **and in the select list** (decorrelated to grouped LEFT joins) — nested to the depth TPC-H asks; derived tables (`FROM (SELECT ...) AS t`), with optional column alias lists (`AS t (a, b)`)
 - `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
+- Scalar functions: `coalesce` / `nullif` / `greatest` / `least`, `date_trunc(unit, date)`, `date_diff(unit, start, end)`; `SELECT` works without FROM and a bare `NULL` select item reads as INTEGER
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
 
 Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, window functions, cost-based optimization, multi-statement scripts.

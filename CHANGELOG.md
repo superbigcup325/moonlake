@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-06 SQL-surface arc (audit gaps closed): `INTERSECT` / `EXCEPT` with ALL / DISTINCT (INTERSECT binds tighter, NULL-safe row comparison, multiset counts); correlated scalar subqueries in the select list; `EXISTS` / `NOT EXISTS` with a HAVING clause; `coalesce` / `nullif` / `greatest` / `least`; `date_trunc` / `date_diff`; `string_agg` (literal separator); `stddev` (+samp/pop), `variance` (+samp/pop), `median` (Welford); `GROUP BY` ordinals; `SELECT` without FROM; bare `NULL` select items as INTEGER
+
+### Fixed
+
+- 2026-10-06 silent-wrong-answer guards: `sum()` over int64 raises on overflow instead of wrapping (duckdb promotes to HUGEINT); ORDER BY / LIMIT / OFFSET on a UNION branch is a parse error instead of silently truncating that branch
+
+### Added
+
+- 2026-10-06 usability arc
 - 2026-10-06 usability arc — standalone-binary startup (`moon build cmd/main --target native --release` + one `install` line puts `moonlake` on PATH; README quickstart), `exec --file <q.sql>` to skip shell quoting entirely (trailing semicolons fine), a pointed hint when data flags are passed without the `exec` subcommand, and a CSV-reader perf pass: per-cell offsets moved from boxed arrays to trimmed FixedArrays — SF0.1 ingest -16% (1374 -> 1150 ms), end-to-end queries -11-18%, maxRSS below the previous baseline (370 -> 353 MB)
 - MoonBit module skeleton (`superbigcup325/moonlake`): library package and CLI entry point (`cmd/main`)
 - 2026-10-06 verification arc — normalized correctness evidence beyond the SF0.01/1e-9 differential: a randomized vec-vs-scalar differential property over generated typed expression trees (batch sizes 0..4097, mutation-verified), a nested-loop hash-join oracle property across eight join flavors with hostile key distributions (mutation-verified), and `harness/fuzz_pushdown.py` (300 random predicate trees over INNER/LEFT joins, duckdb-refereed; catches WHERE-vs-key placement regressions at LEFT joins — verified by re-introducing the escape bug)
