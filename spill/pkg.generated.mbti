@@ -1,0 +1,23 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "superbigcup325/moonlake/spill"
+
+import {
+  "superbigcup325/moonlake/types",
+}
+
+// Values
+pub fn from_bytes(Bytes) -> Array[@types.DataBatch] raise @types.SqlError
+
+pub fn read_batches(String) -> Array[@types.DataBatch] raise @types.SqlError
+
+pub fn to_bytes(Array[@types.DataBatch]) -> Bytes
+
+pub fn write_batches(String, Array[@types.DataBatch]) -> Int raise @types.SqlError
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits
