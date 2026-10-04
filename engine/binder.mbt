@@ -874,55 +874,67 @@ fn Binder::plan_step(
         consumed[j] = true
       }
     } else if (m & both_masks.lnot()) == 0 && (m & cur_mask) != 0 {
-      // spans the accumulated row and the joining table
-      let key = match cj.lexpr {
-        Cmp(@types.Eq, l, r) => {
-          let lm = self.col_mask(l)
-          let rm = self.col_mask(r)
-          if (lm & acc_mask.lnot()) == 0 && lm != 0 && rm == cur_mask {
-            key_l.push(l)
-            key_r.push(r)
-            consumed[j] = true
-            true
-          } else if (rm & acc_mask.lnot()) == 0 && rm != 0 && lm == cur_mask {
-            key_l.push(r)
-            key_r.push(l)
-            consumed[j] = true
-            true
-          } else {
-            false
-          }
-        }
-        _ => false
-      }
-      if !key && (m & both_masks.lnot()) == 0 {
-        // a disjunction may imply an equality: Q19-style OR branches that
-        // all contain the same equi pair (e.g. p_partkey = l_partkey)
-        // yield a hash key while the full OR stays as the residual
-        let implied : (LExpr, LExpr)? = match cj.lexpr {
-          Or(_, _) => self.implied_eq(cj.lexpr, acc_mask, cur_mask)
-          _ => None
-        }
-        match implied {
-          Some((l, r)) => {
-            key_l.push(l)
-            key_r.push(r)
-            residual_l.push(cj.lexpr)
-            consumed[j] = true
-          }
-          None =>
-            // residual per candidate pair; at a LEFT step only ON
-            // conjuncts may act as residuals (WHERE keeps SQL semantics:
-            // filter the join output, never change NULL-extension)
-            if item.join is Left && cj.origin is None {
-              let _ = m // stay unconsumed; deferred below
+      // spans the accumulated row and the joining table. At a step that
+      // preserves a side (LEFT/RIGHT/FULL) a WHERE conjunct here must
+      // stay deferred: keys and residuals only ever see matched
+      // candidate pairs, so a NULL-extended row would escape the
+      // predicate entirely (e.g. `... LEFT JOIN orders ON k = k WHERE
+      // orders.amount = customers.cid * 10` would keep the unmatched
+      // customers). ON conjuncts keep key/residual placement — that is
+      // their semantics.
+      if (item.join is Left || item.join is Right || item.join is Full) &&
+        cj.origin is None {
+        let _ = m // stay unconsumed; deferred below
+      } else {
+        let key = match cj.lexpr {
+          Cmp(@types.Eq, l, r) => {
+            let lm = self.col_mask(l)
+            let rm = self.col_mask(r)
+            if (lm & acc_mask.lnot()) == 0 && lm != 0 && rm == cur_mask {
+              key_l.push(l)
+              key_r.push(r)
+              consumed[j] = true
+              true
+            } else if (rm & acc_mask.lnot()) == 0 && rm != 0 && lm == cur_mask {
+              key_l.push(r)
+              key_r.push(l)
+              consumed[j] = true
+              true
             } else {
+              false
+            }
+          }
+          _ => false
+        }
+        if !key && (m & both_masks.lnot()) == 0 {
+          // a disjunction may imply an equality: Q19-style OR branches that
+          // all contain the same equi pair (e.g. p_partkey = l_partkey)
+          // yield a hash key while the full OR stays as the residual
+          let implied : (LExpr, LExpr)? = match cj.lexpr {
+            Or(_, _) => self.implied_eq(cj.lexpr, acc_mask, cur_mask)
+            _ => None
+          }
+          match implied {
+            Some((l, r)) => {
+              key_l.push(l)
+              key_r.push(r)
               residual_l.push(cj.lexpr)
               consumed[j] = true
             }
+            None =>
+              // residual per candidate pair; at a LEFT step only ON
+              // conjuncts may act as residuals (WHERE keeps SQL semantics:
+              // filter the join output, never change NULL-extension)
+              if item.join is Left && cj.origin is None {
+                let _ = m // stay unconsumed; deferred below
+              } else {
+                residual_l.push(cj.lexpr)
+                consumed[j] = true
+              }
+          }
+        } else if !key {
+          let _ = m // conjunct references tables joined later
         }
-      } else if !key {
-        let _ = m // conjunct references tables joined later
       }
     }
     // else: references tables joined later; leave in the pool

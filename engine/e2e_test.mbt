@@ -1361,3 +1361,23 @@ test "INTERVAL outside date arithmetic is a bind error" {
     "SELECT l_quantity FROM lineitem WHERE interval '1' day * 3 > l_quantity", cat,
   )
 }
+
+///|
+test "WHERE conjuncts spanning a LEFT join stay post-join" {
+  let cat = join_catalog()
+  // amount = cid * 10: only order 100 (amount 10, customer 1) satisfies
+  // it. As a hash key the predicate would only gate matching, and the
+  // NULL-extended customers 2 and 3 would escape it entirely.
+  let r = run(
+    "SELECT cid FROM customers LEFT JOIN orders ON custkey = cid WHERE amount = cid * 10 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // the same predicate as an ON conjunct keeps its matching semantics
+  let r2 = run(
+    "SELECT cid FROM customers LEFT JOIN orders ON custkey = cid AND amount = cid * 10 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 3)
+}
