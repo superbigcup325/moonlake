@@ -264,3 +264,394 @@ test "property: sum over groups equals the whole-table sum" {
     max_success=80,
   )
 }
+
+///|
+/// Randomized differential property: for generated expressions over all
+/// six column types (NULLs sprinkled on every column), eval_vec must
+/// agree with eval_scalar cell for cell — value and NULL position — at
+/// every batch size, including the scan batch size (4096) and its +-1
+/// neighbors. Both-paths-NaN counts as equal (e.g. 0/0); everything
+/// else must match exactly.
+
+///|
+priv enum VT {
+  VI32
+  VI64
+  VF64
+  VStr
+  VBool
+  VDate
+}
+
+///|
+priv struct Rng2 {
+  mut state : UInt64
+}
+
+///|
+fn Rng2::next(self : Rng2) -> Int {
+  self.state = self.state * 6364136223846793005UL + 1442695040888963407UL
+  (self.state >> 33).to_int()
+}
+
+///|
+fn vprop_seed(seed : Int) -> UInt64 {
+  ((seed.to_uint64() & 0xFFFFFFFFUL) * 2654435761UL) | 0x9E3779B9UL
+}
+
+///|
+/// Columns: 0=i32a(mag 100) 1=i32b(mag 5) 2=i64a 3=f64a 4=str 5=bool
+/// 6=date. A NULL roughly every 9th (7th for str/bool) cell.
+fn vprop_batch(n : Int, seed : Int) -> @types.DataBatch {
+  let r : Rng2 = { state: vprop_seed(seed * 17 + 3), }
+  let cols : Array[@types.ColumnVector] = []
+  for spec in [(0, 100), (1, 5)] {
+    let c = @types.ColumnVector::make(@types.Int32, n)
+    for i in 0..<n {
+      if r.next() % 9 == 0 {
+        c.set(i, @types.Null)
+      } else {
+        c.set(i, @types.Int32(r.next() % (2 * spec.1 + 1) - spec.1))
+      }
+    }
+    cols.push(c)
+  }
+  let ci = @types.ColumnVector::make(@types.Int64, n)
+  for i in 0..<n {
+    if r.next() % 9 == 0 {
+      ci.set(i, @types.Null)
+    } else {
+      ci.set(i, @types.Int64((r.next() % 200 - 100).to_int64() * 1000000L))
+    }
+  }
+  cols.push(ci)
+  let cf = @types.ColumnVector::make(@types.Float64, n)
+  for i in 0..<n {
+    if r.next() % 9 == 0 {
+      cf.set(i, @types.Null)
+    } else {
+      cf.set(i, @types.Float64((r.next() % 400 - 200).to_double() / 8.0))
+    }
+  }
+  cols.push(cf)
+  let cs = @types.ColumnVector::make(@types.Str, n)
+  let words = ["apple", "apricot", "banana", "app", "Band", "band"]
+  for i in 0..<n {
+    if r.next() % 7 == 0 {
+      cs.set(i, @types.Null)
+    } else {
+      cs.set(i, @types.Str(words[r.next() % words.length()]))
+    }
+  }
+  cols.push(cs)
+  let cb = @types.ColumnVector::make(@types.Bool, n)
+  for i in 0..<n {
+    if r.next() % 7 == 0 {
+      cb.set(i, @types.Null)
+    } else {
+      cb.set(i, @types.Boolean(r.next() % 2 == 0))
+    }
+  }
+  cols.push(cb)
+  let cd = @types.ColumnVector::make(@types.Date, n)
+  for i in 0..<n {
+    if r.next() % 9 == 0 {
+      cd.set(i, @types.Null)
+    } else {
+      cd.set(i, @types.Date(r.next() % 25000 - 2000))
+    }
+  }
+  cols.push(cd)
+  @types.DataBatch::new(cols, n)
+}
+
+///|
+/// NaN-aware cell equality: NULL==NULL, both-NaN floats equal (both
+/// paths may legitimately produce NaN via 0/0), else structural.
+fn vprop_eq(a : @types.Scalar, b : @types.Scalar) -> Bool {
+  match (a, b) {
+    (@types.Null, @types.Null) => true
+    (@types.Null, _) | (_, @types.Null) => false
+    (@types.Float64(x), @types.Float64(y)) =>
+      (x.is_nan() && y.is_nan()) || x == y
+    _ => a == b
+  }
+}
+
+///|
+fn vprop_arith(r : Rng2) -> @types.ArithOp {
+  match r.next() % 3 {
+    0 => @types.Add
+    1 => @types.Sub
+    _ => @types.Mul
+  }
+}
+
+///|
+fn vprop_cmp(r : Rng2) -> @types.CmpOp {
+  match r.next() % 6 {
+    0 => @types.Eq
+    1 => @types.Neq
+    2 => @types.Lt
+    3 => @types.Le
+    4 => @types.Gt
+    _ => @types.Ge
+  }
+}
+
+///|
+fn vprop_val_type(r : Rng2) -> VT {
+  match r.next() % 6 {
+    0 => VI32
+    1 => VI64
+    2 => VF64
+    3 => VStr
+    4 => VBool
+    _ => VDate
+  }
+}
+
+///|
+fn vprop_leaf(r : Rng2, ty : VT) -> @engine.PhysExpr {
+  match ty {
+    VI32 =>
+      match r.next() % 4 {
+        0 => @engine.ColRef(0, @types.Int32)
+        1 => @engine.ColRef(1, @types.Int32)
+        2 => @engine.Const(@types.Int32(r.next() % 9 - 4))
+        _ => @engine.Const(@types.Null)
+      }
+    VI64 =>
+      match r.next() % 3 {
+        0 => @engine.ColRef(2, @types.Int64)
+        1 =>
+          @engine.Const(@types.Int64((r.next() % 9 - 4).to_int64() * 1000000L))
+        _ => @engine.Const(@types.Null)
+      }
+    VF64 =>
+      match r.next() % 3 {
+        0 => @engine.ColRef(3, @types.Float64)
+        1 =>
+          @engine.Const(@types.Float64((r.next() % 18 - 9).to_double() / 4.0))
+        _ => @engine.Const(@types.Null)
+      }
+    VStr =>
+      match r.next() % 3 {
+        0 => @engine.ColRef(4, @types.Str)
+        1 => @engine.Const(@types.Str("apple"))
+        _ => @engine.Const(@types.Null)
+      }
+    VBool =>
+      match r.next() % 3 {
+        0 => @engine.ColRef(5, @types.Bool)
+        1 => @engine.Const(@types.Boolean(true))
+        _ => @engine.Const(@types.Null)
+      }
+    VDate =>
+      match r.next() % 3 {
+        0 => @engine.ColRef(6, @types.Date)
+        1 => @engine.Const(@types.Date(19000))
+        _ => @engine.Const(@types.Null)
+      }
+  }
+}
+
+///|
+/// Typed random PhysExpr generator (depth-bounded). Every arm yields
+/// exactly its target type: comparisons and IS NULL are Bool-only,
+/// EXTRACT is Int32-only, and leaves fill the rest.
+fn vprop_expr(r : Rng2, ty : VT, depth : Int) -> @engine.PhysExpr raise {
+  if depth <= 0 {
+    return vprop_leaf(r, ty)
+  }
+  match ty {
+    VBool =>
+      match r.next() % 8 {
+        0 => vprop_leaf(r, ty)
+        1 =>
+          @engine.AndE(
+            vprop_expr(r, VBool, depth - 1),
+            vprop_expr(r, VBool, depth - 1),
+          )
+        2 =>
+          @engine.OrE(
+            vprop_expr(r, VBool, depth - 1),
+            vprop_expr(r, VBool, depth - 1),
+          )
+        3 => @engine.NotE(vprop_expr(r, VBool, depth - 1))
+        4 => @engine.LikeE(vprop_expr(r, VStr, depth - 1), vprop_pattern(r))
+        5 =>
+          @engine.IsNullE(
+            vprop_expr(r, vprop_val_type(r), depth - 1),
+            r.next() % 2 == 0,
+          )
+        6 => {
+          let vt = vprop_val_type(r)
+          @engine.CmpE(
+            vprop_cmp(r),
+            vprop_expr(r, vt, depth - 1),
+            vprop_expr(r, vt, depth - 1),
+          )
+        }
+        _ =>
+          @engine.CaseE(
+            [(vprop_expr(r, VBool, depth - 1), vprop_expr(r, VBool, depth - 1))],
+            Some(vprop_expr(r, VBool, depth - 1)),
+            @types.Bool,
+          )
+      }
+    VI32 =>
+      match r.next() % 6 {
+        0 => vprop_leaf(r, ty)
+        1 | 2 =>
+          @engine.ArithE(
+            vprop_arith(r),
+            vprop_expr(r, VI32, depth - 1),
+            vprop_expr(r, VI32, depth - 1),
+            @types.Int32,
+          )
+        3 =>
+          @engine.ExtractE(
+            vprop_expr(r, VDate, depth - 1),
+            if r.next() % 2 == 0 {
+              Year
+            } else {
+              Day
+            },
+          )
+        4 =>
+          @engine.CaseE(
+            [(vprop_expr(r, VBool, depth - 1), vprop_expr(r, VI32, depth - 1))],
+            Some(vprop_expr(r, VI32, depth - 1)),
+            @types.Int32,
+          )
+        _ =>
+          @engine.ArithE(
+            vprop_arith(r),
+            vprop_expr(r, VI32, depth - 1),
+            vprop_expr(r, VI32, depth - 1),
+            @types.Int32,
+          )
+      }
+    VI64 =>
+      match r.next() % 4 {
+        0 => vprop_leaf(r, ty)
+        1 | 2 =>
+          @engine.ArithE(
+            vprop_arith(r),
+            vprop_expr(r, VI64, depth - 1),
+            vprop_expr(r, VI64, depth - 1),
+            @types.Int64,
+          )
+        _ =>
+          @engine.CaseE(
+            [(vprop_expr(r, VBool, depth - 1), vprop_expr(r, VI64, depth - 1))],
+            Some(vprop_expr(r, VI64, depth - 1)),
+            @types.Int64,
+          )
+      }
+    VF64 =>
+      match r.next() % 5 {
+        0 => vprop_leaf(r, ty)
+        1 | 2 =>
+          @engine.ArithE(
+            if r.next() % 4 == 3 {
+              @types.Div
+            } else {
+              vprop_arith(r)
+            },
+            vprop_expr(r, VF64, depth - 1),
+            vprop_expr(r, VF64, depth - 1),
+            @types.Float64,
+          )
+        3 =>
+          @engine.CaseE(
+            [(vprop_expr(r, VBool, depth - 1), vprop_expr(r, VF64, depth - 1))],
+            Some(vprop_expr(r, VF64, depth - 1)),
+            @types.Float64,
+          )
+        _ => vprop_leaf(r, ty)
+      }
+    VStr =>
+      match r.next() % 5 {
+        0 => vprop_leaf(r, ty)
+        1 =>
+          @engine.FuncE("upper", [vprop_expr(r, VStr, depth - 1)], @types.Str)
+        2 =>
+          @engine.FuncE(
+            "concat",
+            [vprop_expr(r, VStr, depth - 1), vprop_expr(r, VStr, depth - 1)],
+            @types.Str,
+          )
+        3 =>
+          @engine.FuncE(
+            "substring",
+            [
+              vprop_expr(r, VStr, depth - 1),
+              @engine.Const(@types.Int32(r.next() % 4)),
+              @engine.Const(@types.Int32(r.next() % 5)),
+            ],
+            @types.Str,
+          )
+        _ =>
+          @engine.CaseE(
+            [(vprop_expr(r, VBool, depth - 1), vprop_expr(r, VStr, depth - 1))],
+            Some(vprop_expr(r, VStr, depth - 1)),
+            @types.Str,
+          )
+      }
+    VDate =>
+      match r.next() % 3 {
+        0 => vprop_leaf(r, ty)
+        _ =>
+          @engine.DateArithE(
+            vprop_expr(r, VDate, depth - 1),
+            (r.next() % 400 - 200).to_int64(),
+            match r.next() % 3 {
+              0 => Days
+              1 => Months
+              _ => Years
+            },
+          )
+      }
+  }
+}
+
+///|
+fn vprop_pattern(r : Rng2) -> String {
+  let patterns = ["app%", "%an%", "b_nd", "%", "band", "%a%c%"]
+  patterns[r.next() % patterns.length()]
+}
+
+///|
+fn vprop_case(seed : Int) -> Bool raise {
+  let r : Rng2 = { state: vprop_seed(seed * 31 + 7), }
+  let sizes = [0, 1, 2, 3, 5, 17, 4095, 4096, 4097]
+  let n = sizes[r.next() % sizes.length()]
+  let batch = vprop_batch(n, seed)
+  let types = [VI32, VI64, VF64, VStr, VBool, VDate]
+  let mut ok = true
+  for _ in 0..<4 {
+    let e = vprop_expr(r, types[r.next() % 6], 1 + r.next() % 3)
+    let v = @engine.eval_vec(e, batch)
+    ok = ok && v.len() == n
+    for row in 0..<n {
+      if !vprop_eq(v.get(row), @engine.eval_scalar(e, batch, row)) {
+        return false
+      }
+    }
+  }
+  ok
+}
+
+///|
+test "property: eval_vec agrees with eval_scalar on random expressions" {
+  @qc.quick_check(
+    @qc.forall(@gen.int_range(1, 1000000), seed => {
+      vprop_case(seed) catch {
+        _ => false
+      }
+    }),
+    max_success=60,
+  )
+}
