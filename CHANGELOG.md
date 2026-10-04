@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-06 verification arc — normalized correctness evidence beyond the SF0.01/1e-9 differential: a randomized vec-vs-scalar differential property over generated typed expression trees (batch sizes 0..4097, mutation-verified), a nested-loop hash-join oracle property across eight join flavors with hostile key distributions (mutation-verified), and `harness/fuzz_pushdown.py` (300 random predicate trees over INNER/LEFT joins, duckdb-refereed; catches WHERE-vs-key placement regressions at LEFT joins — verified by re-introducing the escape bug)
+- MoonBit module skeleton (`superbigcup325/moonlake`): library package and CLI entry point (`cmd/main`)
 - 2026-10-05 acceptance arc — all 22 TPC-H queries now pass on their official texts (annex parameter values, duckdb-diffed within 1e-9 on SF0.01 and SF0.1; q15 in its sanctioned `WITH` form, see `harness/queries/q15.sql`):
   - `DATE +/- INTERVAL n day|month|year` arithmetic — calendar-aware month/year shifts with day-of-month clamping (`1996-03-31 + interval '1' month` = `1996-04-30`), vectorized, NULL-propagating; an `INTERVAL` literal outside date arithmetic is a bind error, and the TPC-H dbgen precision suffix (`interval '90' day (3)`) parses and is dropped
   - Correlated scalar subqueries (`expr <op> (SELECT agg(...) ... WHERE inner.col = outer.col ...)`) decorrelate into LEFT joins against the inner query grouped by the correlation keys — empty groups NULL-extend and the comparison filters, which is exactly scalar-subquery NULL semantics; the select item must contain an aggregate so groups stay single-row, and nesting works to the depth q20 asks (two correlation columns one level out)
