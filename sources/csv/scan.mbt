@@ -120,8 +120,8 @@ fn infer_types(
       if raw.is_empty_cell(i) {
         continue // NULL cells never veto a type
       }
-      let s = raw.starts[i]
-      let e = raw.ends[i]
+      let s = raw.starts.data[i]
+      let e = raw.ends.data[i]
       seen = true
       if @types.parse_i32_bytes(buf, s, e) is None {
         all_i32 = false
@@ -180,8 +180,8 @@ fn build_column(
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
         if !raw.is_empty_cell(i) {
-          let s = raw.starts[i]
-          let e = raw.ends[i]
+          let s = raw.starts.data[i]
+          let e = raw.ends.data[i]
           let w = r - start
           match @types.parse_i32_bytes(buf, s, e) {
             Some(v) => {
@@ -203,8 +203,8 @@ fn build_column(
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
         if !raw.is_empty_cell(i) {
-          let s = raw.starts[i]
-          let e = raw.ends[i]
+          let s = raw.starts.data[i]
+          let e = raw.ends.data[i]
           let w = r - start
           match @types.parse_i64_bytes(buf, s, e) {
             Some(v) => {
@@ -226,8 +226,8 @@ fn build_column(
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
         if !raw.is_empty_cell(i) {
-          let s = raw.starts[i]
-          let e = raw.ends[i]
+          let s = raw.starts.data[i]
+          let e = raw.ends.data[i]
           let w = r - start
           match @types.parse_f64_bytes(buf, s, e) {
             Some(v) => {
@@ -249,8 +249,8 @@ fn build_column(
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
         if !raw.is_empty_cell(i) {
-          let s = raw.starts[i]
-          let e = raw.ends[i]
+          let s = raw.starts.data[i]
+          let e = raw.ends.data[i]
           let w = r - start
           match @types.parse_bool_bytes(buf, s, e) {
             Some(v) => {
@@ -272,8 +272,8 @@ fn build_column(
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
         if !raw.is_empty_cell(i) {
-          let s = raw.starts[i]
-          let e = raw.ends[i]
+          let s = raw.starts.data[i]
+          let e = raw.ends.data[i]
           let w = r - start
           match @types.parse_date_bytes(buf, s, e) {
             Some(v) => {
