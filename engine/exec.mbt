@@ -61,6 +61,7 @@ priv enum Acc {
   Distinct(Map[String, Bool])
   VarF(Double, Double, Int64) // Welford mean, m2, count
   MedV(Array[Double])
+  StrAgg(String, Bool) // accumulated text, seen_any
   MinMax(@types.Scalar, Bool)
 }
 
@@ -78,6 +79,7 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
         Avg => AvgF(0.0, 0L)
         Count | CountStar => CountOf(0L)
         CountDistinct => Distinct({})
+        StringAgg => StrAgg("", false)
         SdSamp | SdPop | VarSamp | VarPop => VarF(0.0, 0.0, 0L)
         Median => MedV([])
         Min | Max => MinMax(@types.Null, false)
@@ -142,6 +144,18 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
             match as_double(v) {
               Some(x) => AvgF(s + x, c + 1L)
               None => acc
+            }
+          StrAgg(text, seen) =>
+            match v {
+              @types.Str(s) => {
+                let sep = match spec.sep {
+                  Some(x) => x
+                  None => ""
+                }
+                let next = if seen { text + sep + s } else { s }
+                StrAgg(next, true)
+              }
+              _ => acc
             }
           CountOf(c) => CountOf(c + 1L)
           VarF(mean, m2, c) =>
@@ -220,6 +234,7 @@ fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError 
         )
       }
     }
+    StrAgg(text, seen) => if seen { @types.Str(text) } else { @types.Null }
     MedV(vals) => {
       if vals.length() == 0 {
         return @types.Null

@@ -29,6 +29,7 @@ pub(all) enum AggFn {
   CountDistinct
   SdSamp
   SdPop
+  StringAgg
   VarSamp
   VarPop
   Median

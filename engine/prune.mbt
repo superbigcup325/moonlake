@@ -185,6 +185,7 @@ fn prune_bound(
         None => None
       },
       out_type: spec.out_type,
+      sep: spec.sep,
     })
   }
   let out_exprs = if bq.aggregate {

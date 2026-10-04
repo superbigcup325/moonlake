@@ -1889,3 +1889,75 @@ test "variance family and median match textbook values" {
   assert_true(near_f(r2.get(0, 0), 0.0))
   assert_eq(r2.get(0, 1), @types.Scalar::Null)
 }
+
+///|
+test "date_trunc and date_diff" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT date_trunc('month', date '2024-03-17') AS m, date_trunc('year', date '2024-03-17') AS y, date_trunc('day', date '2024-03-17') AS d FROM orders LIMIT 1",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Date(@types.days_from_civil(2024, 3, 1)))
+  assert_eq(r.get(0, 1), @types.Date(@types.days_from_civil(2024, 1, 1)))
+  assert_eq(r.get(0, 2), @types.Date(@types.days_from_civil(2024, 3, 17)))
+  // diff counts unit boundaries crossed: end minus start
+  let r2 = run(
+    "SELECT date_diff('day', date '2024-01-01', date '2024-03-01') AS dd, date_diff('month', date '2024-01-31', date '2024-02-01') AS dm, date_diff('year', date '2020-06-01', date '2024-06-01') AS dy FROM orders LIMIT 1",
+    cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Int32(60))
+  assert_eq(r2.get(0, 1), @types.Int32(1))
+  assert_eq(r2.get(0, 2), @types.Int32(4))
+  // NULL propagates; a non-literal unit is a bind error
+  let r3 = run("SELECT date_trunc('month', NULL) AS m FROM orders LIMIT 1", cat)
+  assert_eq(r3.get(0, 0), @types.Scalar::Null)
+  let _ = run_err(
+    "SELECT date_trunc(seg, date '2024-01-01') FROM customers", cat,
+  )
+}
+
+///|
+test "EXISTS with a HAVING filter decorrelates" {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("id\n1\n2\n", "c") catch { e => abort("\{e}") })
+  cat.register(
+    @csv.scan_string("k,v\n1,1\n1,2\n1,3\n2,1\n2,1\n", "o") catch {
+      e => abort("\{e}")
+    },
+  )
+  // customer 1 has a group of 3 with sum > 5; customer 2's group sums 2
+  let r = run(
+    "SELECT id FROM c WHERE EXISTS (SELECT count(*) AS n, sum(v) AS s FROM o WHERE o.k = c.id HAVING sum(v) > 5) ORDER BY id",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // the NOT EXISTS twin keeps the row with no satisfying group
+  let r2 = run(
+    "SELECT id FROM c WHERE NOT EXISTS (SELECT count(*) AS n, sum(v) AS s FROM o WHERE o.k = c.id HAVING sum(v) > 5) ORDER BY id",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+}
+
+///|
+test "string_agg concatenates with a literal separator" {
+  let cat = join_catalog()
+  // customers: cid 1 -> seg a; cid 2 -> b; cid 3 -> a
+  let r = run(
+    "SELECT cid, string_agg(seg, '-') AS tags FROM customers GROUP BY cid ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 1), @types.Str("a"))
+  assert_eq(r.get(1, 1), @types.Str("b"))
+  assert_eq(r.get(2, 1), @types.Str("a"))
+  // no rows: no concatenation happened, NULL comes out
+  let r2 = run(
+    "SELECT string_agg(seg, '-') AS ks FROM customers WHERE cid = 9", cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Scalar::Null)
+  // a dynamic separator is rejected
+  let _ = run_err("SELECT string_agg(seg, seg) FROM customers", cat)
+}

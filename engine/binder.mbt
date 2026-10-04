@@ -44,6 +44,7 @@ priv enum AggKind {
   Count
   CountStar
   CountDistinct
+  StringAgg
   SdSamp
   SdPop
   VarSamp
@@ -58,6 +59,7 @@ priv struct AggSpec {
   kind : AggKind
   input : PhysExpr? // None only for CountStar
   out_type : @types.DataType
+  sep : String? // string_agg's literal separator
 } derive(Debug)
 
 ///|
@@ -486,6 +488,7 @@ fn default_name(expr : LExpr, index : Int) -> String {
         Sum => "sum"
         Avg => "avg"
         Count | CountStar | CountDistinct => "count"
+        StringAgg => "string_agg"
         SdSamp | VarSamp => "stddev"
         SdPop | VarPop => "stddev_pop"
         Median => "median"
@@ -1071,12 +1074,36 @@ fn Binder::bind_agg(
   inner : LExpr?,
 ) -> AggSpec raise @types.SqlError {
   if fn_ is CountStar {
-    return { kind: CountStar, input: None, out_type: @types.Int64, }
+    return { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
   }
   let lexpr = match inner {
     Some(e) => e
     None =>
       raise @types.SqlError::Bind("aggregate requires an input expression")
+  }
+  if fn_ is StringAgg {
+    // string_agg(value, sep): the parser wraps both args in a marker;
+    // only a literal separator survives the fold
+    match inner {
+      Some(Func("__string_agg", [v, Lit(@types.Str(sep))])) => {
+        let (pe, vdt) = self.bind(v, Flat)
+        if vdt != @types.Str {
+          raise @types.SqlError::Bind(
+            "string_agg() value must be a string, got \{vdt.to_string()} (cast it explicitly)",
+          )
+        }
+        return {
+          kind: StringAgg,
+          input: Some(pe),
+          out_type: @types.Str,
+          sep: Some(sep),
+        }
+      }
+      _ =>
+        raise @types.SqlError::Bind(
+          "string_agg() separator must be a string literal",
+        )
+    }
   }
   let (pe, dt) = self.bind(lexpr, Flat) // no nested aggregates
   let out_type = match fn_ {
@@ -1098,6 +1125,7 @@ fn Binder::bind_agg(
           )
       }
     Count | CountDistinct => @types.DataType::Int64
+    StringAgg => @types.Str // unreachable: returned early with the separator
     SdSamp | SdPop | VarSamp | VarPop | Median =>
       match dt {
         @types.Int32 | @types.Int64 | @types.Float64 => @types.DataType::Float64
@@ -1129,8 +1157,9 @@ fn Binder::bind_agg(
     Median => Median
     Min => Min
     Max => Max
+    StringAgg => StringAgg // unreachable: returned early
   }
-  { kind, input: Some(pe), out_type, }
+  { kind, input: Some(pe), out_type, sep: None, }
 }
 
 ///|
@@ -1626,6 +1655,46 @@ fn Binder::bind_func(
         pes.push(dpe)
       }
       (FuncE("round", pes, @types.Float64), @types.Float64)
+    }
+    "date_trunc" | "date_diff" => {
+      // the unit argument must fold to a string constant
+      if !(args[0] is Lit(@types.Str(_))) {
+        raise @types.SqlError::Bind(
+          "\{name}() unit must be a string literal ('day' | 'month' | 'year')",
+        )
+      }
+      if name == "date_trunc" && arity != 2 {
+        raise @types.SqlError::Bind("date_trunc() takes (unit, date)")
+      }
+      if name == "date_diff" && arity != 3 {
+        raise @types.SqlError::Bind("date_diff() takes (unit, start, end)")
+      }
+      let (unit_pe, _) = self.bind(args[0], space)
+      let pes = [unit_pe]
+      for i in 1..<arity {
+        if args[i] is Lit(@types.Null) {
+          pes.push(Const(@types.Null)) // typed NULL: the unit fixes nothing
+        } else {
+          let (pe, _) = want(args[i], @types.Date, "date")
+          pes.push(pe)
+        }
+      }
+      (
+        FuncE(
+          name,
+          pes,
+          if name == "date_trunc" {
+            @types.Date
+          } else {
+            @types.Int32
+          },
+        ),
+        if name == "date_trunc" {
+          @types.Date
+        } else {
+          @types.Int32
+        },
+      )
     }
     "coalesce" | "greatest" | "least" => {
       if arity == 0 {

@@ -1054,6 +1054,15 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
       p.expect(RParen)
       Agg(Median, Some(inner))
     }
+    "string_agg" => {
+      // two arguments; the separator must be a string literal and is
+      // carried inside a marker call for the binder to fold
+      let value = parse_or(p)
+      p.expect(Comma)
+      let sep = parse_or(p)
+      p.expect(RParen)
+      Agg(StringAgg, Some(Func("__string_agg", [value, sep])))
+    }
     "count" =>
       if p.eat(Star) {
         p.expect(RParen)
@@ -1109,7 +1118,9 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
     | "coalesce"
     | "greatest"
     | "least"
-    | "nullif" => {
+    | "nullif"
+    | "date_trunc"
+    | "date_diff" => {
       let args : Array[LExpr] = []
       if !(p.peek() is RParen) {
         args.push(parse_or(p))

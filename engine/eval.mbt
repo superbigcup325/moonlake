@@ -115,6 +115,43 @@ fn eval_with(
 ///|
 /// Scalar string and math functions. Every function propagates NULL.
 fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
+  // date functions: NULL propagates, so they sit behind the preamble's
+  // semantics but read their unit before it
+  if name == "date_trunc" || name == "date_diff" {
+    let unit = match vals[0] {
+      @types.Str(u) => u
+      _ => return @types.Null
+    }
+    if name == "date_trunc" {
+      match vals[1] {
+        @types.Date(d) => {
+          let (y, m, _) = @types.civil_from_days(d)
+          return @types.Date(
+            match unit {
+              "year" => @types.days_from_civil(y, 1, 1)
+              "month" => @types.days_from_civil(y, m, 1)
+              _ => d
+            },
+          )
+        }
+        _ => return @types.Null
+      }
+    }
+    let (da, db) = match (vals[1], vals[2]) {
+      (@types.Date(a), @types.Date(b)) => (a, b)
+      _ => return @types.Null
+    }
+    let (ay, am, _) = @types.civil_from_days(da)
+    let (by, bm, _) = @types.civil_from_days(db)
+    return @types.Int32(
+      match unit {
+        "day" => db - da
+        "month" => by * 12 + bm - (ay * 12 + am)
+        "year" => by - ay
+        _ => return @types.Null
+      },
+    )
+  }
   // NULL-aware functions: they interpret NULL instead of propagating it
   match name {
     "coalesce" =>

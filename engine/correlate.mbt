@@ -235,12 +235,17 @@ fn Correlator::try_exists(
   extra_batches : Array[Array[@types.DataBatch]],
 ) -> FromItem? raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
-    sub.having is Some(_) ||
     sub.limit is Some(_) ||
     sub.offset is Some(_) ||
     sub.distinct ||
     sub.setop is Some(_) {
     return None
+  }
+  // EXISTS with a HAVING filter: group the inner query by the
+  // correlation keys (keeping the HAVING), then the semi/anti join
+  // answers "does a satisfying group exist for this outer row?"
+  if sub.having is Some(_) {
+    return self.try_exists_grouped(sub, _negated, extra_schemas, extra_batches)
   }
   let sink : Array[LExpr] = []
   match self.prepare(sub) {
@@ -263,6 +268,82 @@ fn Correlator::try_exists(
       }
     None => None
   }
+}
+
+///|
+/// The HAVING flavor of EXISTS: the inner query groups by the
+/// correlation keys with the HAVING kept verbatim; the select list is
+/// discarded (EXISTS only asks whether a satisfying group exists).
+/// A NULL correlation key never matches any group, so NOT EXISTS
+/// keeps those rows (AntiLoose).
+fn Correlator::try_exists_grouped(
+  self : Correlator,
+  sub : Select,
+  negated : Bool,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+) -> FromItem? raise @types.SqlError {
+  // the select list is discarded: EXISTS only asks whether a group
+  // satisfying the HAVING exists, so any arity is fine
+  let (pairs, inner_only, residual) = match self.prepare(sub) {
+    Some(triple) => triple
+    None => return None
+  }
+  if pairs.length() == 0 || residual.length() > 0 {
+    return None
+  }
+  let items : Array[SelectItem] = []
+  let group_by : Array[LExpr] = []
+  for p in pairs {
+    items.push({ expr: p.0, label: Some("__sk\{group_by.length()}"), })
+    group_by.push(p.0)
+  }
+  let filter : LExpr? = match inner_only.length() {
+    0 => None
+    _ => {
+      let mut acc = inner_only[0]
+      for i in 1..<inner_only.length() {
+        acc = And(acc, inner_only[i])
+      }
+      Some(acc)
+    }
+  }
+  let inner_sel : Select = {
+    from: sub.from,
+    filter,
+    group_by,
+    having: sub.having,
+    items,
+    order_by: [],
+    limit: None,
+    offset: None,
+    distinct: false,
+    setop: None,
+  }
+  let inner = run_parsed(inner_sel, self.catalog)
+  let name = "__semi\{self.counter}"
+  self.counter = self.counter + 1
+  let columns : Array[@catalog.Column] = []
+  for i, t in inner.types() {
+    columns.push({ name: "__sk\{i}", dtype: t, })
+  }
+  extra_schemas.push({ table: name, columns, })
+  extra_batches.push([inner.batch()])
+  let mut on : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
+  for i in 1..<pairs.length() {
+    on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
+  }
+  Some({
+    table: Named(name),
+    tbl_alias: Some(name),
+    col_aliases: None,
+    join: if negated {
+      AntiLoose
+    } else {
+      Semi
+    },
+    on: Some(on),
+  })
 }
 
 ///|

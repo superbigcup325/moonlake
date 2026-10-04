@@ -10,6 +10,7 @@ pub(all) enum AggFn {
   CountDistinct
   SdSamp // stddev / stddev_samp
   SdPop // stddev_pop
+  StringAgg // string_agg(value, sep): sep folded to a literal at parse
   VarSamp // variance / var_samp
   VarPop // var_pop
   Median
