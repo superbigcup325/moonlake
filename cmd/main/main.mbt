@@ -7,9 +7,20 @@ fn main raise {
     println("moonlake \{@moonlake.version()}")
     return
   }
+  if args.contains("--help") {
+    println(usage())
+    return
+  }
   if args.length() > 1 && args[1] == "exec" {
     exec_command(args)
     return
+  }
+  // the classic first-commands slip: flags without the subcommand
+  if args.length() > 1 && (args[1] == "--csv" || args[1] == "--parquet") {
+    eprintln(
+      "it looks like you passed data flags without a subcommand; e.g.\n  moonlake exec --csv t.csv --file q.sql\n  moonlake exec --csv t.csv \"SELECT ...\"",
+    )
+    @sys.exit(1)
   }
   println(usage())
 }
@@ -21,6 +32,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   let date_cols : Array[String] = []
   let mut explain = false
   let mut json = false
+  let mut sql_file : String? = None
   let mut i = 2
   let n = args.length()
   let mut reading = true
@@ -40,12 +52,18 @@ fn exec_command(args : Array[String]) -> Unit raise {
     } else if args[i] == "--json" {
       json = true
       i += 1
+    } else if args[i] == "--file" && i + 1 < n {
+      sql_file = Some(args[i + 1])
+      i += 2
     } else {
       reading = false
     }
   }
-  if paths.length() == 0 || i >= n {
+  if paths.length() == 0 || (i >= n && sql_file is None) {
     raise cli_fail(exec_usage())
+  }
+  if sql_file is Some(_) && i < n {
+    raise cli_fail("pass the SQL either inline or via --file, not both")
   }
   if n - i > 1 {
     // words after a quoted SQL would otherwise silently glue onto the
@@ -54,7 +72,13 @@ fn exec_command(args : Array[String]) -> Unit raise {
       "sql must be one quoted argument, got \{n - i} words; wrap it: moonlake exec --csv t.csv \"SELECT ...\"",
     )
   }
-  let sql = args[i]
+  let sql = match sql_file {
+    Some(f) =>
+      @fs.read_file_to_string(f) catch {
+        _ => raise cli_fail("cannot read SQL file at \{f}")
+      }
+    None => args[i]
+  }
   let cat = @catalog.Catalog::new()
   for pair in paths {
     let entry = match pair.0 {
@@ -165,14 +189,17 @@ fn table_stem(path : String) -> String {
 ///|
 fn exec_usage() -> String {
   (
-    #|usage: moonlake exec (--csv <file> | --parquet <file> | --date-col <c>)+ <sql>
+    #|usage: moonlake exec (--csv <file> | --parquet <file> | --date-col <c>)+ <sql | --file <q.sql>>
     #|
     #|CSV: first row is the header, types inferred. Parquet: DATE columns
     #|are declared with --date-col (epoch-day int32). File stems become
-    #|table names; pass one --csv/--parquet per joined table.
-    #|Example:
+    #|table names; pass one --csv/--parquet per joined table. The SQL is
+    #|one quoted argument, or a file with --file (handy to skip shell
+    #|quoting; a trailing semicolon is fine).
+    #|Examples:
     #|  moonlake exec --csv lineitem.csv \
     #|    "SELECT sum(x) AS s FROM lineitem WHERE x > 1"
+    #|  moonlake exec --csv lineitem.csv --file q6.sql
   )
 }
 

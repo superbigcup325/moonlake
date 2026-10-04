@@ -72,7 +72,15 @@ moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
 # ...
 ```
 
-Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns with `--date-col`); `--explain` prints the physical plan; `--json` emits machine-readable output.
+For everyday use, install a standalone binary and skip `moon run`:
+
+```bash
+moon build cmd/main --target native --release
+install -m755 _build/native/release/build/cmd/main/main.exe ~/.local/bin/moonlake
+moonlake exec --csv lineitem.csv --file q6.sql     # SQL from a file: no shell quoting
+```
+
+Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns with `--date-col`); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine); `--explain` prints the physical plan; `--json` emits machine-readable output.
 
 As a library:
 
