@@ -1562,3 +1562,95 @@ test "NOT EXISTS keeps null correlation keys, NOT IN drops them" {
   assert_eq(r3.get(0, 0), @types.Int32(1))
   assert_eq(r3.get(1, 0), @types.Int32(3))
 }
+
+///|
+test "scan batch boundaries: 4095/4096/4097 rows through the pipeline" {
+  for n in [4095, 4096, 4097] {
+    let sb = StringBuilder()
+    sb.write_string("k,v\n")
+    for i in 0..<n {
+      sb.write_string("\{i % 7},\{i}\n")
+    }
+    let cat = @catalog.Catalog::new()
+    cat.register(
+      @csv.scan_string(sb.to_string(), "t2") catch {
+        e => abort("\{e}")
+      },
+    )
+    // filter across a batch seam
+    let mut want = 0
+    for i in 0..<n {
+      if i >= 1000 && i < 2000 {
+        want += 1
+      }
+    }
+    let r = run(
+      "SELECT count(*) AS c FROM t2 WHERE v >= 1000 AND v < 2000", cat,
+    )
+    assert_eq(r.get(0, 0), @types.Int64(want.to_int64()))
+    // group-sum across seams: total is invariant to batching (v == i)
+    let mut want_sum = 0
+    for i in 0..<n {
+      want_sum += i
+    }
+    let r2 = run("SELECT sum(v) AS s FROM t2", cat)
+    assert_eq(r2.get(0, 0), @types.Int64(want_sum.to_int64()))
+    // self-join fan-out across seams: sum over k of cnt_k^2
+    let counts : Array[Int] = Array::make(7, 0)
+    for i in 0..<n {
+      counts[i % 7] += 1
+    }
+    let mut want_pairs = 0
+    for c in counts {
+      want_pairs += c * c
+    }
+    let r3 = run("SELECT count(*) AS c FROM t2 x, t2 y WHERE x.k = y.k", cat)
+    assert_eq(r3.get(0, 0), @types.Int64(want_pairs.to_int64()))
+    let _ = n
+  }
+}
+
+///|
+
+///|
+test "join keys at int64 extremes hash distinctly" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(
+      "k,v\n9223372036854775807,1\n-9223372036854775808,2\n0,3\n,4\n", "big",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(
+      "k,w\n9223372036854775807,10\n-9223372036854775808,20\n0,30\n0,31\n,40\n",
+      "bag",
+    ) catch {
+      e => abort("\{e}")
+    },
+  )
+  // extremes pair only with themselves; NULL keys match nothing
+  let r = run(
+    "SELECT big.v, bag.w FROM big, bag WHERE big.k = bag.k ORDER BY big.v, bag.w",
+    cat,
+  )
+  assert_eq(r.row_count(), 4)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(0, 1), @types.Int32(10))
+  assert_eq(r.get(1, 0), @types.Int32(2))
+  assert_eq(r.get(1, 1), @types.Int32(20))
+  assert_eq(r.get(2, 0), @types.Int32(3))
+  assert_eq(r.get(2, 1), @types.Int32(30))
+  assert_eq(r.get(3, 0), @types.Int32(3))
+  assert_eq(r.get(3, 1), @types.Int32(31))
+  // literal comparison at the extremes
+  let r2 = run(
+    "SELECT count(*) AS c FROM big WHERE k = 9223372036854775807", cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Int64(1L))
+  let r3 = run(
+    "SELECT count(*) AS c FROM big WHERE k = -9223372036854775808", cat,
+  )
+  assert_eq(r3.get(0, 0), @types.Int64(1L))
+}

@@ -82,6 +82,36 @@ pub fn parse_f64(s : String) -> Double? {
     neg = chars[0] == '-'
     i = 1
   }
+  // exact fast path: a pure-digit run that fits in UInt64 converts
+  // through the exact uint64->double rounding, so every integer literal
+  // up to 20 digits keeps its value (2^63 parsed by the decimal
+  // accumulator below lands on a neighbor double, and `k = -2^63`
+  // misses). Wider runs fall through to the accumulator's 1e-9 contract.
+  if i < n {
+    let mut acc : UInt64 = 0UL
+    let mut fits = true
+    let mut j = i
+    while j < n && is_digit(chars[j]) {
+      if fits {
+        let d = (chars[j].to_int() - 48).to_uint64()
+        if acc > 1844674407370955161UL {
+          fits = false
+        } else {
+          let scaled = acc * 10UL
+          if scaled > 18446744073709551615UL - d {
+            fits = false
+          } else {
+            acc = scaled + d
+          }
+        }
+      }
+      j += 1
+    }
+    if fits && j == n {
+      let v = acc.to_double()
+      return Some(if neg { -v } else { v })
+    }
+  }
   let mut value = 0.0
   let mut int_digits = 0
   while i < n && is_digit(chars[i]) {

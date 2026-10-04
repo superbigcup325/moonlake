@@ -215,3 +215,29 @@ test "integer parsing is range-checked, never wrapping" {
   assert_eq(@types.parse_i64(""), None)
   assert_eq(@types.parse_i64("12x"), None)
 }
+
+///|
+test "parse_f64 keeps 20-digit integers exact" {
+  // 2^63: the decimal accumulator used to land on a neighbor double
+  assert_eq(
+    @types.parse_f64("9223372036854775808"),
+    Some(9223372036854775808.0),
+  )
+  assert_eq(
+    @types.parse_f64("-9223372036854775808"),
+    Some(-9223372036854775808.0),
+  )
+  // uint64 max rounds to the nearest representable double, 2^64
+  assert_eq(
+    @types.parse_f64("18446744073709551615"),
+    Some(18446744073709551616.0),
+  )
+  // beyond uint64: the accumulator's 1e-9 relative contract still holds
+  let v = @types.parse_f64("99999999999999999999")
+  match v {
+    Some(x) => assert_true(x > 0.99999999e20 && x < 1.00000001e20)
+    None => fail("expected a value")
+  }
+  // small integers stay exact too
+  assert_eq(@types.parse_f64("42"), Some(42.0))
+}

@@ -655,3 +655,373 @@ test "property: eval_vec agrees with eval_scalar on random expressions" {
     max_success=60,
   )
 }
+
+///|
+/// Hash-join oracle: a naive nested-loop model over tiny tables with
+/// hostile key distributions (duplicate-heavy, unique, all-NULL,
+/// occasional NULL values in the residual), compared cell-for-cell
+/// against the planned hash join for every join flavor and both
+/// residual placements (ON = matching semantics, WHERE = post-join).
+
+///|
+fn jprop_tables(
+  seed : Int,
+) -> (Array[(Int, Int?, Int?)], Array[(Int, Int?, Int?)]) {
+  let r : Rng2 = { state: vprop_seed(seed * 7 + 11), }
+  let mode = r.next() % 3
+  fn keys(n : Int) -> Array[Int?] {
+    let out : Array[Int?] = []
+    for _ in 0..<n {
+      out.push(
+        match mode {
+          0 =>
+            // duplicate-heavy with NULLs
+            if r.next() % 3 == 0 {
+              None
+            } else {
+              Some(r.next() % 3)
+            }
+          1 => Some(r.next() % 50) // spread: mostly unique
+          _ => None // all-NULL keys
+        },
+      )
+    }
+    out
+  }
+
+  fn vals(n : Int) -> Array[Int?] {
+    // at least one non-NULL: an all-empty CSV column infers as STRING,
+    // which would turn the residual into a type error, not a semantics
+    // question
+    let out : Array[Int?] = []
+    for _ in 0..<n {
+      out.push(if r.next() % 5 == 0 { None } else { Some(r.next() % 5) })
+    }
+    out[0] = Some(3)
+    out
+  }
+
+  let na = 1 + r.next() % 8
+  let nb = 1 + r.next() % 8
+  let ka = keys(na)
+  let kb = keys(nb)
+  // an all-empty column infers as STRING, which would turn the join
+  // equality into a bind error instead of a semantics question; keep
+  // exactly one non-null key in the "all-NULL" mode
+  ka[0] = Some(1)
+  kb[0] = Some(if r.next() % 2 == 0 { 1 } else { 2 })
+  let va = vals(na)
+  let vb = vals(nb)
+  let a : Array[(Int, Int?, Int?)] = []
+  let b : Array[(Int, Int?, Int?)] = []
+  for i in 0..<na {
+    a.push((i + 1, ka[i], va[i]))
+  }
+  for i in 0..<nb {
+    b.push((i + 1, kb[i], vb[i]))
+  }
+  (a, b)
+}
+
+///|
+fn jprop_csv(name : String, rows : Array[(Int, Int?, Int?)]) -> String {
+  let sb = StringBuilder()
+  sb.write_string(if name == "b" { "id,k,w\n" } else { "id,k,v\n" })
+  for row in rows {
+    fn cell(x : Int?) -> String {
+      match x {
+        Some(v) => v.to_string()
+        None => ""
+      }
+    }
+
+    sb.write_string("\{row.0},\{cell(row.1)},\{cell(row.2)}\n")
+  }
+  let _ = name
+  sb.to_string()
+}
+
+///|
+fn jprop_key(ak : Int?, bk : Int?) -> Bool {
+  match (ak, bk) {
+    (Some(x), Some(y)) => x == y
+    _ => false // NULL keys never match
+  }
+}
+
+///|
+fn jprop_res(av : Int?, bw : Int?, res : Bool) -> Bool {
+  if !res {
+    return true
+  }
+  match (av, bw) {
+    (Some(x), Some(y)) => x < y
+    _ => false // NULL residual is UNKNOWN: not a match, not kept
+  }
+}
+
+///|
+fn jprop_cat(csv_a : String, csv_b : String) -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(csv_a, "a") catch { e => abort("\{e}") })
+  cat.register(@csv.scan_string(csv_b, "b") catch { e => abort("\{e}") })
+  cat
+}
+
+///|
+/// Expected rows of the modeled join as (aid, bid) with NULLs last.
+fn jprop_expect(
+  a : Array[(Int, Int?, Int?)],
+  b : Array[(Int, Int?, Int?)],
+  kind : Int,
+  res : Bool,
+) -> Array[(Int?, Int?)] {
+  let out : Array[(Int?, Int?)] = []
+  match kind {
+    // 0 inner (ON or WHERE residual — same predicate set)
+    0 =>
+      for ra in a {
+        for rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            out.push((Some(ra.0), Some(rb.0)))
+          }
+        }
+      }
+    // 1 LEFT JOIN ON key [AND res]: unmatched a rows NULL-extend
+    1 =>
+      for ra in a {
+        let mut any = false
+        for rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            out.push((Some(ra.0), Some(rb.0)))
+            any = true
+          }
+        }
+        if !any {
+          out.push((Some(ra.0), None))
+        }
+      }
+    // 2 LEFT JOIN ON key WHERE spanning res == inner on (key AND res):
+    // NULL-extended rows cannot satisfy a spanning residual
+    2 =>
+      for ra in a {
+        for rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            out.push((Some(ra.0), Some(rb.0)))
+          }
+        }
+      }
+    // 3 RIGHT JOIN ON key [AND res]: unmatched b rows NULL-extend
+    3 =>
+      for rb in b {
+        let mut any = false
+        for ra in a {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            out.push((Some(ra.0), Some(rb.0)))
+            any = true
+          }
+        }
+        if !any {
+          out.push((None, Some(rb.0)))
+        }
+      }
+    // 4 FULL JOIN ON key [AND res]: left NULL-extension plus unmatched b
+    4 => {
+      let matched_b : Array[Bool] = Array::make(b.length(), false)
+      for ra in a {
+        let mut any = false
+        for j, rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            out.push((Some(ra.0), Some(rb.0)))
+            any = true
+            matched_b[j] = true
+          }
+        }
+        if !any {
+          out.push((Some(ra.0), None))
+        }
+      }
+      for j, rb in b {
+        if !matched_b[j] {
+          out.push((None, Some(rb.0)))
+        }
+      }
+    }
+    // 5 semi: a with some match
+    5 =>
+      for ra in a {
+        let mut any = false
+        for rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            any = true
+          }
+        }
+        if any {
+          out.push((Some(ra.0), None))
+        }
+      }
+    // 6 anti NOT EXISTS: a with no match (a NULL key never matches, so
+    // the row survives)
+    6 =>
+      for ra in a {
+        let mut any = false
+        for rb in b {
+          if jprop_key(ra.1, rb.1) && jprop_res(ra.2, rb.2, res) {
+            any = true
+          }
+        }
+        if !any {
+          out.push((Some(ra.0), None))
+        }
+      }
+    // 7 anti NOT IN: NULL probe key is UNKNOWN (dropped); a NULL in the
+    // inner key column poisons the whole predicate to empty
+    _ => {
+      let mut poison = false
+      for rb in b {
+        if rb.1 is None {
+          poison = true
+        }
+      }
+      if !poison {
+        for ra in a {
+          match ra.1 {
+            Some(ak) => {
+              let mut inside = false
+              for rb in b {
+                match rb.1 {
+                  Some(bk) => if bk == ak { inside = true }
+                  None => ()
+                }
+              }
+              if !inside {
+                out.push((Some(ra.0), None))
+              }
+            }
+            None => ()
+          }
+        }
+      }
+    }
+  }
+  out.sort_by((x, y) => {
+    let xa = match x.0 {
+      Some(v) => v
+      None => 0x7FFFFFFF
+    }
+    let ya = match y.0 {
+      Some(v) => v
+      None => 0x7FFFFFFF
+    }
+    let xb = match x.1 {
+      Some(v) => v
+      None => 0x7FFFFFFF
+    }
+    let yb = match y.1 {
+      Some(v) => v
+      None => 0x7FFFFFFF
+    }
+    let d = xa - ya
+    if d != 0 {
+      d
+    } else {
+      xb - yb
+    }
+  })
+  out
+}
+
+///|
+fn jprop_case(seed : Int) -> Bool {
+  let r : Rng2 = { state: vprop_seed(seed * 13 + 5), }
+  let (a, b) = jprop_tables(seed)
+  let res = r.next() % 2 == 0
+  let kind = r.next() % 8
+  let cat = jprop_cat(jprop_csv("a", a), jprop_csv("b", b))
+  let j = if res { " AND b.w > a.v" } else { "" }
+  let (sql, model_res) = match kind {
+    0 =>
+      (
+        "SELECT a.id AS aid, b.id AS bid FROM a, b WHERE a.k = b.k\{j} ORDER BY aid, bid",
+        res,
+      )
+    1 =>
+      (
+        "SELECT a.id AS aid, b.id AS bid FROM a LEFT JOIN b ON a.k = b.k\{j} ORDER BY aid, bid",
+        res,
+      )
+    2 =>
+      // fixed spanning WHERE: the NULL-extended rows must not escape it
+      (
+        "SELECT a.id AS aid, b.id AS bid FROM a LEFT JOIN b ON a.k = b.k WHERE b.w > a.v ORDER BY aid, bid",
+        true,
+      )
+    3 =>
+      (
+        "SELECT a.id AS aid, b.id AS bid FROM a RIGHT JOIN b ON a.k = b.k\{j} ORDER BY aid, bid",
+        res,
+      )
+    4 =>
+      (
+        "SELECT a.id AS aid, b.id AS bid FROM a FULL JOIN b ON a.k = b.k\{j} ORDER BY aid, bid",
+        res,
+      )
+    5 =>
+      (
+        "SELECT a.id AS aid FROM a WHERE EXISTS (SELECT * FROM b WHERE b.k = a.k\{j}) ORDER BY aid",
+        res,
+      )
+    6 =>
+      (
+        "SELECT a.id AS aid FROM a WHERE NOT EXISTS (SELECT * FROM b WHERE b.k = a.k\{j}) ORDER BY aid",
+        res,
+      )
+    _ =>
+      // NOT IN: the model's key/poison semantics; no extra residual
+      (
+        "SELECT a.id AS aid FROM a WHERE a.k NOT IN (SELECT k FROM b) ORDER BY aid",
+        false,
+      )
+  }
+  let got = @engine.run_select(sql, cat) catch {
+    e => {
+      println("jprop err seed=\{seed} kind=\{kind}: \{e}")
+      return false
+    }
+  }
+  let want = jprop_expect(a, b, kind, model_res)
+  let mut ok = got.row_count() == want.length()
+  if ok {
+    let two_cols = got.names().length() == 2
+    for i in 0..<want.length() {
+      let w0 : @types.Scalar = match want[i].0 {
+        Some(v) => @types.Int32(v)
+        None => @types.Null
+      }
+      if got.get(i, 0) != w0 {
+        ok = false
+      }
+      if two_cols {
+        let w1 : @types.Scalar = match want[i].1 {
+          Some(v) => @types.Int32(v)
+          None => @types.Null
+        }
+        if got.get(i, 1) != w1 {
+          ok = false
+        }
+      }
+    }
+  }
+  if !ok {
+    println("jprop seed=\{seed} kind=\{kind} res=\{res}: \{sql}")
+  }
+  ok
+}
+
+///|
+test "property: hash join matches the nested-loop oracle" {
+  @qc.quick_check(
+    @qc.forall(@gen.int_range(1, 1000000), seed => jprop_case(seed)),
+    max_success=80,
+  )
+}
