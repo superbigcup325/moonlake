@@ -6,6 +6,8 @@ import {
 }
 
 // Values
+pub fn add_months(Int, Int) -> Int
+
 pub fn civil_from_days(Int) -> (Int, Int, Int)
 
 pub fn days_from_civil(Int, Int, Int) -> Int

@@ -79,6 +79,46 @@ pub fn eval_vec(
       }
       @types.BoolV(od, ovalid)
     }
+    DateArithE(inner, qty, unit) => {
+      let v = eval_vec(inner, batch)
+      match v {
+        @types.DateV(d, valid) => {
+          let od : FixedArray[Int] = FixedArray::make(n, 0)
+          let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+          match unit {
+            Days => {
+              let q = qty.to_int()
+              for i in 0..<n {
+                if valid[i] {
+                  od[i] = d[i] + q
+                  ovalid[i] = true
+                }
+              }
+            }
+            Months => {
+              let q = qty.to_int()
+              for i in 0..<n {
+                if valid[i] {
+                  od[i] = @types.add_months(d[i], q)
+                  ovalid[i] = true
+                }
+              }
+            }
+            Years => {
+              let q = qty.to_int() * 12
+              for i in 0..<n {
+                if valid[i] {
+                  od[i] = @types.add_months(d[i], q)
+                  ovalid[i] = true
+                }
+              }
+            }
+          }
+          @types.DateV(od, ovalid)
+        }
+        _ => fallback(e, batch)
+      }
+    }
     _ => fallback(e, batch)
   }
 }
@@ -117,6 +157,7 @@ fn expr_dtype(e : PhysExpr) -> @types.DataType {
     FuncE(_, _, dt) => dt
     CastE(_, dt) => dt
     CaseE(_, _, dt) => dt
+    DateArithE(_, _, _) => @types.Date
   }
 }
 

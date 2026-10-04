@@ -269,6 +269,7 @@ fn collect_refs(
         collect_refs(a, resolve, needed)
       }
     CastE(inner, _) => collect_refs(inner, resolve, needed)
+    DateArithE(inner, _, _) => collect_refs(inner, resolve, needed)
     CaseE(whens, else_, _) => {
       for w in whens {
         collect_refs(w.0, resolve, needed)
@@ -338,6 +339,8 @@ fn rewrite_refs(e : PhysExpr, m : (Int) -> Int) -> PhysExpr {
       FuncE(name, new_args, dt)
     }
     CastE(inner, dt) => CastE(rewrite_refs(inner, m), dt)
+    DateArithE(inner, qty, unit) =>
+      DateArithE(rewrite_refs(inner, m), qty, unit)
     CaseE(whens, else_, dt) => {
       let new_whens : Array[(PhysExpr, PhysExpr)] = []
       for w in whens {

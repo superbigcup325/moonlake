@@ -146,3 +146,16 @@ pub fn epoch_day(days : Int) -> Int {
   let (_, _, d) = civil_from_days(days)
   d
 }
+
+///|
+/// Shift epoch days by `n` calendar months (a year is 12 months),
+/// clamping the day of month to the target month's length
+/// (Jan 31 + 1 month = Feb 28; 1996-03-31 + 1 month = 1996-04-30).
+pub fn add_months(days : Int, n : Int) -> Int {
+  let (y, m, d) = civil_from_days(days)
+  let total = y * 12 + (m - 1) + n
+  let ny = total / 12
+  let nm = total - ny * 12 + 1
+  let dim = days_in_month(ny, nm)
+  days_from_civil(ny, nm, if d < dim { d } else { dim })
+}

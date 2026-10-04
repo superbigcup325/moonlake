@@ -32,6 +32,21 @@ pub extend ExtractField with Eq::{equal, not_equal}
 pub extend ExtractField with @debug.Debug::{to_repr}
 
 ///|
+/// INTERVAL literal unit (`interval '90' day`); only date arithmetic
+/// consumes it.
+pub(all) enum IntervalUnit {
+  Days
+  Months
+  Years
+} derive(Eq, Debug)
+
+///|
+pub extend IntervalUnit with Eq::{equal, not_equal}
+
+///|
+pub extend IntervalUnit with @debug.Debug::{to_repr}
+
+///|
 pub(all) enum LExpr {
   Col(String)
   ColQ(String, String) // qualifier.name (table name or alias)
@@ -56,6 +71,7 @@ pub(all) enum LExpr {
   Exists(Select, Bool) // [NOT] EXISTS (SELECT ...), non-correlated, folded at bind
   Func(String, Array[LExpr]) // scalar function call (name lowercased)
   Cast(LExpr, @types.DataType) // CAST(expr AS type)
+  IntervalLit(Int64, IntervalUnit) // INTERVAL <n> day|month|year
 } derive(Eq, Debug)
 
 ///|

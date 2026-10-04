@@ -114,6 +114,7 @@ fn show_tok(t : Tok) -> String {
     KwIs => "IS"
     KwNull => "NULL"
     KwExtract => "EXTRACT"
+    KwInterval => "INTERVAL"
     KwYear => "YEAR"
     KwMonth => "MONTH"
     KwDay => "DAY"
@@ -679,6 +680,7 @@ fn parse_primary(p : Parser) -> LExpr raise @types.SqlError {
       p.expect(RParen)
       Extract(field, inner)
     }
+    KwInterval => parse_interval(p)
     other => {
       let found = show_tok(other)
       raise @types.SqlError::Parse("unexpected \{found} in expression")
@@ -718,6 +720,89 @@ fn parse_date_literal(p : Parser) -> LExpr raise @types.SqlError {
       raise @types.SqlError::Parse("expected string after DATE, found \{found}")
     }
   }
+}
+
+///|
+/// INTERVAL <string|int> <day|month|year> [ ( precision ) ]. The
+/// parenthesized precision suffix comes from the TPC-H dbgen texts
+/// (`interval ':1' day (3)`); it carries no meaning here and is parsed
+/// and dropped.
+fn parse_interval(p : Parser) -> LExpr raise @types.SqlError {
+  // a leading MINUS negates a bare-number quantity (`interval -90 day`)
+  let neg = p.eat(Minus)
+  let qty : Int64 = match p.advance() {
+    StrLit(s) =>
+      match parse_interval_qty(s) {
+        Some(v) => v
+        None =>
+          raise @types.SqlError::Parse(
+            "bad INTERVAL quantity \"\{s}\" (expected an integer)",
+          )
+      }
+    IntLit(v) => v.to_int64()
+    Int64Lit(v) => v
+    other => {
+      let found = show_tok(other)
+      raise @types.SqlError::Parse(
+        "expected quantity after INTERVAL, found \{found}",
+      )
+    }
+  }
+  let qty = if neg { -qty } else { qty }
+  let unit = match p.advance() {
+    KwDay => Days
+    KwMonth => Months
+    KwYear => Years
+    other => {
+      let found = show_tok(other)
+      raise @types.SqlError::Parse(
+        "expected DAY, MONTH or YEAR in INTERVAL, found \{found}",
+      )
+    }
+  }
+  if p.eat(LParen) {
+    match p.advance() {
+      IntLit(_) | Int64Lit(_) => ()
+      other => {
+        let found = show_tok(other)
+        raise @types.SqlError::Parse(
+          "expected precision after '(', found \{found}",
+        )
+      }
+    }
+    p.expect(RParen)
+  }
+  IntervalLit(qty, unit)
+}
+
+///|
+fn parse_interval_qty(s : String) -> Int64? {
+  let chars : Array[Char] = []
+  for ch in s {
+    chars.push(ch)
+  }
+  if chars.length() == 0 {
+    return None
+  }
+  let mut i = 0
+  let mut neg = false
+  if chars[0] == '-' || chars[0] == '+' {
+    neg = chars[0] == '-'
+    i = 1
+  }
+  if i >= chars.length() {
+    return None
+  }
+  let mut v : Int64 = 0L
+  while i < chars.length() {
+    let d = chars[i].to_int() - 48
+    if d < 0 || d > 9 {
+      return None
+    }
+    v = v * 10L + d.to_int64()
+    i = i + 1
+  }
+  Some(if neg { -v } else { v })
 }
 
 ///|

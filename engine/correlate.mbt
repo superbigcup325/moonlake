@@ -415,6 +415,7 @@ fn Correlator::side_of(self : Correlator, e : LExpr) -> RefSide {
       }
     }
     Lit(_) => NoneSide
+    IntervalLit(_, _) => NoneSide
     Arith(_, l, r) => self.side_of(l).merge(self.side_of(r))
     Cmp(_, l, r) => self.side_of(l).merge(self.side_of(r))
     And(l, r) => self.side_of(l).merge(self.side_of(r))
@@ -547,6 +548,7 @@ fn lift_inner_refs(
         }
       }
       Lit(_) => ()
+      IntervalLit(_, _) => ()
       Arith(_, l, r) => {
         visit(l)
         visit(r)
@@ -636,6 +638,7 @@ fn substitute_inner_refs(
       e
     }
     Lit(_) => e
+    IntervalLit(_, _) => e
     Arith(op, l, r) =>
       Arith(
         op,

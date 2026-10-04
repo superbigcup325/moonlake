@@ -97,6 +97,18 @@ fn eval_with(
       eval_func(name, vals)
     }
     CastE(inner, dt) => cast_scalar(eval_with(inner, get), dt)
+    DateArithE(inner, qty, unit) =>
+      match eval_with(inner, get) {
+        @types.Date(d) =>
+          @types.Date(
+            match unit {
+              Days => d + qty.to_int()
+              Months => @types.add_months(d, qty.to_int())
+              Years => @types.add_months(d, qty.to_int() * 12)
+            },
+          )
+        _ => @types.Null
+      }
   }
 }
 

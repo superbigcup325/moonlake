@@ -58,6 +58,15 @@ pub fn FromItem::equal(Self, Self) -> Bool
 pub fn FromItem::not_equal(Self, Self) -> Bool
 pub fn FromItem::to_repr(Self) -> @debug.Repr
 
+pub(all) enum IntervalUnit {
+  Days
+  Months
+  Years
+} derive(Eq, @debug.Debug)
+pub fn IntervalUnit::equal(Self, Self) -> Bool
+pub fn IntervalUnit::not_equal(Self, Self) -> Bool
+pub fn IntervalUnit::to_repr(Self) -> @debug.Repr
+
 pub(all) enum JoinKind {
   Inner
   Left
@@ -95,6 +104,7 @@ pub(all) enum LExpr {
   Exists(Select, Bool)
   Func(String, Array[LExpr])
   Cast(LExpr, @types.DataType)
+  IntervalLit(Int64, IntervalUnit)
 } derive(Eq, @debug.Debug)
 pub fn LExpr::equal(Self, Self) -> Bool
 pub fn LExpr::not_equal(Self, Self) -> Bool
@@ -125,6 +135,7 @@ pub(all) enum PhysExpr {
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
   FuncE(String, Array[PhysExpr], @types.DataType)
   CastE(PhysExpr, @types.DataType)
+  DateArithE(PhysExpr, Int64, IntervalUnit)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 

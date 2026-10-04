@@ -30,6 +30,8 @@ pub(all) enum PhysExpr {
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
   FuncE(String, Array[PhysExpr], @types.DataType) // scalar function, name lowercased
   CastE(PhysExpr, @types.DataType) // CAST(expr AS type)
+  // date +/- interval, quantity sign folded at bind (Sub negates)
+  DateArithE(PhysExpr, Int64, IntervalUnit)
 } derive(Debug)
 
 ///|
@@ -427,6 +429,7 @@ fn contains_agg(e : LExpr) -> Bool {
     IsNull(v, _) => return contains_agg(v)
     Star => return false
     Extract(_, x) => return contains_agg(x)
+    IntervalLit(_, _) => return false
     Case(whens, else_) => {
       let mut found = false
       for when in whens {
@@ -533,6 +536,7 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
     IsNull(v, _) => self.col_mask(v)
     Star => raise @types.SqlError::Bind("'*' is only allowed as a select item")
     Extract(_, x) => self.col_mask(x)
+    IntervalLit(_, _) => 0
     Case(whens, else_) => {
       let mut m = 0
       for when in whens {
@@ -1158,9 +1162,13 @@ fn Binder::bind(
           )
       }
     Arith(op, l, r) =>
-      // NULL literal operand: the live side fixes the arithmetic type and
-      // the result is NULL for every row (Scalar::arith propagates it)
-      if l is Lit(@types.Null) || r is Lit(@types.Null) {
+      // date +/- interval lowers to a dedicated node; the interval
+      // literal is invalid anywhere else
+      if l is IntervalLit(_, _) || r is IntervalLit(_, _) {
+        self.bind_date_arith(op, l, r, space)
+      } else if l is Lit(@types.Null) || r is Lit(@types.Null) {
+        // NULL literal operand: the live side fixes the arithmetic type and
+        // the result is NULL for every row (Scalar::arith propagates it)
         if l is Lit(@types.Null) && r is Lit(@types.Null) {
           raise @types.SqlError::Bind(
             "type of NULL cannot be inferred from NULL",
@@ -1412,7 +1420,49 @@ fn Binder::bind(
         castable(src_dt, dt)
         (CastE(pe, dt), dt)
       }
+    IntervalLit(_, _) =>
+      raise @types.SqlError::Bind(
+        "INTERVAL is only valid in date arithmetic (date +/- interval)",
+      )
   }
+}
+
+///|
+/// Lower `date +/- INTERVAL n unit` to DateArithE. The interval must
+/// pair with exactly one date-typed operand; subtraction requires the
+/// date on the left (`interval - date` has no meaning). The quantity's
+/// sign folds here so the evaluator only ever adds.
+fn Binder::bind_date_arith(
+  self : Binder,
+  op : @types.ArithOp,
+  l : LExpr,
+  r : LExpr,
+  space : Space,
+) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+  if op is @types.Mul || op is @types.Div || op is @types.Mod {
+    raise @types.SqlError::Bind(
+      "INTERVAL supports only addition and subtraction with dates",
+    )
+  }
+  let (ivl, date_e) = match (l, r) {
+    (IntervalLit(_, _), IntervalLit(_, _)) =>
+      raise @types.SqlError::Bind("two INTERVALs cannot combine")
+    (IntervalLit(_, _), other) => (l, other)
+    (other, IntervalLit(_, _)) => (r, other)
+    _ => (l, r) // unreachable: callers checked one side is IntervalLit
+  }
+  let (date_pe, date_dt) = self.bind(date_e, space)
+  if !(date_dt is @types.Date) {
+    raise @types.SqlError::Bind(
+      "INTERVAL arithmetic needs a DATE operand, got \{date_dt.to_string()}",
+    )
+  }
+  let (qty, unit) = match ivl {
+    IntervalLit(q, u) => (q, u)
+    _ => (0L, Days) // unreachable
+  }
+  let signed = if op is @types.Sub { -qty } else { qty }
+  (DateArithE(date_pe, signed, unit), @types.Date)
 }
 
 ///|

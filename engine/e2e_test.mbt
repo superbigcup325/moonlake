@@ -1289,3 +1289,75 @@ test "NOT IN over an empty subquery keeps every probe row" {
   )
   assert_eq(r2.row_count(), 0)
 }
+
+///|
+fn one_cell(sql : String, cat : @catalog.Catalog) -> @types.Scalar {
+  let r = run(sql, cat)
+  if r.row_count() != 1 {
+    abort("expected 1 row, got \{r.row_count()}")
+  }
+  r.get(0, 0)
+}
+
+///|
+test "date arithmetic with INTERVAL literals" {
+  let cat = q6_catalog()
+  // the Q1 shape: interval form equals the pre-computed date
+  let with_interval = one_cell(
+    "SELECT sum(l_extendedprice) AS s FROM lineitem WHERE l_shipdate <= date '1998-12-01' - interval '90' day",
+    cat,
+  )
+  let with_fixed = one_cell(
+    "SELECT sum(l_extendedprice) AS s FROM lineitem WHERE l_shipdate <= date '1998-09-02'",
+    cat,
+  )
+  assert_eq(with_interval, with_fixed)
+  // month arithmetic clamps to the target month's length:
+  // 1996-03-31 + 1 month is 1996-04-30, not 1996-05-01
+  assert_eq(
+    one_cell(
+      "SELECT count(*) AS c FROM lineitem WHERE date '1996-03-31' + interval '1' month = date '1996-04-30'",
+      cat,
+    ),
+    @types.Int64(8L),
+  )
+  assert_eq(
+    one_cell(
+      "SELECT count(*) AS c FROM lineitem WHERE date '1996-03-31' + interval '1' month >= date '1996-05-01'",
+      cat,
+    ),
+    @types.Int64(0L),
+  )
+  // year subtraction, and the bare-number interval form
+  assert_eq(
+    one_cell(
+      "SELECT count(*) AS c FROM lineitem WHERE date '1998-09-02' - interval 1 year = date '1997-09-02'",
+      cat,
+    ),
+    @types.Int64(8L),
+  )
+  // the interval rides on either side of +, and a column operand shifts
+  // every row (vector path)
+  assert_eq(
+    one_cell(
+      "SELECT count(*) AS c FROM lineitem WHERE interval '1' day + l_shipdate >= date '1996-03-14'",
+      cat,
+    ),
+    @types.Int64(1L),
+  )
+}
+
+///|
+test "INTERVAL outside date arithmetic is a bind error" {
+  let cat = q6_catalog()
+  let _ = run_err(
+    "SELECT l_quantity FROM lineitem WHERE l_quantity < interval '1' day", cat,
+  )
+  let _ = run_err(
+    "SELECT l_quantity FROM lineitem WHERE l_quantity < interval '1' day + interval '2' day",
+    cat,
+  )
+  let _ = run_err(
+    "SELECT l_quantity FROM lineitem WHERE interval '1' day * 3 > l_quantity", cat,
+  )
+}
