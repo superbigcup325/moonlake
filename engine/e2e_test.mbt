@@ -1381,3 +1381,65 @@ test "WHERE conjuncts spanning a LEFT join stay post-join" {
   )
   assert_eq(r2.row_count(), 3)
 }
+
+///|
+test "correlated scalar subqueries decorrelate to grouped LEFT joins" {
+  let cat = join_catalog()
+  // avg over the correlation group; the empty group (customer 2 has no
+  // orders) NULL-extends and the comparison filters the row
+  let r = run(
+    "SELECT cid FROM customers WHERE (SELECT avg(amount) FROM orders WHERE custkey = cid) > 7 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // max over the same group: customers 1 and 3 qualify, 2 does not
+  let r2 = run(
+    "SELECT cid FROM customers WHERE (SELECT max(amount) FROM orders WHERE custkey = cid) > 0 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Int32(1))
+  assert_eq(r2.get(1, 0), @types.Int32(3))
+  // the aggregate may sit inside a larger expression
+  let r3 = run(
+    "SELECT cid FROM customers WHERE (SELECT 2.0 * avg(amount) FROM orders WHERE custkey = cid) > 20 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 1)
+  assert_eq(r3.get(0, 0), @types.Int32(1))
+}
+
+///|
+test "correlated scalar subquery with a two-column correlation" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("p,s,cost\n1,1,10\n1,2,20\n2,1,5\n", "supply") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("p,s,cost\n1,1,10\n1,2,25\n", "want") catch {
+      e => abort("\{e}")
+    },
+  )
+  // q20 shape: both correlation columns key the grouped synthetic table
+  let r = run(
+    "SELECT p, s FROM want WHERE cost = (SELECT min(cost) FROM supply WHERE supply.p = want.p AND supply.s = want.s)",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(0, 1), @types.Int32(1))
+}
+
+///|
+test "a correlated scalar without an aggregate stays a clean error" {
+  // a plain scalar subquery can return several rows per outer row; the
+  // grouped-join rewrite would silently multiply them, so it must
+  // refuse and let the binder report the correlation
+  let _ = run_err(
+    "SELECT cid FROM customers WHERE (SELECT amount FROM orders WHERE custkey = cid) > 0",
+    join_catalog(),
+  )
+}

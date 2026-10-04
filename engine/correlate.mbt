@@ -81,6 +81,25 @@ fn decorrelate(
           Some(item) => extra_items.push(item)
           None => kept.push(lexpr)
         }
+      Cmp(op, outer_e, ScalarSub(sub)) =>
+        match
+          cor.try_scalar(op, outer_e, sub, extra_schemas, extra_batches, kept) {
+          Some(item) => extra_items.push(item)
+          None => kept.push(lexpr)
+        }
+      Cmp(op, ScalarSub(sub), outer_e) =>
+        match
+          cor.try_scalar(
+            op.flip(),
+            outer_e,
+            sub,
+            extra_schemas,
+            extra_batches,
+            kept,
+          ) {
+          Some(item) => extra_items.push(item)
+          None => kept.push(lexpr)
+        }
       _ => kept.push(lexpr)
     }
   }
@@ -261,6 +280,97 @@ fn Correlator::try_in(
     }
     None => None
   }
+}
+
+///|
+/// Classify a correlated scalar-subquery comparison
+/// `outer_expr <op> (SELECT agg-expr FROM ... WHERE corr = outer.col ...)`:
+/// the inner query runs grouped by the correlation keys as a LEFT join
+/// synthetic table (an empty group NULL-extends, and the rewritten
+/// comparison then filters the row — scalar-subquery NULL semantics).
+/// The select item must contain an aggregate, so every group yields
+/// exactly one row and the multiplicity of a plain scalar subquery
+/// cannot arise. Non-correlated subqueries stay on the runner path.
+fn Correlator::try_scalar(
+  self : Correlator,
+  op : @types.CmpOp,
+  outer_e : LExpr,
+  sub : Select,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+  kept : Array[LExpr],
+) -> FromItem? raise @types.SqlError {
+  if !(sub.group_by.length() == 0) ||
+    sub.having is Some(_) ||
+    sub.limit is Some(_) ||
+    sub.offset is Some(_) ||
+    sub.distinct ||
+    sub.setop is Some(_) {
+    return None
+  }
+  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
+    return None
+  }
+  // the outer value must not reference the inner tables
+  match self.side_of(outer_e) {
+    Outer | NoneSide => ()
+    _ => return None
+  }
+  let (pairs, inner_only, residual) = match self.prepare(sub) {
+    Some(triple) => triple
+    None => return None
+  }
+  if pairs.length() == 0 || residual.length() > 0 {
+    return None
+  }
+  // the inner side of every pair is a group key; the value rides along
+  let items : Array[SelectItem] = []
+  let group_by : Array[LExpr] = []
+  for p in pairs {
+    items.push({ expr: p.0, label: Some("__sk\{group_by.length()}"), })
+    group_by.push(p.0)
+  }
+  items.push({ expr: sub.items[0].expr, label: Some("__sk\{pairs.length()}"), })
+  let filter : LExpr? = match inner_only.length() {
+    0 => None
+    _ => {
+      let mut acc = inner_only[0]
+      for i in 1..<inner_only.length() {
+        acc = And(acc, inner_only[i])
+      }
+      Some(acc)
+    }
+  }
+  let inner_sel : Select = {
+    from: sub.from,
+    filter,
+    group_by,
+    having: None,
+    items,
+    order_by: [],
+    limit: None,
+    offset: None,
+    distinct: false,
+    setop: None,
+  }
+  let inner = run_parsed(inner_sel, self.catalog)
+  let name = "__scalar\{self.counter}"
+  self.counter = self.counter + 1
+  let columns : Array[@catalog.Column] = []
+  for i, t in inner.types() {
+    columns.push({ name: "__sk\{i}", dtype: t, })
+  }
+  extra_schemas.push({ table: name, columns, })
+  extra_batches.push([inner.batch()])
+  // ON: the correlation equalities; the rewritten comparison stays in
+  // the WHERE pool and classifies as the step residual (or a hash key
+  // when the comparison is an equality)
+  let mut on : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
+  for i in 1..<pairs.length() {
+    on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
+  }
+  kept.push(Cmp(op, outer_e, ColQ(name, "__sk\{pairs.length()}")))
+  Some({ table: Named(name), tbl_alias: Some(name), join: Left, on: Some(on), })
 }
 
 ///|

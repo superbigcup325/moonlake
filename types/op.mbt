@@ -20,6 +20,19 @@ pub(all) enum CmpOp {
 } derive(Eq, Debug)
 
 ///|
+/// The operator that compares swapped operands: `a < b` is `b.flip > a`.
+pub fn CmpOp::flip(self : CmpOp) -> CmpOp {
+  match self {
+    Eq => Eq
+    Neq => Neq
+    Lt => Gt
+    Le => Ge
+    Gt => Lt
+    Ge => Le
+  }
+}
+
+///|
 /// Apply a comparison operator to a three-valued ordering result
 /// (Scalar::compare output): None ordering stays NULL.
 pub fn CmpOp::apply(self : CmpOp, ord : Int?) -> Scalar {

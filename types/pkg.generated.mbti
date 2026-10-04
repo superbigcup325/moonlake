@@ -78,6 +78,7 @@ pub(all) enum CmpOp {
 } derive(Eq, @debug.Debug)
 pub fn CmpOp::apply(Self, Int?) -> Scalar
 pub fn CmpOp::equal(Self, Self) -> Bool
+pub fn CmpOp::flip(Self) -> Self
 pub fn CmpOp::not_equal(Self, Self) -> Bool
 pub fn CmpOp::to_repr(Self) -> @debug.Repr
 
