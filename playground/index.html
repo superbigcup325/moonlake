@@ -60,7 +60,6 @@ let load = null; // (sql) => JSON string, set by whichever loader ran
 
 function loadCSV(text, name) {
   const stem = name.replace(/\.csv$/i, '');
-  csvText = text;
   load = sql => instance.exports.run(text, stem, sql);
   afterLoad(name, text.length);
 }

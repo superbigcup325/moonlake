@@ -318,7 +318,12 @@ fn Parser::reparse_cte(
 }
 
 ///|
-fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
+/// One table reference: a parenthesized subquery, a WITH name (which
+/// shadows catalog tables and qualifies itself when bare), or a named
+/// table — each with its optional alias and derived-column list.
+fn parse_table_ref(
+  p : Parser,
+) -> (TableRef, String?, Array[String]?) raise @types.SqlError {
   let table : TableRef = if p.peek() is LParen {
     let _ = p.advance()
     p.expect(KwSelect)
@@ -327,18 +332,16 @@ fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
     Sub(inner)
   } else {
     match p.peek() {
-      // a WITH name shadows same-named catalog tables
       Ident(name) =>
         if p.ctes.contains(name) {
           let _ = p.advance()
-          let tref : TableRef = Sub(p.reparse_cte(name))
-          // the CTE name is its own qualifier when no alias is given
           let tbl_alias = match parse_alias_opt(p) {
             Some(a) => Some(a)
-            None => Some(name)
+            None => Some(name) // the CTE name is its own qualifier
           }
+          let tref : TableRef = Sub(p.reparse_cte(name))
           let col_aliases = parse_col_alias_list(p, tref, tbl_alias)
-          return { table: tref, tbl_alias, col_aliases, join: Inner, on: None, }
+          return (tref, tbl_alias, col_aliases)
         } else {
           Named(parse_table_name(p))
         }
@@ -347,6 +350,12 @@ fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
   }
   let tbl_alias = parse_alias_opt(p)
   let col_aliases = parse_col_alias_list(p, table, tbl_alias)
+  (table, tbl_alias, col_aliases)
+}
+
+///|
+fn parse_table_item(p : Parser) -> FromItem raise @types.SqlError {
+  let (table, tbl_alias, col_aliases) = parse_table_ref(p)
   { table, tbl_alias, col_aliases, join: Inner, on: None, }
 }
 
@@ -454,15 +463,14 @@ fn parse_join_item(p : Parser) -> FromItem? raise @types.SqlError {
   } else {
     return None
   }
-  let table : TableRef = Named(parse_table_name(p))
-  let tbl_alias = parse_alias_opt(p)
+  let (table, tbl_alias, col_aliases) = parse_table_ref(p)
   let on : LExpr? = if kind is Cross {
     None
   } else {
     p.expect(KwOn)
     Some(parse_or(p))
   }
-  Some({ table, tbl_alias, col_aliases: None, join: kind, on, })
+  Some({ table, tbl_alias, col_aliases, join: kind, on, })
 }
 
 ///|

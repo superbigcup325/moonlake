@@ -1502,3 +1502,24 @@ test "correlated scalar without an aggregate reports itself" {
   let msg = e.to_string()
   assert_true(msg.contains("aggregate"))
 }
+
+///|
+test "derived tables join with the explicit JOIN syntax" {
+  let cat = join_catalog()
+  let r = run(
+    "SELECT cid, n FROM customers JOIN (SELECT custkey, count(*) FROM orders GROUP BY custkey) AS oc (k, n) ON cid = k ORDER BY cid",
+    cat,
+  )
+  // customers 1 and 3 have orders (2 and 1), customer 2 has none
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  assert_eq(r.get(0, 1), @types.Int64(2))
+  assert_eq(r.get(1, 0), @types.Int32(3))
+  assert_eq(r.get(1, 1), @types.Int64(1))
+  // a CTE joins the same way
+  let r2 = run(
+    "WITH bycust AS (SELECT custkey, count(*) FROM orders GROUP BY custkey) SELECT cid FROM customers JOIN bycust ON cid = custkey ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 2)
+}
