@@ -1700,3 +1700,37 @@ test "overflow battery: defined semantics at every numeric boundary" {
   let r5 = run("SELECT count(*) AS c FROM num WHERE v <> 0", cat)
   assert_eq(r5.get(0, 0), @types.Int64(5L))
 }
+
+///|
+test "sum overflow is a clean error, never a silent wrap" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("v\n9223372036854775807\n9223372036854775807\n", "big") catch {
+      e => abort("\{e}")
+    },
+  )
+  let e = run_err("SELECT sum(v) AS s FROM big", cat)
+  let msg = e.to_string()
+  assert_true(msg.contains("overflows int64"))
+  // small sums are untouched
+  let r = run("SELECT sum(v) AS s FROM big WHERE v < 0", cat)
+  assert_eq(r.get(0, 0), @types.Null) // no rows below zero: NULL sum
+}
+
+///|
+test "UNION branches reject ORDER BY / LIMIT; the whole union keeps them" {
+  let cat = join_catalog()
+  // branch-level LIMIT would silently truncate one side first
+  let e = run_err(
+    "SELECT cid FROM customers WHERE cid = 1 ORDER BY cid LIMIT 1 UNION ALL SELECT cid FROM customers",
+    cat,
+  )
+  assert_true(e.to_string().contains("UNION branch"))
+  // ORDER BY / LIMIT after the union apply to the whole result
+  let r = run(
+    "SELECT cid FROM customers WHERE cid = 1 UNION ALL SELECT cid FROM customers WHERE cid = 3 ORDER BY cid LIMIT 1",
+    cat,
+  )
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+}

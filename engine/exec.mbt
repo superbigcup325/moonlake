@@ -54,7 +54,7 @@ fn take_rows(
 ///|
 /// One running accumulator per aggregate spec.
 priv enum Acc {
-  SumI(Int64, Bool) // value, has_seen_non_null
+  SumI(Int64, Bool, Bool) // value, has_seen_non_null, overflowed
   SumF(Double, Bool)
   AvgF(Double, Int64) // sum, count of non-null inputs
   CountOf(Int64)
@@ -70,7 +70,7 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
       match spec.kind {
         Sum =>
           match spec.out_type {
-            @types.Int64 => SumI(0L, false)
+            @types.Int64 => SumI(0L, false, false)
             _ => SumF(0.0, false)
           }
         Avg => AvgF(0.0, 0L)
@@ -108,12 +108,27 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
       @types.Null => acc // aggregates ignore NULL inputs
       v =>
         match acc {
-          SumI(s, _) =>
+          SumI(s, _, ov) => {
+            // checked add: overflow when the operands share a sign that
+            // the sum does not (int64 sums wrap silently otherwise)
+            fn checked(a : Int64, b : Int64) -> (Int64, Bool) {
+              let sum = a + b
+              let ov = ((a ^ sum) & (b ^ sum)) < 0L
+              (sum, ov)
+            }
+
             match v {
-              @types.Int32(x) => SumI(s + x.to_int64(), true)
-              @types.Int64(x) => SumI(s + x, true)
+              @types.Int32(x) => {
+                let (sum, o2) = checked(s, x.to_int64())
+                SumI(sum, true, ov || o2)
+              }
+              @types.Int64(x) => {
+                let (sum, o2) = checked(s, x)
+                SumI(sum, true, ov || o2)
+              }
               _ => acc
             }
+          }
           SumF(s, _) =>
             match as_double(v) {
               Some(x) => SumF(s + x, true)
@@ -149,9 +164,13 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
 }
 
 ///|
-fn acc_finish(acc : Acc) -> @types.Scalar {
+fn acc_finish(acc : Acc) -> @types.Scalar raise @types.SqlError {
   match acc {
-    SumI(s, seen) => if seen { @types.Int64(s) } else { @types.Null }
+    SumI(_, _, true) =>
+      raise @types.SqlError::Execute(
+        "sum() overflows int64; widen the input or filter values",
+      )
+    SumI(s, seen, _) => if seen { @types.Int64(s) } else { @types.Null }
     SumF(s, seen) => if seen { @types.Float64(s) } else { @types.Null }
     AvgF(s, c) =>
       if c > 0L {

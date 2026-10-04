@@ -136,6 +136,16 @@ pub fn parse_select(sql : String) -> Select raise @types.SqlError {
   // UNION [ALL|DISTINCT] chains associate left; per-branch ORDER BY is
   // not supported (parenthesize into derived tables for that)
   while p.peek() is Ident(un) && ascii_lower(un) == "union" {
+    // standard SQL: ORDER BY / LIMIT / OFFSET belong to the whole set
+    // operation; a branch carrying them is a syntax error elsewhere and
+    // silently changes meaning here (the branch limits itself first)
+    if sel.order_by.length() > 0 ||
+      sel.limit is Some(_) ||
+      sel.offset is Some(_) {
+      raise @types.SqlError::Parse(
+        "ORDER BY / LIMIT / OFFSET on a UNION branch is not supported; move them to the end of the union",
+      )
+    }
     let _ = p.advance()
     let all = if p.eat(KwDistinct) {
       false
