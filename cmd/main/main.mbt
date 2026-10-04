@@ -31,6 +31,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   let paths : Array[(String, String)] = [] // (kind, path)
   let date_cols : Array[String] = []
   let mut explain = false
+  let mut analyze = false
   let mut json = false
   let mut sql_file : String? = None
   let mut i = 2
@@ -48,6 +49,9 @@ fn exec_command(args : Array[String]) -> Unit raise {
       i += 2
     } else if args[i] == "--explain" {
       explain = true
+      i += 1
+    } else if args[i] == "--analyze" {
+      analyze = true
       i += 1
     } else if args[i] == "--json" {
       json = true
@@ -136,12 +140,17 @@ fn exec_command(args : Array[String]) -> Unit raise {
       )
     }
   }
-  if explain {
-    println(
+  if explain || analyze {
+    let rendered = if analyze {
+      @engine.explain_analyze(sql, cat) catch {
+        err => raise cli_fail(err.to_string())
+      }
+    } else {
       @engine.explain(sql, cat) catch {
         err => raise cli_fail(err.to_string())
-      },
-    )
+      }
+    }
+    println(rendered)
     return
   }
   let result = @moonlake.execute(sql, cat) catch {
@@ -348,6 +357,7 @@ fn usage() -> String {
     #|    exec options:
     #|      --date-col <c>        declare a Parquet column as DATE (epoch-day)
     #|      --explain             print the physical plan instead of running
+    #|      --analyze             run it: plan plus actual rows per stage
     #|      --json                emit the result as one JSON array line
     #|
     #|Options:

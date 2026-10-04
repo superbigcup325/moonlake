@@ -45,7 +45,7 @@ pub fn run_select(
   catalog : @catalog.Catalog,
 ) -> SelectResult raise @types.SqlError {
   let sel = parse_select(sql)
-  run_parsed(sel, catalog)
+  run_parsed(sel, catalog, [])
 }
 
 ///|
@@ -55,6 +55,7 @@ pub fn run_select(
 fn run_parsed(
   sel : Select,
   catalog : @catalog.Catalog,
+  stats : Array[(String, Int)],
 ) -> SelectResult raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
   // pre-executed synthetic tables before anything else runs
@@ -106,7 +107,7 @@ fn run_parsed(
         }
       }
       Sub(inner) => {
-        let r = run_parsed(inner, catalog)
+        let r = run_parsed(inner, catalog, [])
         let names = r.names()
         let types = r.types()
         // an explicit column alias list renames the outputs positionally
@@ -148,16 +149,30 @@ fn run_parsed(
   let narrowed : Array[Array[@types.DataBatch]] = []
   for k in 0..<tables.length() {
     narrowed.push(narrow_batches(tables[k], plan.table_cols[k]))
+    if stats.length() > 0 || true {
+      let mut rows = 0
+      for bt in tables[k] {
+        rows += bt.row_count()
+      }
+      stats.push(("scan \{schemas[k].table}", rows))
+    }
   }
   let joined = exec_joins(narrowed, bq.steps, bq.deferred)
+  if bq.steps.length() > 1 {
+    let mut joined_rows = 0
+    for bt in joined {
+      joined_rows += bt.row_count()
+    }
+    stats.push(("joins", joined_rows))
+  }
   let kept : Array[@types.DataBatch] = if bq.aggregate {
     let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
-    [
-      match bq.having {
-        Some(h) => compact(grouped, eval_mask(h, grouped))
-        None => grouped
-      },
-    ]
+    let grouped = match bq.having {
+      Some(h) => compact(grouped, eval_mask(h, grouped))
+      None => grouped
+    }
+    stats.push(("aggregate", grouped.row_count()))
+    [grouped]
   } else {
     joined
   }
@@ -178,7 +193,31 @@ fn run_parsed(
   } else {
     order_limit(projected, bq.order_keys, bq.limit, bq.offset)
   }
+  if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
+    stats.push(("result", batch.row_count()))
+  }
   { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// Run the query and render the physical plan annotated with the
+/// actual row counts each stage produced — scans, join outputs,
+/// aggregate groups and the final result. No clocks: row counts are
+/// the deterministic part of ANALYZE.
+pub fn explain_analyze(
+  sql : String,
+  catalog : @catalog.Catalog,
+) -> String raise @types.SqlError {
+  let stats : Array[(String, Int)] = []
+  let result = run_parsed(parse_select(sql), catalog, stats)
+  let sb = StringBuilder()
+  sb.write_string(explain(sql, catalog))
+  sb.write_string("\n-- actual rows")
+  for (stage, rows) in stats {
+    sb.write_string("\n\{stage}: \{rows}")
+  }
+  let _ = result
+  sb.to_string()
 }
 
 ///|
@@ -301,7 +340,7 @@ fn run_setop(
   // binds tighter and collapses first, UNION / EXCEPT run left-to-right
   let work_results : Array[SelectResult] = []
   for c in cores {
-    work_results.push(run_parsed(c, catalog))
+    work_results.push(run_parsed(c, catalog, []))
   }
   let mut work_results = work_results
   let mut work_ops = ops

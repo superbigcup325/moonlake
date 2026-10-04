@@ -142,7 +142,7 @@ fn SubqueryRunner::run_scalar(
   self : SubqueryRunner,
   sel : Select,
 ) -> (@types.Scalar, @types.DataType) raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog)
+  let r = run_parsed(sel, self.catalog, [])
   if r.names().length() != 1 {
     raise @types.SqlError::Bind(
       "scalar subquery must return exactly one column",
@@ -169,7 +169,7 @@ fn SubqueryRunner::run_exists(
   self : SubqueryRunner,
   sel : Select,
 ) -> Bool raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog)
+  let r = run_parsed(sel, self.catalog, [])
   r.row_count() > 0
 }
 
@@ -178,7 +178,7 @@ fn SubqueryRunner::run_key_set(
   self : SubqueryRunner,
   sel : Select,
 ) -> (Map[String, Bool], Bool, @types.DataType) raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog)
+  let r = run_parsed(sel, self.catalog, [])
   if r.names().length() != 1 {
     raise @types.SqlError::Bind("IN subquery must return exactly one column")
   }

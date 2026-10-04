@@ -1961,3 +1961,16 @@ test "string_agg concatenates with a literal separator" {
   // a dynamic separator is rejected
   let _ = run_err("SELECT string_agg(seg, seg) FROM customers", cat)
 }
+
+///|
+test "explain_analyze reports actual rows per stage" {
+  let cat = join_catalog()
+  let text = @engine.explain_analyze(
+    "SELECT count(*) AS c FROM customers, orders WHERE cid = custkey", cat,
+  )
+  assert_true(text.contains("scan customers: 3"))
+  assert_true(text.contains("scan orders: 4"))
+  assert_true(text.contains("joins: 3")) // NULL custkey never matches
+  assert_true(text.contains("aggregate: 1"))
+  assert_true(text.contains("result: 1"))
+}

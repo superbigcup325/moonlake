@@ -14,6 +14,8 @@ pub fn eval_vec(PhysExpr, @types.DataBatch) -> @types.ColumnVector raise @types.
 
 pub fn explain(String, @catalog.Catalog) -> String raise @types.SqlError
 
+pub fn explain_analyze(String, @catalog.Catalog) -> String raise @types.SqlError
+
 pub fn parse_select(String) -> Select raise @types.SqlError
 
 pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError

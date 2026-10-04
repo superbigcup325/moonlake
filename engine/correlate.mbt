@@ -320,7 +320,7 @@ fn Correlator::try_exists_grouped(
     distinct: false,
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog)
+  let inner = run_parsed(inner_sel, self.catalog, [])
   let name = "__semi\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -495,7 +495,7 @@ fn Correlator::build_scalar_table(
     distinct: false,
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog)
+  let inner = run_parsed(inner_sel, self.catalog, [])
   let name = "__scalar\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -688,7 +688,7 @@ fn Correlator::finish_semi(
     distinct: false,
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog)
+  let inner = run_parsed(inner_sel, self.catalog, [])
   // NOT IN poison: a NULL anywhere in the inner key column makes every
   // comparison unknown, so the whole conjunct becomes constant false
   if check_null_in_key && negated {
