@@ -308,6 +308,22 @@ fn canonical_key(vals : Array[@types.Scalar]) -> String {
 }
 
 ///|
+/// How the group index maps a row to its group id. Single int and
+/// single string keys hash the raw column value — no per-row key
+/// building at all (the string key IS the column's string); every other
+/// shape shares one reusable key builder and materializes the boxed
+/// key row once per group, not once per row. Nulls never enter the
+/// maps: the first null-keyed row opens a shared null group.
+priv enum Grouper {
+  GZero // no GROUP BY: exactly one group
+  GI32(Map[Int64, Int])
+  GI64(Map[Int64, Int])
+  GDate(Map[Int64, Int])
+  GStr(Map[String, Int])
+  GText(Map[String, Int], StringBuilder)
+}
+
+///|
 /// Hash aggregation: one output row per distinct group key (in first-
 /// seen order). With no GROUP BY the result is exactly one row, even for
 /// empty input.
@@ -319,9 +335,23 @@ fn aggregate(
 ) -> @types.DataBatch raise @types.SqlError {
   let g = group_exprs.length()
   let m = aggs.length()
-  let index : Map[String, Int] = Map([])
+  let grouper : Grouper = if g == 0 {
+    GZero
+  } else if g == 1 {
+    match group_types[0] {
+      @types.Int32 => GI32(Map([]))
+      @types.Int64 => GI64(Map([]))
+      @types.Date => GDate(Map([]))
+      @types.Str => GStr(Map([]))
+      _ => GText(Map([]), StringBuilder())
+    }
+  } else {
+    GText(Map([]), StringBuilder())
+  }
   let group_keys : Array[Array[@types.Scalar]] = []
   let acc_rows : Array[Array[Acc]] = []
+  let mut null_gi = -1
+  let mut zero_created = false
   for batch in batches {
     // evaluate group keys and aggregate inputs once per batch, then the
     // row loop reads the materialized columns
@@ -337,19 +367,192 @@ fn aggregate(
       }
     }
     for r in 0..<batch.row_count() {
-      let kv : Array[@types.Scalar] = []
-      for c in key_cols {
-        kv.push(c.get(r))
-      }
-      let key = canonical_key(kv)
-      let gi = match index.get(key) {
-        Some(i) => i
-        None => {
-          let i = group_keys.length()
-          index[key] = i
-          group_keys.push(kv)
-          acc_rows.push(new_accs(aggs))
-          i
+      let gi = match grouper {
+        GZero =>
+          if zero_created {
+            0
+          } else {
+            zero_created = true
+            group_keys.push([])
+            acc_rows.push(new_accs(aggs))
+            0
+          }
+        GI32(map) =>
+          match key_cols[0] {
+            @types.I32(d, valid) =>
+              if valid[r] {
+                let k = d[r].to_int64()
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Int32(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (int32)",
+              )
+          }
+        GI64(map) =>
+          match key_cols[0] {
+            @types.I64(d, valid) =>
+              if valid[r] {
+                let k = d[r]
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Int64(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (int64)",
+              )
+          }
+        GDate(map) =>
+          match key_cols[0] {
+            @types.DateV(d, valid) =>
+              if valid[r] {
+                let k = d[r].to_int64()
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Date(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (date)",
+              )
+          }
+        GStr(map) =>
+          match key_cols[0] {
+            @types.StrV(d, valid) =>
+              if valid[r] {
+                let k = d[r]
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Str(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (string)",
+              )
+          }
+        GText(map, sb) => {
+          sb.reset()
+          // injective per position: null is 'N', strings are
+          // length-prefixed, the \u{0001} separator ends each component;
+          // dtypes are fixed per position so no type tags are needed
+          for c in 0..<g {
+            let vec = key_cols[c]
+            match vec {
+              @types.I32(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.I64(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.F64(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.BoolV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(if d[r] { "T" } else { "F" })
+                } else {
+                  sb.write_char('N')
+                }
+              @types.StrV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].length().to_string())
+                  sb.write_char(':')
+                  sb.write_string(d[r])
+                } else {
+                  sb.write_char('N')
+                }
+              @types.DateV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+            }
+            sb.write_char('\u{0001}')
+          }
+          let key = sb.to_string()
+          match map.get(key) {
+            Some(i) => i
+            None => {
+              let kv : Array[@types.Scalar] = []
+              for c in 0..<g {
+                kv.push(key_cols[c].get(r))
+              }
+              let i = group_keys.length()
+              map[key] = i
+              group_keys.push(kv)
+              acc_rows.push(new_accs(aggs))
+              i
+            }
+          }
         }
       }
       let row = acc_rows[gi]
