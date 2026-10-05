@@ -386,6 +386,71 @@ priv enum Grouper {
 }
 
 ///|
+/// A numeric aggregate input resolved to its raw typed arrays, so the
+/// fold loop skips the boxed Scalar per cell. MinMax (must return the
+/// input's own dtype), CountDistinct (needs the boxed key) and
+/// non-numeric inputs stay boxed.
+priv enum FastInput {
+  FBoxed(@types.ColumnVector)
+  FI32(FixedArray[Int], FixedArray[Bool])
+  FI64(FixedArray[Int64], FixedArray[Bool])
+  FF64(FixedArray[Double], FixedArray[Bool])
+}
+
+///|
+fn fast_input_of(v : @types.ColumnVector, spec : AggSpec) -> FastInput {
+  let numeric_kind = match spec.kind {
+    Sum | Avg | Count | SdSamp | SdPop | VarSamp | VarPop | Median => true
+    _ => false
+  }
+  if !numeric_kind {
+    return FBoxed(v)
+  }
+  match v {
+    @types.I32(d, valid) => FI32(d, valid)
+    @types.I64(d, valid) => FI64(d, valid)
+    @types.F64(d, valid) => FF64(d, valid)
+    _ => FBoxed(v)
+  }
+}
+
+///|
+/// Fold one valid numeric cell into the accumulator, given in both
+/// int64 and double views. Only the numeric fold kinds reach this —
+/// the binder never pairs them with a dtype the views cannot carry.
+fn acc_step_num(acc : Acc, as_int : Int64, as_f64 : Double) -> Unit {
+  match acc {
+    SumI(a) => {
+      // checked add, same rule as acc_step
+      let sum = a.sum + as_int
+      if ((a.sum ^ sum) & (as_int ^ sum)) < 0L {
+        a.overflowed = true
+      }
+      a.sum = sum
+      a.seen = true
+    }
+    SumF(a) => {
+      a.sum += as_f64
+      a.seen = true
+    }
+    AvgF(a) => {
+      a.sum += as_f64
+      a.count += 1L
+    }
+    CountOf(a) => a.count += 1L
+    VarF(a) => {
+      let c2 = a.count + 1L
+      let delta = as_f64 - a.mean
+      a.mean += delta / c2.to_double()
+      a.m2 += delta * (as_f64 - a.mean)
+      a.count = c2
+    }
+    MedV(a) => a.vals.push(as_f64)
+    _ => ()
+  }
+}
+
+///|
 /// Hash aggregation: one output row per distinct group key (in first-
 /// seen order). With no GROUP BY the result is exactly one row, even for
 /// empty input.
@@ -421,11 +486,12 @@ fn aggregate(
     for e in group_exprs {
       key_cols.push(eval_vec(e, batch))
     }
-    let input_cols : Array[@types.ColumnVector?] = []
+    let input_cols : Array[FastInput] = []
     for spec in aggs {
       match spec.input {
-        Some(e) => input_cols.push(Some(eval_vec(e, batch)))
-        None => input_cols.push(None)
+        Some(e) => input_cols.push(fast_input_of(eval_vec(e, batch), spec))
+        None =>
+          input_cols.push(FBoxed(@types.ColumnVector::make(@types.Int32, 0)))
       }
     }
     for r in 0..<batch.row_count() {
@@ -619,11 +685,29 @@ fn aggregate(
       }
       let row = acc_rows[gi]
       for i in 0..<m {
-        let input = match input_cols[i] {
-          Some(col) => col.get(r)
-          None => @types.Null
-        } // CountStar ignores it
-        acc_step(row[i], aggs[i], input)
+        // CountStar has no input column; its FBoxed placeholder is
+        // never read because acc_step short-circuits on CountStar
+        match input_cols[i] {
+          FI32(d, valid) =>
+            if valid[r] {
+              acc_step_num(row[i], d[r].to_int64(), d[r].to_double())
+            }
+          FI64(d, valid) =>
+            if valid[r] {
+              acc_step_num(row[i], d[r], d[r].to_double())
+            }
+          FF64(d, valid) => if valid[r] { acc_step_num(row[i], 0L, d[r]) }
+          FBoxed(col) => {
+            // CountStar has no input column: pass a placeholder rather
+            // than reading its empty vector; acc_step ignores it
+            let input = if aggs[i].kind is CountStar {
+              @types.Null
+            } else {
+              col.get(r)
+            }
+            acc_step(row[i], aggs[i], input)
+          }
+        }
       }
     }
   }
