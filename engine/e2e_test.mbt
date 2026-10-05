@@ -2398,3 +2398,34 @@ test "aggregate ORDER BY stays in-memory under a budget" {
     run_opts(q, cat, { budget: 900, spill: Some(mem_store()), }),
   )
 }
+
+///|
+/// Regression: final_merge concatenates 4096-capacity builder chunks;
+/// with more than 4096 result rows the last chunk is partial and the
+/// concat used to overrun the destination (row_count vs vector length).
+/// 5000 rows under a small budget forces runs, a multi-chunk merge and
+/// a no-LIMIT full pass through concat_batches.
+test "spill merge past 4096 rows: partial last chunk concatenates" {
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<5000 {
+    sb.write_string("g\{i % 7},\{(i * 37) % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  let q = "SELECT k, v FROM t ORDER BY v, k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 3000, spill: Some(mem_store()), }),
+  )
+  // LIMIT bounds the merge window but the earlier chunks still concat
+  let q2 = "SELECT k, v FROM t ORDER BY v DESC, k LIMIT 4097"
+  assert_same_result(
+    run(q2, cat),
+    run_opts(q2, cat, { budget: 3000, spill: Some(mem_store()), }),
+  )
+}

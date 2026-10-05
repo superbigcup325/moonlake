@@ -1225,7 +1225,10 @@ fn concat_batches(
     let dst = @types.ColumnVector::make(dt, total)
     let mut w = 0
     for b in batches {
-      copy_vec_range(dst, w, b.columns()[c])
+      // copy exactly the batch's live rows: builder-produced batches
+      // carry capacity-sized vectors (4096) whose length exceeds
+      // row_count — copying by vector length overruns the destination
+      copy_vec_range(dst, w, b.columns()[c], b.row_count())
       w += b.row_count()
     }
     columns.push(dst)
@@ -1234,15 +1237,15 @@ fn concat_batches(
 }
 
 ///|
-/// Copy one vector's rows into another at the given offset. Same dtype
-/// by construction (concat batches share a layout); the fallback mirrors
-/// ColumnVector::set's silent mismatch ignore.
+/// Copy `n` rows of one vector into another at the given offset. Same
+/// dtype by construction (concat batches share a layout); the fallback
+/// mirrors ColumnVector::set's silent mismatch ignore.
 fn copy_vec_range(
   dst : @types.ColumnVector,
   w : Int,
   src : @types.ColumnVector,
+  n : Int,
 ) -> Unit {
-  let n = src.len()
   match (dst, src) {
     (@types.I32(dd, dv), @types.I32(sd, sv)) =>
       for i in 0..<n {
