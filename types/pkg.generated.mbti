@@ -130,6 +130,7 @@ pub(all) enum Scalar {
 } derive(Eq, @debug.Debug)
 pub fn Scalar::arith(ArithOp, Self, Self) -> Self
 pub fn Scalar::compare(Self, Self) -> Int?
+pub fn Scalar::compare_nn(Self, Self) -> Int
 pub fn Scalar::equal(Self, Self) -> Bool
 pub fn Scalar::logic_and(Self, Self) -> Self
 pub fn Scalar::logic_not(Self) -> Self

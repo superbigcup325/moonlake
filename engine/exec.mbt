@@ -246,14 +246,11 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Unit {
             a.cur = v
             a.seen = true
           } else {
-            match @types.Scalar::compare(v, a.cur) {
-              Some(c) =>
-                match spec.kind {
-                  Min => if c < 0 { a.cur = v }
-                  Max => if c > 0 { a.cur = v }
-                  _ => ()
-                }
-              None => ()
+            let c = @types.Scalar::compare_nn(v, a.cur)
+            match spec.kind {
+              Min => if c < 0 { a.cur = v }
+              Max => if c > 0 { a.cur = v }
+              _ => ()
             }
           }
       }
@@ -807,17 +804,96 @@ fn cmp_decorated(
       (@types.Null, @types.Null) => 0
       (@types.Null, _) => if nf { -1 } else { 1 }
       (_, @types.Null) => if nf { 1 } else { -1 }
-      _ =>
-        match @types.Scalar::compare(x, y) {
-          Some(c) => if kv.1 { -c } else { c }
-          None => 0
+      _ => {
+        let c = @types.Scalar::compare_nn(x, y)
+        if kv.1 {
+          -c
+        } else {
+          c
         }
+      }
     }
     if ord != 0 {
       return ord
     }
   }
   a - b
+}
+
+///|
+/// NULL placement for one key comparison: Some(ord) when a null is
+/// involved (NULLS LAST by default, first when the key says so), None
+/// when both values are present.
+fn null_ord(xnull : Bool, ynull : Bool, nf : Bool) -> Int? {
+  if xnull && ynull {
+    Some(0)
+  } else if xnull {
+    Some(if nf { -1 } else { 1 })
+  } else if ynull {
+    Some(if nf { 1 } else { -1 })
+  } else {
+    None
+  }
+}
+
+///|
+/// Typed two-row comparison over one ORDER BY key column: reads the
+/// raw arrays — no boxed Scalars, no Option per comparison. Desc and
+/// NULLS FIRST/LAST are applied here, mirroring cmp_decorated.
+fn cmp_vec_rows(
+  key : @types.ColumnVector,
+  ia : Int,
+  ib : Int,
+  desc : Bool,
+  nf : Bool,
+) -> Int {
+  fn finish(c : Int) -> Int {
+    if desc {
+      -c
+    } else {
+      c
+    }
+  }
+
+  match key {
+    @types.I32(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None => finish(ord_i(d[ia], d[ib]))
+      }
+    @types.I64(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None => finish(ord_i64(d[ia], d[ib]))
+      }
+    @types.F64(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None => finish(ord_f(d[ia], d[ib]))
+      }
+    @types.BoolV(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None =>
+          finish(
+            match (d[ia], d[ib]) {
+              (false, true) => -1
+              (true, false) => 1
+              _ => 0
+            },
+          )
+      }
+    @types.StrV(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None => finish(d[ia].lexical_compare(d[ib]))
+      }
+    @types.DateV(d, valid) =>
+      match null_ord(!valid[ia], !valid[ib], nf) {
+        Some(o) => o
+        None => finish(ord_i(d[ia], d[ib]))
+      }
+  }
 }
 
 ///|
@@ -833,28 +909,40 @@ fn order_limit(
     indices.push(i)
   }
   if keys.length() > 0 {
-    // decorate: read each sort key column once, then compare arrays
-    let key_cols : Array[Array[@types.Scalar]] = []
+    // sort against the key columns themselves: raw typed reads in the
+    // comparator, no per-row Scalar decoration
+    let key_vecs : Array[@types.ColumnVector] = []
+    let descs : Array[Bool] = []
+    let nfs : Array[Bool] = []
     for kv in keys {
-      let col = batch.columns()[kv.0]
-      let vals : Array[@types.Scalar] = []
-      for r in 0..<n {
-        vals.push(col.get(r))
+      key_vecs.push(batch.columns()[kv.0])
+      descs.push(kv.1)
+      nfs.push(
+        match kv.2 {
+          Some(f) => f
+          None => false
+        },
+      )
+    }
+    fn cmp_rows(a : Int, b : Int) -> Int {
+      for k in 0..<key_vecs.length() {
+        let ord = cmp_vec_rows(key_vecs[k], a, b, descs[k], nfs[k])
+        if ord != 0 {
+          return ord
+        }
       }
-      key_cols.push(vals)
+      a - b
     }
-    let nfs : Array[Bool?] = []
-    for kv in keys {
-      nfs.push(kv.2)
-    }
-    indices.sort_by((a, b) => cmp_decorated(key_cols, keys, nfs, a, b))
+
+    indices.sort_by(cmp_rows)
   }
   take_rows(batch, window(indices, offset, limit))
 }
 
 ///|
 /// Sort by key expressions over the pre-projection row, then apply the
-/// offset/limit window. Decorates via the vectorized evaluator.
+/// offset/limit window. Key expressions evaluate once via the
+/// vectorized evaluator; the comparator reads their vectors raw.
 fn sort_exprs(
   batch : @types.DataBatch,
   keys : Array[(PhysExpr, Bool, Bool?)],
@@ -867,23 +955,30 @@ fn sort_exprs(
     indices.push(i)
   }
   if keys.length() > 0 {
-    let key_cols : Array[Array[@types.Scalar]] = []
-    let nfs : Array[Bool?] = []
+    let key_vecs : Array[@types.ColumnVector] = []
+    let descs : Array[Bool] = []
+    let nfs : Array[Bool] = []
     for k in keys {
-      let vec = eval_vec(k.0, batch)
-      let vals : Array[@types.Scalar] = []
-      for r in 0..<n {
-        vals.push(vec.get(r))
+      key_vecs.push(eval_vec(k.0, batch))
+      descs.push(k.1)
+      nfs.push(
+        match k.2 {
+          Some(f) => f
+          None => false
+        },
+      )
+    }
+    fn cmp_rows(a : Int, b : Int) -> Int {
+      for k in 0..<key_vecs.length() {
+        let ord = cmp_vec_rows(key_vecs[k], a, b, descs[k], nfs[k])
+        if ord != 0 {
+          return ord
+        }
       }
-      key_cols.push(vals)
-      nfs.push(k.2)
+      a - b
     }
-    // cmp_decorated keys on column indexes
-    let kds : Array[(Int, Bool, Bool?)] = []
-    for i, k in keys {
-      kds.push((i, k.1, k.2))
-    }
-    indices.sort_by((a, b) => cmp_decorated(key_cols, kds, nfs, a, b))
+
+    indices.sort_by(cmp_rows)
   }
   take_rows(batch, window(indices, offset, limit))
 }

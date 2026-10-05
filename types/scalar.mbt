@@ -2,6 +2,28 @@
 // All helpers take/return Scalar and propagate Null per SQL semantics.
 
 ///|
+/// Non-null total compare: -1|0|1, or 0 when the values do not compare
+/// (binder guarantees matching types). Callers that pre-filter NULL —
+/// sort comparators, min/max folds — use this instead of
+/// Scalar::compare to avoid an Option allocation per comparison.
+pub fn Scalar::compare_nn(a : Scalar, b : Scalar) -> Int {
+  match (a, b) {
+    (Int32(x), Int32(y)) => cmp_i(x, y)
+    (Int64(x), Int64(y)) => if x < y { -1 } else if x > y { 1 } else { 0 }
+    (Float64(x), Float64(y)) => if x < y { -1 } else if x > y { 1 } else { 0 }
+    (Date(x), Date(y)) => cmp_i(x, y)
+    (Str(x), Str(y)) => String::lexical_compare(x, y) // dictionary order
+    (Boolean(x), Boolean(y)) =>
+      match (x, y) {
+        (false, true) => -1
+        (true, false) => 1
+        _ => 0
+      }
+    _ => 0
+  }
+}
+
+///|
 /// Three-valued comparison: Some(-1|0|1), or None when either side is Null
 /// or the types do not compare (binder guarantees matching types).
 pub fn Scalar::compare(a : Scalar, b : Scalar) -> Int? {

@@ -109,11 +109,14 @@ fn cmp_key_rows(
       (@types.Null, @types.Null) => 0
       (@types.Null, _) => if nf { -1 } else { 1 }
       (_, @types.Null) => if nf { 1 } else { -1 }
-      _ =>
-        match @types.Scalar::compare(x, y) {
-          Some(c) => if kv.1 { -c } else { c }
-          None => 0
+      _ => {
+        let c = @types.Scalar::compare_nn(x, y)
+        if kv.1 {
+          -c
+        } else {
+          c
         }
+      }
     }
     if ord != 0 {
       return ord
