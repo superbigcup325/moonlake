@@ -52,17 +52,72 @@ fn take_rows(
 }
 
 ///|
-/// One running accumulator per aggregate spec.
+/// One running accumulator per aggregate spec. Mutable state lives in
+/// the payload structs so a fold step updates in place — the enum value
+/// itself is allocated once per group, not once per step.
+priv struct AccSumI {
+  mut sum : Int64
+  mut seen : Bool
+  mut overflowed : Bool
+}
+
+///|
+priv struct AccSumF {
+  mut sum : Double
+  mut seen : Bool
+}
+
+///|
+priv struct AccAvgF {
+  mut sum : Double
+  mut count : Int64
+}
+
+///|
+priv struct AccCount {
+  mut count : Int64
+}
+
+///|
+priv struct AccDistinct {
+  seen : Map[String, Bool]
+}
+
+///|
+priv struct AccVar {
+  mut mean : Double
+  mut m2 : Double
+  mut count : Int64
+}
+
+///|
+priv struct AccMed {
+  vals : Array[Double]
+}
+
+///|
+priv struct AccStrAgg {
+  mut text : String
+  mut seen : Bool
+}
+
+///|
+priv struct AccMinMax {
+  mut cur : @types.Scalar
+  mut seen : Bool
+}
+
+///|
 priv enum Acc {
-  SumI(Int64, Bool, Bool) // value, has_seen_non_null, overflowed
-  SumF(Double, Bool)
-  AvgF(Double, Int64) // sum, count of non-null inputs
-  CountOf(Int64)
-  Distinct(Map[String, Bool])
-  VarF(Double, Double, Int64) // Welford mean, m2, count
-  MedV(Array[Double])
-  StrAgg(String, Bool) // accumulated text, seen_any
-  MinMax(@types.Scalar, Bool)
+  SumI(AccSumI)
+  SumF(AccSumF)
+  AvgF(AccAvgF)
+  CountOf(AccCount)
+  Distinct(AccDistinct)
+  VarF(AccVar)
+  MedV(AccMed)
+  StrAgg(AccStrAgg)
+  MinMax(AccMinMax)
 }
 
 ///|
@@ -73,16 +128,17 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
       match spec.kind {
         Sum =>
           match spec.out_type {
-            @types.Int64 => SumI(0L, false, false)
-            _ => SumF(0.0, false)
+            @types.Int64 => SumI({ sum: 0L, seen: false, overflowed: false, })
+            _ => SumF({ sum: 0.0, seen: false, })
           }
-        Avg => AvgF(0.0, 0L)
-        Count | CountStar => CountOf(0L)
-        CountDistinct => Distinct({})
-        StringAgg => StrAgg("", false)
-        SdSamp | SdPop | VarSamp | VarPop => VarF(0.0, 0.0, 0L)
-        Median => MedV([])
-        Min | Max => MinMax(@types.Null, false)
+        Avg => AvgF({ sum: 0.0, count: 0L, })
+        Count | CountStar => CountOf({ count: 0L, })
+        CountDistinct => Distinct({ seen: Map([]), })
+        StringAgg => StrAgg({ text: "", seen: false, })
+        SdSamp | SdPop | VarSamp | VarPop =>
+          VarF({ mean: 0.0, m2: 0.0, count: 0L, })
+        Median => MedV({ vals: [], })
+        Min | Max => MinMax({ cur: @types.Null, seen: false, })
       },
     )
   }
@@ -100,130 +156,136 @@ fn as_double(v : @types.Scalar) -> Double? {
 }
 
 ///|
-/// One running accumulator per aggregate spec. `input` is the
+/// Fold one input value into the accumulator, in place. `input` is the
 /// pre-evaluated aggregate input for one row; Null inputs are skipped
 /// (aggregates ignore NULL).
-fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Acc {
+fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Unit {
   if spec.kind is CountStar {
     match acc {
-      CountOf(c) => CountOf(c + 1L)
-      other => other
+      CountOf(a) => a.count += 1L
+      _ => ()
     }
-  } else {
-    match input {
-      @types.Null => acc // aggregates ignore NULL inputs
-      v =>
-        match acc {
-          SumI(s, _, ov) => {
-            // checked add: overflow when the operands share a sign that
-            // the sum does not (int64 sums wrap silently otherwise)
-            fn checked(a : Int64, b : Int64) -> (Int64, Bool) {
-              let sum = a + b
-              let ov = ((a ^ sum) & (b ^ sum)) < 0L
-              (sum, ov)
-            }
-
-            match v {
-              @types.Int32(x) => {
-                let (sum, o2) = checked(s, x.to_int64())
-                SumI(sum, true, ov || o2)
+    return
+  }
+  match input {
+    @types.Null => () // aggregates ignore NULL inputs
+    v =>
+      match acc {
+        SumI(a) =>
+          // checked add: overflow when the operands share a sign that
+          // the sum does not (int64 sums wrap silently otherwise)
+          match v {
+            @types.Int32(x) => {
+              let b = x.to_int64()
+              let sum = a.sum + b
+              if ((a.sum ^ sum) & (b ^ sum)) < 0L {
+                a.overflowed = true
               }
-              @types.Int64(x) => {
-                let (sum, o2) = checked(s, x)
-                SumI(sum, true, ov || o2)
-              }
-              _ => acc
+              a.sum = sum
+              a.seen = true
             }
+            @types.Int64(x) => {
+              let sum = a.sum + x
+              if ((a.sum ^ sum) & (x ^ sum)) < 0L {
+                a.overflowed = true
+              }
+              a.sum = sum
+              a.seen = true
+            }
+            _ => ()
           }
-          SumF(s, _) =>
-            match as_double(v) {
-              Some(x) => SumF(s + x, true)
-              None => acc
+        SumF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              a.sum += x
+              a.seen = true
             }
-          AvgF(s, c) =>
-            match as_double(v) {
-              Some(x) => AvgF(s + x, c + 1L)
-              None => acc
+            None => ()
+          }
+        AvgF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              a.sum += x
+              a.count += 1L
             }
-          StrAgg(text, seen) =>
-            match v {
-              @types.Str(s) => {
-                let sep = match spec.sep {
-                  Some(x) => x
-                  None => ""
+            None => ()
+          }
+        StrAgg(a) =>
+          match v {
+            @types.Str(s) => {
+              let sep = match spec.sep {
+                Some(x) => x
+                None => ""
+              }
+              a.text = if a.seen { a.text + sep + s } else { s }
+              a.seen = true
+            }
+            _ => ()
+          }
+        CountOf(a) => a.count += 1L
+        VarF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              // Welford: numerically stable online variance
+              let c2 = a.count + 1L
+              let delta = x - a.mean
+              a.mean += delta / c2.to_double()
+              a.m2 += delta * (x - a.mean)
+              a.count = c2
+            }
+            None => ()
+          }
+        MedV(a) =>
+          match as_double(v) {
+            Some(x) => a.vals.push(x)
+            None => ()
+          }
+        Distinct(a) => a.seen[scalar_key(v)] = true
+        MinMax(a) =>
+          if !a.seen {
+            a.cur = v
+            a.seen = true
+          } else {
+            match @types.Scalar::compare(v, a.cur) {
+              Some(c) =>
+                match spec.kind {
+                  Min => if c < 0 { a.cur = v }
+                  Max => if c > 0 { a.cur = v }
+                  _ => ()
                 }
-                let next = if seen { text + sep + s } else { s }
-                StrAgg(next, true)
-              }
-              _ => acc
+              None => ()
             }
-          CountOf(c) => CountOf(c + 1L)
-          VarF(mean, m2, c) =>
-            match as_double(v) {
-              Some(x) => {
-                // Welford: numerically stable online variance
-                let c2 = c + 1L
-                let delta = x - mean
-                let mean2 = mean + delta / c2.to_double()
-                VarF(mean2, m2 + delta * (x - mean2), c2)
-              }
-              None => acc
-            }
-          MedV(vals) =>
-            match as_double(v) {
-              Some(x) => {
-                vals.push(x)
-                acc
-              }
-              None => acc
-            }
-          Distinct(seen) => {
-            seen[scalar_key(v)] = true
-            acc
           }
-          MinMax(cur, seen) =>
-            if !seen {
-              MinMax(v, true)
-            } else {
-              match @types.Scalar::compare(v, cur) {
-                Some(c) =>
-                  match spec.kind {
-                    Min => if c < 0 { MinMax(v, true) } else { acc }
-                    Max => if c > 0 { MinMax(v, true) } else { acc }
-                    _ => acc
-                  }
-                None => acc
-              }
-            }
-        }
-    }
+      }
   }
 }
 
 ///|
 fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError {
   match acc {
-    SumI(_, _, true) =>
-      raise @types.SqlError::Execute(
-        "sum() overflows int64; widen the input or filter values",
-      )
-    SumI(s, seen, _) => if seen { @types.Int64(s) } else { @types.Null }
-    VarF(_, m2, c) => {
-      // samp needs a second observation; pop needs a first
-      let ok = if spec.kind is SdSamp || spec.kind is VarSamp {
-        c >= 2L
+    SumI(a) =>
+      if a.overflowed {
+        raise @types.SqlError::Execute(
+          "sum() overflows int64; widen the input or filter values",
+        )
+      } else if a.seen {
+        @types.Int64(a.sum)
       } else {
-        c >= 1L
+        @types.Null
       }
+    VarF(a) => {
+      // samp needs a second observation; pop needs a first
+      let samp = spec.kind is SdSamp || spec.kind is VarSamp
+      let ok = if samp { a.count >= 2L } else { a.count >= 1L }
       if !ok {
         @types.Null
       } else {
-        let denom = if spec.kind is SdSamp || spec.kind is VarSamp {
-          (c - 1L).to_double()
+        let denom = if samp {
+          (a.count - 1L).to_double()
         } else {
-          c.to_double()
+          a.count.to_double()
         }
-        let variance = m2 / denom
+        let variance = a.m2 / denom
         // the Sd* kinds are the square root; Var* stay as variance
         @types.Float64(
           if spec.kind is SdSamp || spec.kind is SdPop {
@@ -234,29 +296,29 @@ fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError 
         )
       }
     }
-    StrAgg(text, seen) => if seen { @types.Str(text) } else { @types.Null }
-    MedV(vals) => {
-      if vals.length() == 0 {
+    StrAgg(a) => if a.seen { @types.Str(a.text) } else { @types.Null }
+    MedV(a) => {
+      if a.vals.length() == 0 {
         return @types.Null
       }
-      vals.sort()
-      let n = vals.length()
+      a.vals.sort()
+      let n = a.vals.length()
       if n % 2 == 1 {
-        @types.Float64(vals[n / 2])
+        @types.Float64(a.vals[n / 2])
       } else {
-        @types.Float64((vals[n / 2 - 1] + vals[n / 2]) / 2.0)
+        @types.Float64((a.vals[n / 2 - 1] + a.vals[n / 2]) / 2.0)
       }
     }
-    SumF(s, seen) => if seen { @types.Float64(s) } else { @types.Null }
-    AvgF(s, c) =>
-      if c > 0L {
-        @types.Float64(s / c.to_double())
+    SumF(a) => if a.seen { @types.Float64(a.sum) } else { @types.Null }
+    AvgF(a) =>
+      if a.count > 0L {
+        @types.Float64(a.sum / a.count.to_double())
       } else {
         @types.Null
       }
-    CountOf(c) => @types.Int64(c)
-    Distinct(seen) => @types.Int64(seen.length().to_int64())
-    MinMax(v, seen) => if seen { v } else { @types.Null }
+    CountOf(a) => @types.Int64(a.count)
+    Distinct(a) => @types.Int64(a.seen.length().to_int64())
+    MinMax(a) => if a.seen { a.cur } else { @types.Null }
   }
 }
 
@@ -561,7 +623,7 @@ fn aggregate(
           Some(col) => col.get(r)
           None => @types.Null
         } // CountStar ignores it
-        row[i] = acc_step(row[i], aggs[i], input)
+        acc_step(row[i], aggs[i], input)
       }
     }
   }

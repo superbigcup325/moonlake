@@ -132,7 +132,7 @@ fn exec_windows(
               Some(col) => col.get(sorted[g])
               None => @types.Null
             } // count(*)
-            acc = acc_step(acc, spec, input)
+            acc_step(acc, spec, input)
           }
           let v = acc_finish(acc, spec)
           for g in pos..<end {
