@@ -144,6 +144,11 @@ test "scan_files concatenates same-schema files into one table" {
 
 ///|
 fn temp_dir() -> String {
+  // @fs.create_dir is non-recursive on the native backend, so the parent has
+  // to exist first: CI checks out a clean tree with no target/ directory.
+  @fs.create_dir("target") catch {
+    _ => ()
+  }
   let d = "target/csv_glob_test"
   @fs.create_dir(d) catch {
     _ => ()
