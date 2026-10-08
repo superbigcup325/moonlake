@@ -1,8 +1,7 @@
 # devlog
 
-Weekly log of goals, approach and quality boundaries. moonlake is
-built with AI assistance; this file records what was done, why, and
-where the edges are.
+Weekly log of goals, approach and quality boundaries: what was done,
+why, and where the edges are.
 
 ## W1 (2026-10-01 - 2026-10-08): first milestone, Q6
 
