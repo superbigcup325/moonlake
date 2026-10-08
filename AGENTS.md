@@ -56,3 +56,4 @@ You can browse and install extra skills here:
 
 - moon fmt 曾把 README.md 替换成悬空软链吞内容；定式 = README.mbt.md 真身 + README.md 软链
 - GitHub Actions fresh runner 必须先 `moon update && moon install` 再 check/test（本地 .mooncakes 缓存会掩盖，验证法 = wipe .mooncakes 模拟 fresh clone）
+- 本地 `moon test` 走 `moon.mod` 的 preferred target（wasm-gc），不覆盖 native；CI 另跑 `test (native)`。改到 fs/CSV 这类后端有差异的路径必须 `moon test --target native` 自测（2026-10-09 实录：`scan_files` fixture 用 `fs.create_dir` 非递归建 `target/` 子目录，本地与 JS/wasm-gc 全绿、CI native 红）
