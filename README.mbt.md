@@ -4,6 +4,8 @@
 
 Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet files in-process, with native and WebAssembly builds from one codebase.
 
+**[Try it in your browser](https://superbigcup325.github.io/moonlake/)** — drag in a CSV or Parquet file, write SQL, get a columnar result and its physical plan. No install.
+
 > **Status: all 22 TPC-H queries pass on official texts.** The
 > evaluator is columnar — vectorized expression kernels, a columnar hash
 > join, and bind-time projection pruning — but APIs may still change.
