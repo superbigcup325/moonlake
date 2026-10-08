@@ -116,6 +116,15 @@ fn main raise {
 }
 ```
 
+## Docs
+
+- **Playground** ([open](https://superbigcup325.github.io/moonlake/)): drag in a CSV/Parquet file, write SQL, and see the result table plus its physical plan, all client-side.
+- **[docs/DEMO.md](docs/DEMO.md)**: the reproducible demo, from running the engine to the DuckDB cross-check and the benchmark.
+- **[docs/verification.md](docs/verification.md)**: the correctness and performance report (differential and property testing, pushdown fuzzing, memory and spill numbers).
+- **[docs/spill-survey.md](docs/spill-survey.md)**: how six systems handle larger-than-memory queries, and where moonlake's design lands.
+- **[docs/devlog.md](docs/devlog.md)**: the build log, week by week.
+- **[CHANGELOG.md](CHANGELOG.md)**: release notes.
+
 ## Where moonlake sits
 
 MoonBit's ecosystem had SQL parsers and format readers, but no query
