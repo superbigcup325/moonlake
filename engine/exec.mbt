@@ -1098,6 +1098,13 @@ fn join_step(
   // probe: keys evaluated once over the concatenated left side
   let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
   let n_left = left.row_count()
+  let rstate : ResidualState? = match step.residual {
+    Some(re) =>
+      Some(
+        residual_state(residual_plan(re, left_width, right_width), left, build),
+      )
+    None => None
+  }
   let build_keys : Array[@types.ColumnVector] = []
   for e in step.keys_r {
     build_keys.push(eval_vec(e, build))
@@ -1136,7 +1143,7 @@ fn join_step(
           match map.get(ld[r]) {
             Some(ids) =>
               for id in ids {
-                if residual_passes(step.residual, left, r, build, id) {
+                if residual_ok(rstate, left, r, build, id) {
                   left_ids.push(r)
                   right_ids.push(id)
                   matched = true
@@ -1180,7 +1187,7 @@ fn join_step(
           match map.get(canonical_key(kv)) {
             Some(ids) =>
               for id in ids {
-                if residual_passes(step.residual, left, r, build, id) {
+                if residual_ok(rstate, left, r, build, id) {
                   left_ids.push(r)
                   right_ids.push(id)
                   matched = true
@@ -1220,18 +1227,413 @@ fn join_step(
 }
 
 ///|
-/// Residual evaluation for one candidate pair.
+/// Kleene tri-state encoding for residual states: 0 = false, 1 =
+/// unknown (NULL), 2 = true. Conjunction folds with min, disjunction
+/// with max, so per-side precomputed states recombine exactly like the
+/// original expression tree.
+
+///|
+/// One disjunct of a residual, split by the sides its conjuncts touch.
+/// `left`/`build` hold the single-side conjuncts AndE-combined (None =
+/// that side contributes TRUE); `spanning` holds both-side conjuncts
+/// rewritten against their reduced row, paired with the Flat columns
+/// they read.
+priv struct ArmPlan {
+  left : PhysExpr?
+  build : PhysExpr?
+  spanning : Array[(PhysExpr, Array[Int32])]
+}
+
+///|
+/// A residual decomposed into arms. The Flat layout puts the left side
+/// first, so `left_width` splits ColRef ownership.
+priv struct ResidualPlan {
+  arms : Array[ArmPlan]
+  left_width : Int32
+}
+
+///|
+/// Precomputed per-side Kleene states of a residual over one pair of
+/// joined batches. Every residual call site evaluates a fixed (left,
+/// build) batch pair inside nested loops, so the vectorized arm states
+/// are computed once and the per-pair work collapses to array lookups
+/// plus the (rare) spanning conjuncts.
+priv struct ResidualState {
+  plan : ResidualPlan
+  lt : Array[FixedArray[Bool]]
+  lu : Array[FixedArray[Bool]]
+  bt : Array[FixedArray[Bool]]
+  bu : Array[FixedArray[Bool]]
+}
+
+///|
+/// Flatten a top-level OrE spine into arms (either nesting shape); a
+/// non-OrE expression is a single arm.
+fn or_arms(e : PhysExpr, out : Array[PhysExpr]) -> Unit {
+  match e {
+    OrE(l, r) => {
+      or_arms(l, out)
+      or_arms(r, out)
+    }
+    other => out.push(other)
+  }
+}
+
+///|
+/// Flatten a top-level AndE spine into conjuncts.
+fn and_conjuncts(e : PhysExpr, out : Array[PhysExpr]) -> Unit {
+  match e {
+    AndE(l, r) => {
+      and_conjuncts(l, out)
+      and_conjuncts(r, out)
+    }
+    other => out.push(other)
+  }
+}
+
+///|
+/// Collect the Flat ColRef indices an expression reads.
+fn expr_refs(e : PhysExpr, out : Array[Int32]) -> Unit {
+  match e {
+    ColRef(i, _) => out.push(i)
+    Const(_) | WinRef(_, _) => ()
+    Promote(x, _) => expr_refs(x, out)
+    ArithE(_, a, b, _) => {
+      expr_refs(a, out)
+      expr_refs(b, out)
+    }
+    CmpE(_, a, b) => {
+      expr_refs(a, out)
+      expr_refs(b, out)
+    }
+    AndE(a, b) | OrE(a, b) => {
+      expr_refs(a, out)
+      expr_refs(b, out)
+    }
+    NotE(x)
+    | LikeE(x, _)
+    | IsNullE(x, _)
+    | ExtractE(x, _)
+    | CastE(x, _)
+    | DateArithE(x, _, _) => expr_refs(x, out)
+    InSetE(x, _, _, _) => expr_refs(x, out)
+    CaseE(arms, els, _) => {
+      for (w, t) in arms {
+        expr_refs(w, out)
+        expr_refs(t, out)
+      }
+      match els {
+        Some(x) => expr_refs(x, out)
+        None => ()
+      }
+    }
+    FuncE(_, args, _) =>
+      for a in args {
+        expr_refs(a, out)
+      }
+  }
+}
+
+///|
+/// Rewrite ColRef indices into positions within `refs` (the reduced row
+/// a spanning conjunct is evaluated against).
+fn remap_refs(e : PhysExpr, refs : Array[Int32]) -> PhysExpr {
+  match e {
+    ColRef(i, dt) => {
+      let mut pos = 0
+      for j, r in refs {
+        if r == i {
+          pos = j
+          break
+        }
+      }
+      ColRef(pos, dt)
+    }
+    Const(_) | WinRef(_, _) => e
+    Promote(x, dt) => Promote(remap_refs(x, refs), dt)
+    ArithE(op, a, b, dt) =>
+      ArithE(op, remap_refs(a, refs), remap_refs(b, refs), dt)
+    CmpE(op, a, b) => CmpE(op, remap_refs(a, refs), remap_refs(b, refs))
+    AndE(a, b) => AndE(remap_refs(a, refs), remap_refs(b, refs))
+    OrE(a, b) => OrE(remap_refs(a, refs), remap_refs(b, refs))
+    NotE(x) => NotE(remap_refs(x, refs))
+    LikeE(x, p) => LikeE(remap_refs(x, refs), p)
+    IsNullE(x, n) => IsNullE(remap_refs(x, refs), n)
+    ExtractE(x, f) => ExtractE(remap_refs(x, refs), f)
+    CastE(x, dt) => CastE(remap_refs(x, refs), dt)
+    DateArithE(x, n, u) => DateArithE(remap_refs(x, refs), n, u)
+    InSetE(x, set, neg, nulls) => InSetE(remap_refs(x, refs), set, neg, nulls)
+    CaseE(arms, els, dt) => {
+      let out : Array[(PhysExpr, PhysExpr)] = []
+      for (w, t) in arms {
+        out.push((remap_refs(w, refs), remap_refs(t, refs)))
+      }
+      let rels : PhysExpr? = match els {
+        Some(x) => Some(remap_refs(x, refs))
+        None => None
+      }
+      CaseE(out, rels, dt)
+    }
+    FuncE(name, args, dt) => {
+      let out : Array[PhysExpr] = []
+      for a in args {
+        out.push(remap_refs(a, refs))
+      }
+      FuncE(name, out, dt)
+    }
+  }
+}
+
+///|
+/// AndE-combine conjuncts; None for an empty list (that side is TRUE).
+fn conjoin(exprs : Array[PhysExpr]) -> PhysExpr? {
+  match exprs.length() {
+    0 => None
+    1 => Some(exprs[0])
+    _ => {
+      let mut acc = exprs[0]
+      for i in 1..<exprs.length() {
+        acc = AndE(acc, exprs[i])
+      }
+      Some(acc)
+    }
+  }
+}
+
+///|
+/// Decompose a residual into arms and classify every conjunct by side.
+/// The Flat layout puts the left side first (`left_width` columns), so
+/// a conjunct's ColRef span decides its bucket; conjuncts touching both
+/// sides stay per-pair (`spanning`), rewritten against their reduced
+/// row. Build-side conjuncts are reindexed to the build batch's local
+/// layout (Flat `left_width + c` becomes `c`); left-side conjuncts are
+/// already in local order.
+fn residual_plan(
+  residual : PhysExpr,
+  left_width : Int32,
+  right_width : Int32,
+) -> ResidualPlan {
+  let shift : Array[Int32] = []
+  for c in 0..<right_width {
+    shift.push(left_width + c)
+  }
+  let raw : Array[PhysExpr] = []
+  or_arms(residual, raw)
+  let arms : Array[ArmPlan] = []
+  for arm in raw {
+    let conj : Array[PhysExpr] = []
+    and_conjuncts(arm, conj)
+    let lefts : Array[PhysExpr] = []
+    let builds : Array[PhysExpr] = []
+    let spanning : Array[(PhysExpr, Array[Int32])] = []
+    for c in conj {
+      let refs : Array[Int32] = []
+      expr_refs(c, refs)
+      let mut saw_left = false
+      let mut saw_build = false
+      for i in refs {
+        if i >= left_width {
+          saw_build = true
+        } else {
+          saw_left = true
+        }
+      }
+      if saw_left && saw_build {
+        // dedupe refs, keep first-seen order
+        let uniq : Array[Int32] = []
+        for i in refs {
+          let mut hit = false
+          for u in uniq {
+            if u == i {
+              hit = true
+              break
+            }
+          }
+          if !hit {
+            uniq.push(i)
+          }
+        }
+        spanning.push((remap_refs(c, uniq), uniq))
+      } else if saw_build {
+        builds.push(remap_refs(c, shift))
+      } else {
+        lefts.push(c)
+      }
+    }
+    arms.push({ left: conjoin(lefts), build: conjoin(builds), spanning, })
+  }
+  { arms, left_width, }
+}
+
+///|
+/// Per-row Kleene state of a boolean expression as (true, unknown)
+/// masks; valid=false marks the unknown rows. The interpreter path
+/// keeps the same semantics for the non-BoolV fallbacks.
+fn tri_state(
+  e : PhysExpr,
+  batch : @types.DataBatch,
+) -> (FixedArray[Bool], FixedArray[Bool]) raise @types.SqlError {
+  let n = batch.row_count()
+  let t : FixedArray[Bool] = FixedArray::make(n, false)
+  let u : FixedArray[Bool] = FixedArray::make(n, false)
+  match eval_vec(e, batch) {
+    @types.BoolV(d, valid) =>
+      for r in 0..<n {
+        if valid[r] {
+          t[r] = d[r]
+        } else {
+          u[r] = true
+        }
+      }
+    _ =>
+      for r in 0..<n {
+        match eval_scalar(e, batch, r) {
+          @types.Boolean(true) => t[r] = true
+          @types.Null => u[r] = true
+          _ => ()
+        }
+      }
+  }
+  (t, u)
+}
+
+///|
+/// Compute the per-arm per-side states for one (left, build) batch pair.
+/// An absent side contributes constant TRUE.
+fn residual_state(
+  plan : ResidualPlan,
+  left : @types.DataBatch,
+  build : @types.DataBatch,
+) -> ResidualState raise @types.SqlError {
+  let nl = left.row_count()
+  let nb = build.row_count()
+  let lt : Array[FixedArray[Bool]] = []
+  let lu : Array[FixedArray[Bool]] = []
+  let bt : Array[FixedArray[Bool]] = []
+  let bu : Array[FixedArray[Bool]] = []
+  for arm in plan.arms {
+    match arm.left {
+      Some(e) => {
+        let (t, u) = tri_state(e, left)
+        lt.push(t)
+        lu.push(u)
+      }
+      None => {
+        lt.push(FixedArray::make(nl, true))
+        lu.push(FixedArray::make(nl, false))
+      }
+    }
+    match arm.build {
+      Some(e) => {
+        let (t, u) = tri_state(e, build)
+        bt.push(t)
+        bu.push(u)
+      }
+      None => {
+        bt.push(FixedArray::make(nb, true))
+        bu.push(FixedArray::make(nb, false))
+      }
+    }
+  }
+  { plan, lt, lu, bt, bu, }
+}
+
+///|
+/// Box only the Flat columns a spanning conjunct reads. The old path
+/// boxed both sides wholesale for every candidate pair.
+fn reduced_row(
+  left : @types.DataBatch,
+  lrow : Int32,
+  build : @types.DataBatch,
+  brow : Int32,
+  left_width : Int32,
+  refs : Array[Int32],
+) -> Array[@types.Scalar] {
+  let row : Array[@types.Scalar] = []
+  for i in refs {
+    if i < left_width {
+      row.push(left.columns()[i].get(lrow))
+    } else {
+      row.push(build.columns()[i - left_width].get(brow))
+    }
+  }
+  row
+}
+
+///|
+/// Residual gate for one candidate pair over precomputed arm states.
+/// Passes iff the Kleene OR over arms is TRUE — exactly the old
+/// row-at-a-time walk's `is Boolean(true)` contract (NULL and false
+/// fail). Arms short-circuit on false, the disjunction on true.
 fn residual_passes(
-  residual : PhysExpr?,
+  state : ResidualState,
   left : @types.DataBatch,
   lrow : Int32,
   build : @types.DataBatch,
   brow : Int32,
 ) -> Bool raise @types.SqlError {
-  match residual {
-    Some(re) =>
-      eval_row(re, combined_row(left, lrow, build, brow))
-      is @types.Boolean(true)
+  let arms = state.plan.arms
+  let lw = state.plan.left_width
+  let mut pair = 0
+  for k in 0..<arms.length() {
+    let arm = arms[k]
+    let mut v = if state.lt[k][lrow] {
+      2
+    } else if state.lu[k][lrow] {
+      1
+    } else {
+      0
+    }
+    if v > 0 {
+      let b = if state.bt[k][brow] {
+        2
+      } else if state.bu[k][brow] {
+        1
+      } else {
+        0
+      }
+      if b < v {
+        v = b
+      }
+      if v > 0 {
+        for (expr, refs) in arm.spanning {
+          let row = reduced_row(left, lrow, build, brow, lw, refs)
+          let s = match eval_row(expr, row) {
+            @types.Boolean(true) => 2
+            @types.Null => 1
+            _ => 0
+          }
+          if s < v {
+            v = s
+          }
+          if v == 0 {
+            break
+          }
+        }
+      }
+    }
+    if v > pair {
+      pair = v
+    }
+    if pair == 2 {
+      break
+    }
+  }
+  pair == 2
+}
+
+///|
+/// Residual gate for one candidate pair; no residual = unconditional
+/// pass. Keeps the join loops identical for the common no-residual case.
+fn residual_ok(
+  state : ResidualState?,
+  left : @types.DataBatch,
+  lrow : Int32,
+  build : @types.DataBatch,
+  brow : Int32,
+) -> Bool raise @types.SqlError {
+  match state {
+    Some(s) => residual_passes(s, left, lrow, build, brow)
     None => true
   }
 }
@@ -1290,24 +1692,6 @@ fn tail_dtypes(
     out.push(dtypes[i])
   }
   out
-}
-
-///|
-/// The combined flat row for one candidate pair (residual evaluation).
-fn combined_row(
-  left : @types.DataBatch,
-  lrow : Int32,
-  build : @types.DataBatch,
-  brow : Int32,
-) -> Array[@types.Scalar] {
-  let row : Array[@types.Scalar] = []
-  for c in 0..<left.columns().length() {
-    row.push(left.columns()[c].get(lrow))
-  }
-  for c in 0..<build.columns().length() {
-    row.push(build.columns()[c].get(brow))
-  }
-  row
 }
 
 ///|
@@ -1374,11 +1758,20 @@ fn join_semi(
       }
     }
   }
-  let left = concat_batches(
-    acc,
-    head_dtypes(step.out_dtypes, step.out_dtypes.length() - step.right_width),
-  )
+  let left_width = step.out_dtypes.length() - step.right_width
+  let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
   let n_left = left.row_count()
+  let rstate : ResidualState? = match step.residual {
+    Some(re) =>
+      Some(
+        residual_state(
+          residual_plan(re, left_width, step.right_width),
+          left,
+          inner_batch,
+        ),
+      )
+    None => None
+  }
   let left_keys : Array[@types.ColumnVector] = []
   for e in step.keys_l {
     left_keys.push(eval_vec(e, left))
@@ -1401,7 +1794,7 @@ fn join_semi(
         match int_map.get(k) {
           Some(ids) =>
             for id in ids {
-              if residual_passes(step.residual, left, r, inner_batch, id) {
+              if residual_ok(rstate, left, r, inner_batch, id) {
                 matched = true
               }
             }
@@ -1412,7 +1805,7 @@ fn join_semi(
         match str_map.get(key) {
           Some(ids) =>
             for id in ids {
-              if residual_passes(step.residual, left, r, inner_batch, id) {
+              if residual_ok(rstate, left, r, inner_batch, id) {
                 matched = true
               }
             }
@@ -1467,6 +1860,13 @@ fn join_swapped(
   // probe: the preserved joining table; keys are its Slot keys
   let probe = concat_batches(right, tail_dtypes(step.out_dtypes, right_width))
   let n_probe = probe.row_count()
+  let rstate : ResidualState? = match step.residual {
+    Some(re) =>
+      Some(
+        residual_state(residual_plan(re, left_width, right_width), build, probe),
+      )
+    None => None
+  }
   let build_keys : Array[@types.ColumnVector] = []
   for e in step.keys_l {
     build_keys.push(eval_vec(e, build))
@@ -1500,7 +1900,7 @@ fn join_swapped(
           match map.get(pd[r]) {
             Some(ids) =>
               for id in ids {
-                if residual_passes(step.residual, build, id, probe, r) {
+                if residual_ok(rstate, build, id, probe, r) {
                   acc_ids.push(id)
                   right_ids.push(r)
                   matched = true
@@ -1541,7 +1941,7 @@ fn join_swapped(
           match map.get(canonical_key(kv)) {
             Some(ids) =>
               for id in ids {
-                if residual_passes(step.residual, build, id, probe, r) {
+                if residual_ok(rstate, build, id, probe, r) {
                   acc_ids.push(id)
                   right_ids.push(r)
                   matched = true
