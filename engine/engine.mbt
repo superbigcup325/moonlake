@@ -168,7 +168,7 @@ fn run_parsed(
       stats.push(("scan \{schemas[k].table}", rows))
     }
   }
-  let joined = exec_joins(narrowed, bq.steps, bq.deferred)
+  let joined = exec_joins(narrowed, bq.steps, bq.deferred, opts, stats)
   if bq.steps.length() > 1 {
     let mut joined_rows = 0
     for bt in joined {
