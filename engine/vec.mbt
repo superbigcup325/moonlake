@@ -83,7 +83,7 @@ pub fn eval_vec(
       let v = eval_vec(inner, batch)
       match v {
         @types.DateV(d, valid) => {
-          let od : FixedArray[Int] = FixedArray::make(n, 0)
+          let od : FixedArray[Int32] = FixedArray::make(n, 0)
           let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
           match unit {
             Days => {
@@ -163,7 +163,7 @@ fn expr_dtype(e : PhysExpr) -> @types.DataType {
 }
 
 ///|
-fn broadcast(v : @types.Scalar, n : Int) -> @types.ColumnVector {
+fn broadcast(v : @types.Scalar, n : Int32) -> @types.ColumnVector {
   let vec = @types.ColumnVector::make(scalar_type(v), n)
   for i in 0..<n {
     vec.set(i, v)
@@ -185,7 +185,7 @@ fn v_validity(v : @types.ColumnVector) -> FixedArray[Bool] {
 }
 
 ///|
-fn ord_i(x : Int, y : Int) -> Int {
+fn ord_i(x : Int32, y : Int32) -> Int32 {
   if x < y {
     -1
   } else if x > y {
@@ -254,7 +254,7 @@ fn arith_vec(
   match (l, r) {
     (@types.I32(ld, lv), @types.I32(rd, rv)) => {
       let is_f64 = dt is @types.Float64
-      let od : FixedArray[Int] = FixedArray::make(n, 0)
+      let od : FixedArray[Int32] = FixedArray::make(n, 0)
       let ofd : FixedArray[Double] = FixedArray::make(n, 0.0)
       let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
       for i in 0..<n {
@@ -349,7 +349,7 @@ fn cmp_vec(
   r : @types.ColumnVector,
 ) -> @types.ColumnVector? {
   let n = l.len()
-  fn flag(o : Int) -> Bool {
+  fn flag(o : Int32) -> Bool {
     match op {
       Eq => o == 0
       Neq => o != 0
@@ -416,7 +416,7 @@ fn cmp_vec(
 }
 
 ///|
-fn ord_i64(x : Int64, y : Int64) -> Int {
+fn ord_i64(x : Int64, y : Int64) -> Int32 {
   if x < y {
     -1
   } else if x > y {
@@ -427,7 +427,7 @@ fn ord_i64(x : Int64, y : Int64) -> Int {
 }
 
 ///|
-fn ord_f(x : Double, y : Double) -> Int {
+fn ord_f(x : Double, y : Double) -> Int32 {
   if x < y {
     -1
   } else if x > y {

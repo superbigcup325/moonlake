@@ -217,8 +217,8 @@ fn adapt_values(
 
 ///|
 fn fill_i64(
-  n : Int,
-  get : (Int) -> Int64,
+  n : Int32,
+  get : (Int32) -> Int64,
 ) -> (@types.ColumnVector, @types.DataType) {
   let vec = @types.ColumnVector::make(@types.Int64, n)
   for i in 0..<n {
@@ -229,8 +229,8 @@ fn fill_i64(
 
 ///|
 fn fill_i64_opt(
-  n : Int,
-  get : (Int) -> Int64?,
+  n : Int32,
+  get : (Int32) -> Int64?,
 ) -> (@types.ColumnVector, @types.DataType) {
   let vec = @types.ColumnVector::make(@types.Int64, n)
   for i in 0..<n {
@@ -244,8 +244,8 @@ fn fill_i64_opt(
 
 ///|
 fn fill_f64(
-  n : Int,
-  get : (Int) -> Double,
+  n : Int32,
+  get : (Int32) -> Double,
 ) -> (@types.ColumnVector, @types.DataType) {
   let vec = @types.ColumnVector::make(@types.Float64, n)
   for i in 0..<n {
@@ -256,8 +256,8 @@ fn fill_f64(
 
 ///|
 fn fill_str(
-  n : Int,
-  get : (Int) -> String,
+  n : Int32,
+  get : (Int32) -> String,
 ) -> (@types.ColumnVector, @types.DataType) {
   let vec = @types.ColumnVector::make(@types.Str, n)
   for i in 0..<n {
@@ -268,8 +268,8 @@ fn fill_str(
 
 ///|
 fn fill_str_opt(
-  n : Int,
-  get : (Int) -> String?,
+  n : Int32,
+  get : (Int32) -> String?,
 ) -> (@types.ColumnVector, @types.DataType) {
   let vec = @types.ColumnVector::make(@types.Str, n)
   for i in 0..<n {

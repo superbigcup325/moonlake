@@ -47,13 +47,13 @@ fn exec_windows(
     // stable argsort: partition keys keep partitions contiguous (any
     // consistent NULL placement works), order keys rank inside them,
     // the final id tiebreak keeps the original order
-    let sorted : Array[Int] = []
+    let sorted : Array[Int32] = []
     for i in 0..<n {
       sorted.push(i)
     }
     if n > 1 {
       let key_cols : Array[Array[@types.Scalar]] = []
-      let kds : Array[(Int, Bool, Bool?)] = []
+      let kds : Array[(Int32, Bool, Bool?)] = []
       let nfs : Array[Bool?] = []
       for pv in part_vals {
         kds.push((key_cols.length(), false, None))
@@ -152,7 +152,7 @@ fn exec_windows(
 }
 
 ///|
-fn materialize(vec : @types.ColumnVector, n : Int) -> Array[@types.Scalar] {
+fn materialize(vec : @types.ColumnVector, n : Int32) -> Array[@types.Scalar] {
   let out : Array[@types.Scalar] = []
   for r in 0..<n {
     out.push(vec.get(r))
@@ -179,7 +179,7 @@ fn scalar_eq(a : @types.Scalar, b : @types.Scalar) -> Bool {
 ///|
 /// All key columns equal for rows a and b (row ids into the original
 /// batch; each column holds one key value per row).
-fn same_keys(cols : Array[Array[@types.Scalar]], a : Int, b : Int) -> Bool {
+fn same_keys(cols : Array[Array[@types.Scalar]], a : Int32, b : Int32) -> Bool {
   for col in cols {
     if !scalar_eq(col[a], col[b]) {
       return false
@@ -189,7 +189,10 @@ fn same_keys(cols : Array[Array[@types.Scalar]], a : Int, b : Int) -> Bool {
 }
 
 ///|
-fn resolve_win_refs_all(exprs : Array[PhysExpr], base : Int) -> Array[PhysExpr] {
+fn resolve_win_refs_all(
+  exprs : Array[PhysExpr],
+  base : Int32,
+) -> Array[PhysExpr] {
   let out : Array[PhysExpr] = []
   for e in exprs {
     out.push(resolve_win_refs(e, base))
@@ -200,7 +203,7 @@ fn resolve_win_refs_all(exprs : Array[PhysExpr], base : Int) -> Array[PhysExpr] 
 ///|
 /// Rewrite WinRef(k) markers into ColRef(base + k) once the window
 /// columns exist. Everything else deep-copies unchanged.
-fn resolve_win_refs(e : PhysExpr, base : Int) -> PhysExpr {
+fn resolve_win_refs(e : PhysExpr, base : Int32) -> PhysExpr {
   match e {
     WinRef(k, dt) => ColRef(base + k, dt)
     ColRef(_, _) | Const(_) => e

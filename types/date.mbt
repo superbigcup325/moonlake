@@ -2,7 +2,7 @@
 // (days since 1970-01-01, proleptic Gregorian).
 
 ///|
-pub fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
+pub fn days_from_civil(y : Int32, m : Int32, d : Int32) -> Int32 {
   let y = if m <= 2 { y - 1 } else { y }
   let era = (if y >= 0 { y } else { y - 399 }) / 400
   let yoe = y - era * 400 // [0, 399]
@@ -13,7 +13,7 @@ pub fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
 }
 
 ///|
-pub fn civil_from_days(z : Int) -> (Int, Int, Int) {
+pub fn civil_from_days(z : Int32) -> (Int32, Int32, Int32) {
   let z = z + 719468
   let era = (if z >= 0 { z } else { z - 146096 }) / 146097
   let doe = z - era * 146097 // [0, 146096]
@@ -27,12 +27,12 @@ pub fn civil_from_days(z : Int) -> (Int, Int, Int) {
 }
 
 ///|
-fn is_leap(y : Int) -> Bool {
+fn is_leap(y : Int32) -> Bool {
   (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 ///|
-fn days_in_month(y : Int, m : Int) -> Int {
+fn days_in_month(y : Int32, m : Int32) -> Int32 {
   match m {
     1 => 31
     2 => if is_leap(y) { 29 } else { 28 }
@@ -53,7 +53,7 @@ fn days_in_month(y : Int, m : Int) -> Int {
 ///|
 /// Strict ISO parse: "yyyy-mm-dd" with real calendar validation.
 /// Returns epoch days, or None on any malformed input.
-pub fn parse_date(s : String) -> Int? {
+pub fn parse_date(s : String) -> Int32? {
   let cs : Array[Char] = []
   for ch in s {
     cs.push(ch)
@@ -83,7 +83,7 @@ pub fn parse_date(s : String) -> Int? {
 }
 
 ///|
-fn digit(ch : Char) -> Int? {
+fn digit(ch : Char) -> Int32? {
   let v = ch.to_int()
   if v >= 48 && v <= 57 {
     Some(v - 48)
@@ -93,7 +93,7 @@ fn digit(ch : Char) -> Int? {
 }
 
 ///|
-fn parse_digits4(cs : Array[Char], off : Int) -> Int? {
+fn parse_digits4(cs : Array[Char], off : Int32) -> Int32? {
   match
     (digit(cs[off]), digit(cs[off + 1]), digit(cs[off + 2]), digit(cs[off + 3])) {
     (Some(a), Some(b), Some(c), Some(dd)) =>
@@ -103,7 +103,7 @@ fn parse_digits4(cs : Array[Char], off : Int) -> Int? {
 }
 
 ///|
-fn parse_digits2(cs : Array[Char], off : Int) -> Int? {
+fn parse_digits2(cs : Array[Char], off : Int32) -> Int32? {
   match (digit(cs[off]), digit(cs[off + 1])) {
     (Some(a), Some(b)) => Some(a * 10 + b)
     _ => None
@@ -111,7 +111,7 @@ fn parse_digits2(cs : Array[Char], off : Int) -> Int? {
 }
 
 ///|
-pub fn epoch_to_string(days : Int) -> String {
+pub fn epoch_to_string(days : Int32) -> String {
   let (y, m, d) = civil_from_days(days)
   let sb = StringBuilder()
   sb.write_string(y.to_string())
@@ -130,19 +130,19 @@ pub fn epoch_to_string(days : Int) -> String {
 
 ///|
 /// Calendar field extraction from epoch days (EXTRACT support).
-pub fn epoch_year(days : Int) -> Int {
+pub fn epoch_year(days : Int32) -> Int32 {
   let (y, _, _) = civil_from_days(days)
   y
 }
 
 ///|
-pub fn epoch_month(days : Int) -> Int {
+pub fn epoch_month(days : Int32) -> Int32 {
   let (_, m, _) = civil_from_days(days)
   m
 }
 
 ///|
-pub fn epoch_day(days : Int) -> Int {
+pub fn epoch_day(days : Int32) -> Int32 {
   let (_, _, d) = civil_from_days(days)
   d
 }
@@ -151,7 +151,7 @@ pub fn epoch_day(days : Int) -> Int {
 /// Shift epoch days by `n` calendar months (a year is 12 months),
 /// clamping the day of month to the target month's length
 /// (Jan 31 + 1 month = Feb 28; 1996-03-31 + 1 month = 1996-04-30).
-pub fn add_months(days : Int, n : Int) -> Int {
+pub fn add_months(days : Int32, n : Int32) -> Int32 {
   let (y, m, d) = civil_from_days(days)
   let total = y * 12 + (m - 1) + n
   let ny = total / 12

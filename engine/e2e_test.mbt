@@ -1596,7 +1596,7 @@ test "scan batch boundaries: 4095/4096/4097 rows through the pipeline" {
     let r2 = run("SELECT sum(v) AS s FROM t2", cat)
     assert_eq(r2.get(0, 0), @types.Int64(want_sum.to_int64()))
     // self-join fan-out across seams: sum over k of cnt_k^2
-    let counts : Array[Int] = Array::make(7, 0)
+    let counts : Array[Int32] = Array::make(7, 0)
     for i in 0..<n {
       counts[i % 7] += 1
     }
@@ -1997,7 +1997,7 @@ fn window_catalog() -> @catalog.Catalog {
 ///|
 fn col_scalars(
   result : @engine.SelectResult,
-  col : Int,
+  col : Int32,
 ) -> Array[@types.Scalar] {
   let out : Array[@types.Scalar] = []
   for r in 0..<result.row_count() {
@@ -2285,8 +2285,8 @@ fn spill_catalog() -> @catalog.Catalog {
 
 ///|
 priv struct MemBox {
-  mut next : Int
-  files : Map[Int, Bytes]
+  mut next : Int32
+  files : Map[Int32, Bytes]
 }
 
 ///|
@@ -2294,19 +2294,19 @@ priv struct MemBox {
 fn mem_store() -> @engine.SpillStore {
   let box : MemBox = { next: 0, files: Map([]), }
   {
-    write: fn(b : Bytes) -> Int {
+    write: fn(b : Bytes) -> Int32 {
       let id = box.next
       box.next += 1
       box.files[id] = b
       id
     },
-    read: fn(id : Int) -> Bytes raise @types.SqlError {
+    read: fn(id : Int32) -> Bytes raise @types.SqlError {
       match box.files.get(id) {
         Some(b) => b
         None => raise @types.SqlError::Execute("mem store: missing \{id}")
       }
     },
-    remove: fn(id : Int) -> Unit { let _ = box.files.remove(id) },
+    remove: fn(id : Int32) -> Unit { let _ = box.files.remove(id) },
   }
 }
 

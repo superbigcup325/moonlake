@@ -7,7 +7,7 @@
 /// Optional sign then digits, else None, range-checked to int32: a value
 /// outside [-2^31, 2^31-1] returns None so callers promote or report
 /// instead of wrapping silently.
-pub fn parse_i32(s : String) -> Int? {
+pub fn parse_i32(s : String) -> Int32? {
   match parse_i64(s) {
     Some(v) =>
       if v >= -2147483648L && v <= 2147483647L {
@@ -184,7 +184,7 @@ fn is_digit(ch : Char) -> Bool {
 }
 
 ///|
-fn pow10(e : Int) -> Double {
+fn pow10(e : Int32) -> Double {
   let mut v = 1.0
   for _ in 0..<e {
     v = v * 10.0

@@ -10,7 +10,7 @@ fn vec_fixture() -> @types.DataBatch {
   // i1 = [10, -7, 0, NULL, 3], i2 = [3, 0, 4, 2, NULL]
   let i1 = @types.I32(FixedArray::make(n, 0), FixedArray::make(n, true))
   let i2 = @types.I32(FixedArray::make(n, 0), FixedArray::make(n, true))
-  let irows : Array[(Int, Int)] = [(10, 3), (-7, 0), (0, 4), (0, 2), (3, 0)]
+  let irows : Array[(Int32, Int32)] = [(10, 3), (-7, 0), (0, 4), (0, 2), (3, 0)]
   for r in 0..<n {
     let (a, b) = irows[r]
     i1.set(r, @types.Int32(a))

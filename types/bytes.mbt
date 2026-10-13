@@ -5,7 +5,7 @@
 // for numeric, boolean or date columns.
 
 ///|
-pub fn parse_i32_bytes(buf : Bytes, start : Int, end : Int) -> Int? {
+pub fn parse_i32_bytes(buf : Bytes, start : Int32, end : Int32) -> Int32? {
   match parse_i64_bytes(buf, start, end) {
     Some(v) =>
       if v >= -2147483648L && v <= 2147483647L {
@@ -18,7 +18,7 @@ pub fn parse_i32_bytes(buf : Bytes, start : Int, end : Int) -> Int? {
 }
 
 ///|
-pub fn parse_i64_bytes(buf : Bytes, start : Int, end : Int) -> Int64? {
+pub fn parse_i64_bytes(buf : Bytes, start : Int32, end : Int32) -> Int64? {
   let mut acc = 0L
   let mut neg = false
   let mut seen_sign = false
@@ -58,7 +58,7 @@ pub fn parse_i64_bytes(buf : Bytes, start : Int, end : Int) -> Int64? {
 }
 
 ///|
-pub fn parse_f64_bytes(buf : Bytes, start : Int, end : Int) -> Double? {
+pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
   let n = end - start
   if n == 0 {
     return None
@@ -126,7 +126,7 @@ pub fn parse_f64_bytes(buf : Bytes, start : Int, end : Int) -> Double? {
 }
 
 ///|
-pub fn parse_bool_bytes(buf : Bytes, start : Int, end : Int) -> Bool? {
+pub fn parse_bool_bytes(buf : Bytes, start : Int32, end : Int32) -> Bool? {
   let n = end - start
   if n == 4 &&
     buf[start].to_int() == 116 && // t
@@ -148,7 +148,7 @@ pub fn parse_bool_bytes(buf : Bytes, start : Int, end : Int) -> Bool? {
 
 ///|
 /// Strict ISO "yyyy-mm-dd" over a byte range, mirroring parse_date.
-pub fn parse_date_bytes(buf : Bytes, start : Int, end : Int) -> Int? {
+pub fn parse_date_bytes(buf : Bytes, start : Int32, end : Int32) -> Int32? {
   if end - start != 10 ||
     buf[start + 4].to_int() != 45 ||
     buf[start + 7].to_int() != 45 {
@@ -182,7 +182,7 @@ fn is_digit_byte(b : Byte) -> Bool {
 }
 
 ///|
-fn digits4(buf : Bytes, off : Int) -> Int? {
+fn digits4(buf : Bytes, off : Int32) -> Int32? {
   match
     (
       digit_byte(buf[off]),
@@ -197,7 +197,7 @@ fn digits4(buf : Bytes, off : Int) -> Int? {
 }
 
 ///|
-fn digits2(buf : Bytes, off : Int) -> Int? {
+fn digits2(buf : Bytes, off : Int32) -> Int32? {
   match (digit_byte(buf[off]), digit_byte(buf[off + 1])) {
     (Some(a), Some(b)) => Some(a * 10 + b)
     _ => None
@@ -205,7 +205,7 @@ fn digits2(buf : Bytes, off : Int) -> Int? {
 }
 
 ///|
-fn digit_byte(b : Byte) -> Int? {
+fn digit_byte(b : Byte) -> Int32? {
   let v = b.to_int()
   if v >= 48 && v <= 57 {
     Some(v - 48)

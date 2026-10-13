@@ -6,7 +6,7 @@
 ///|
 pub struct FsStore {
   dir : String
-  mut next : Int
+  mut next : Int32
 }
 
 ///|
@@ -24,7 +24,7 @@ pub fn FsStore::new(dir : String) -> FsStore raise {
 /// The engine-facing store value; closures capture this FsStore.
 pub fn FsStore::store(self : FsStore) -> @engine.SpillStore {
   {
-    write: fn(bytes : Bytes) -> Int raise @types.SqlError {
+    write: fn(bytes : Bytes) -> Int32 raise @types.SqlError {
       let id = self.next
       self.next += 1
       let path = "\{self.dir}/run\{id}.bin"
@@ -34,12 +34,12 @@ pub fn FsStore::store(self : FsStore) -> @engine.SpillStore {
       }
       id
     },
-    read: fn(id : Int) -> Bytes raise @types.SqlError {
+    read: fn(id : Int32) -> Bytes raise @types.SqlError {
       @fs.read_file_to_bytes("\{self.dir}/run\{id}.bin") catch {
         @fs.IOError(msg) => raise @types.SqlError::Execute("spill read: \{msg}")
       }
     },
-    remove: fn(id : Int) -> Unit {
+    remove: fn(id : Int32) -> Unit {
       // best-effort: a missing file is already the goal
       @fs.remove_file("\{self.dir}/run\{id}.bin") catch {
         @fs.IOError(_) => ()
