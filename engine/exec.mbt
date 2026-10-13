@@ -28,7 +28,7 @@ fn compact(
   batch : @types.DataBatch,
   mask : FixedArray[Bool],
 ) -> @types.DataBatch {
-  let indices : Array[Int] = []
+  let indices : Array[Int32] = []
   for r in 0..<batch.row_count() {
     if mask[r] {
       indices.push(r)
@@ -42,7 +42,7 @@ fn compact(
 /// Each column is one typed gather.
 fn take_rows(
   batch : @types.DataBatch,
-  indices : Array[Int],
+  indices : Array[Int32],
 ) -> @types.DataBatch {
   let columns : Array[@types.ColumnVector] = []
   for src in batch.columns() {
@@ -375,11 +375,11 @@ fn canonical_key(vals : Array[@types.Scalar]) -> String {
 /// maps: the first null-keyed row opens a shared null group.
 priv enum Grouper {
   GZero // no GROUP BY: exactly one group
-  GI32(Map[Int64, Int])
-  GI64(Map[Int64, Int])
-  GDate(Map[Int64, Int])
-  GStr(Map[String, Int])
-  GText(Map[String, Int], StringBuilder)
+  GI32(Map[Int64, Int32])
+  GI64(Map[Int64, Int32])
+  GDate(Map[Int64, Int32])
+  GStr(Map[String, Int32])
+  GText(Map[String, Int32], StringBuilder)
 }
 
 ///|
@@ -389,7 +389,7 @@ priv enum Grouper {
 /// non-numeric inputs stay boxed.
 priv enum FastInput {
   FBoxed(@types.ColumnVector)
-  FI32(FixedArray[Int], FixedArray[Bool])
+  FI32(FixedArray[Int32], FixedArray[Bool])
   FI64(FixedArray[Int64], FixedArray[Bool])
   FF64(FixedArray[Double], FixedArray[Bool])
 }
@@ -737,7 +737,7 @@ fn aggregate(
 /// (first-seen order, so ORDER BY ties stay stable).
 fn dedupe_rows(batch : @types.DataBatch) -> @types.DataBatch {
   let seen : Map[String, Bool] = Map([])
-  let indices : Array[Int] = []
+  let indices : Array[Int32] = []
   for r in 0..<batch.row_count() {
     let kv : Array[@types.Scalar] = []
     for c in batch.columns() {
@@ -788,11 +788,11 @@ fn project(
 /// input order.
 fn cmp_decorated(
   key_cols : Array[Array[@types.Scalar]],
-  keys : Array[(Int, Bool, Bool?)],
+  keys : Array[(Int32, Bool, Bool?)],
   nulls_first : Array[Bool?],
-  a : Int,
-  b : Int,
-) -> Int {
+  a : Int32,
+  b : Int32,
+) -> Int32 {
   for k, kv in keys {
     let x = key_cols[k][a]
     let y = key_cols[k][b]
@@ -800,7 +800,7 @@ fn cmp_decorated(
       Some(f) => f
       None => false
     }
-    let ord : Int = match (x, y) {
+    let ord : Int32 = match (x, y) {
       (@types.Null, @types.Null) => 0
       (@types.Null, _) => if nf { -1 } else { 1 }
       (_, @types.Null) => if nf { 1 } else { -1 }
@@ -824,7 +824,7 @@ fn cmp_decorated(
 /// NULL placement for one key comparison: Some(ord) when a null is
 /// involved (NULLS LAST by default, first when the key says so), None
 /// when both values are present.
-fn null_ord(xnull : Bool, ynull : Bool, nf : Bool) -> Int? {
+fn null_ord(xnull : Bool, ynull : Bool, nf : Bool) -> Int32? {
   if xnull && ynull {
     Some(0)
   } else if xnull {
@@ -842,12 +842,12 @@ fn null_ord(xnull : Bool, ynull : Bool, nf : Bool) -> Int? {
 /// NULLS FIRST/LAST are applied here, mirroring cmp_decorated.
 fn cmp_vec_rows(
   key : @types.ColumnVector,
-  ia : Int,
-  ib : Int,
+  ia : Int32,
+  ib : Int32,
   desc : Bool,
   nf : Bool,
-) -> Int {
-  fn finish(c : Int) -> Int {
+) -> Int32 {
+  fn finish(c : Int32) -> Int32 {
     if desc {
       -c
     } else {
@@ -899,12 +899,12 @@ fn cmp_vec_rows(
 ///|
 fn order_limit(
   batch : @types.DataBatch,
-  keys : Array[(Int, Bool, Bool?)],
-  limit : Int?,
-  offset : Int?,
+  keys : Array[(Int32, Bool, Bool?)],
+  limit : Int32?,
+  offset : Int32?,
 ) -> @types.DataBatch {
   let n = batch.row_count()
-  let indices : Array[Int] = []
+  let indices : Array[Int32] = []
   for i in 0..<n {
     indices.push(i)
   }
@@ -924,7 +924,7 @@ fn order_limit(
         },
       )
     }
-    fn cmp_rows(a : Int, b : Int) -> Int {
+    fn cmp_rows(a : Int32, b : Int32) -> Int32 {
       for k in 0..<key_vecs.length() {
         let ord = cmp_vec_rows(key_vecs[k], a, b, descs[k], nfs[k])
         if ord != 0 {
@@ -946,11 +946,11 @@ fn order_limit(
 fn sort_exprs(
   batch : @types.DataBatch,
   keys : Array[(PhysExpr, Bool, Bool?)],
-  offset : Int?,
-  limit : Int?,
+  offset : Int32?,
+  limit : Int32?,
 ) -> @types.DataBatch raise @types.SqlError {
   let n = batch.row_count()
-  let indices : Array[Int] = []
+  let indices : Array[Int32] = []
   for i in 0..<n {
     indices.push(i)
   }
@@ -968,7 +968,7 @@ fn sort_exprs(
         },
       )
     }
-    fn cmp_rows(a : Int, b : Int) -> Int {
+    fn cmp_rows(a : Int32, b : Int32) -> Int32 {
       for k in 0..<key_vecs.length() {
         let ord = cmp_vec_rows(key_vecs[k], a, b, descs[k], nfs[k])
         if ord != 0 {
@@ -986,13 +986,17 @@ fn sort_exprs(
 ///|
 /// The offset/limit window of a row-id list: skip `offset`, then take
 /// at most `limit`.
-fn window(indices : Array[Int], offset : Int?, limit : Int?) -> Array[Int] {
+fn window(
+  indices : Array[Int32],
+  offset : Int32?,
+  limit : Int32?,
+) -> Array[Int32] {
   let skip = match offset {
     Some(o) => o
     None => 0
   }
   let mut taken = 0
-  let out : Array[Int] = []
+  let out : Array[Int32] = []
   for i in indices {
     if taken >= skip {
       match limit {
@@ -1018,7 +1022,7 @@ fn window(indices : Array[Int], offset : Int?, limit : Int?) -> Array[Int] {
 /// ColumnVectors are shared with the source batch, not copied.
 fn narrow_batches(
   batches : Array[@types.DataBatch],
-  cols : Array[Int],
+  cols : Array[Int32],
 ) -> Array[@types.DataBatch] {
   batches.map(fn(b) {
     let columns : Array[@types.ColumnVector] = []
@@ -1102,8 +1106,8 @@ fn join_step(
   for e in step.keys_l {
     left_keys.push(eval_vec(e, left))
   }
-  let left_ids : Array[Int] = []
-  let right_ids : Array[Int] = [] // -1 marks a LEFT NULL extension
+  let left_ids : Array[Int32] = []
+  let right_ids : Array[Int32] = [] // -1 marks a LEFT NULL extension
   // FULL also preserves unmatched build rows: remember who matched
   let matched_build : FixedArray[Bool] = FixedArray::make(n_build, false)
   let track = step.kind is Full
@@ -1115,7 +1119,7 @@ fn join_step(
   }
   match int_keys {
     Some((bd, bv, ld, lv)) => {
-      let map : Map[Int64, Array[Int]] = Map([])
+      let map : Map[Int64, Array[Int32]] = Map([])
       for r in 0..<n_build {
         if bv[r] {
           // NULL join keys never match
@@ -1151,7 +1155,7 @@ fn join_step(
       }
     }
     None => {
-      let map : Map[String, Array[Int]] = Map([])
+      let map : Map[String, Array[Int32]] = Map([])
       for r in 0..<n_build {
         let kv : Array[@types.Scalar] = []
         for c in build_keys {
@@ -1220,9 +1224,9 @@ fn join_step(
 fn residual_passes(
   residual : PhysExpr?,
   left : @types.DataBatch,
-  lrow : Int,
+  lrow : Int32,
   build : @types.DataBatch,
-  brow : Int,
+  brow : Int32,
 ) -> Bool raise @types.SqlError {
   match residual {
     Some(re) =>
@@ -1265,7 +1269,7 @@ fn int_key_cols(
 /// The first `count` dtypes of the combined join layout.
 fn head_dtypes(
   dtypes : Array[@types.DataType],
-  count : Int,
+  count : Int32,
 ) -> Array[@types.DataType] {
   let out : Array[@types.DataType] = []
   for i in 0..<count {
@@ -1278,7 +1282,7 @@ fn head_dtypes(
 /// The last `count` dtypes of the combined join layout.
 fn tail_dtypes(
   dtypes : Array[@types.DataType],
-  count : Int,
+  count : Int32,
 ) -> Array[@types.DataType] {
   let out : Array[@types.DataType] = []
   let start = dtypes.length() - count
@@ -1292,9 +1296,9 @@ fn tail_dtypes(
 /// The combined flat row for one candidate pair (residual evaluation).
 fn combined_row(
   left : @types.DataBatch,
-  lrow : Int,
+  lrow : Int32,
   build : @types.DataBatch,
-  brow : Int,
+  brow : Int32,
 ) -> Array[@types.Scalar] {
   let row : Array[@types.Scalar] = []
   for c in 0..<left.columns().length() {
@@ -1323,8 +1327,8 @@ fn join_semi(
   let null_key_excludes = step.kind is Anti
   let inner_batch = concat_batches(inner, [])
   let n_inner = inner_batch.row_count()
-  let int_map : Map[Int64, Array[Int]] = Map([])
-  let str_map : Map[String, Array[Int]] = Map([])
+  let int_map : Map[Int64, Array[Int32]] = Map([])
+  let str_map : Map[String, Array[Int32]] = Map([])
   let inner_keys : Array[@types.ColumnVector] = []
   for e in step.keys_r {
     inner_keys.push(eval_vec(e, inner_batch))
@@ -1379,7 +1383,7 @@ fn join_semi(
   for e in step.keys_l {
     left_keys.push(eval_vec(e, left))
   }
-  let left_ids : Array[Int] = []
+  let left_ids : Array[Int32] = []
   for r in 0..<n_left {
     let kv : Array[@types.Scalar] = []
     for c in left_keys {
@@ -1438,7 +1442,7 @@ fn join_semi(
     columns.push(gather(left.columns()[c], left_ids))
   }
   for c in 0..<inner_batch.columns().length() {
-    let right_ids : Array[Int] = Array::make(left_ids.length(), -1)
+    let right_ids : Array[Int32] = Array::make(left_ids.length(), -1)
     columns.push(gather(inner_batch.columns()[c], right_ids))
   }
   @types.DataBatch::new(columns, left_ids.length())
@@ -1471,8 +1475,8 @@ fn join_swapped(
   for e in step.keys_r {
     probe_keys.push(eval_vec(e, probe))
   }
-  let acc_ids : Array[Int] = []
-  let right_ids : Array[Int] = [] // -1 marks a NULL accumulated side
+  let acc_ids : Array[Int32] = []
+  let right_ids : Array[Int32] = [] // -1 marks a NULL accumulated side
   let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
     int_key_cols(build_keys[0], probe_keys[0])
   } else {
@@ -1480,7 +1484,7 @@ fn join_swapped(
   }
   match int_keys {
     Some((bd, bv, pd, pv)) => {
-      let map : Map[Int64, Array[Int]] = Map([])
+      let map : Map[Int64, Array[Int32]] = Map([])
       for r in 0..<n_build {
         if bv[r] {
           let k = bd[r]
@@ -1512,7 +1516,7 @@ fn join_swapped(
       }
     }
     None => {
-      let map : Map[String, Array[Int]] = Map([])
+      let map : Map[String, Array[Int32]] = Map([])
       for r in 0..<n_build {
         let kv : Array[@types.Scalar] = []
         for c in build_keys {
@@ -1568,11 +1572,11 @@ fn join_swapped(
 /// Gather rows by id into a fresh vector. A negative id writes an
 /// invalid slot (LEFT join NULL extension). Typed per variant so the
 /// gather writes plain arrays, no boxed Scalars.
-fn gather(src : @types.ColumnVector, ids : Array[Int]) -> @types.ColumnVector {
+fn gather(src : @types.ColumnVector, ids : Array[Int32]) -> @types.ColumnVector {
   let n = ids.length()
   match src {
     @types.I32(d, valid) => {
-      let od : FixedArray[Int] = FixedArray::make(n, 0)
+      let od : FixedArray[Int32] = FixedArray::make(n, 0)
       let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
       for w, i in ids {
         if i >= 0 && valid[i] {
@@ -1627,7 +1631,7 @@ fn gather(src : @types.ColumnVector, ids : Array[Int]) -> @types.ColumnVector {
       @types.StrV(od, ovalid)
     }
     @types.DateV(d, valid) => {
-      let od : FixedArray[Int] = FixedArray::make(n, 0)
+      let od : FixedArray[Int32] = FixedArray::make(n, 0)
       let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
       for w, i in ids {
         if i >= 0 && valid[i] {
@@ -1686,9 +1690,9 @@ fn concat_batches(
 /// mirrors ColumnVector::set's silent mismatch ignore.
 fn copy_vec_range(
   dst : @types.ColumnVector,
-  w : Int,
+  w : Int32,
   src : @types.ColumnVector,
-  n : Int,
+  n : Int32,
 ) -> Unit {
   match (dst, src) {
     (@types.I32(dd, dv), @types.I32(sd, sv)) =>
@@ -1728,7 +1732,7 @@ fn copy_vec_range(
 ///|
 /// NULL-safe multiset key of a whole row (set operations compare rows,
 /// so unlike join keys a NULL here is a value that equals itself).
-fn row_key(batch : @types.DataBatch, r : Int) -> String {
+fn row_key(batch : @types.DataBatch, r : Int32) -> String {
   let kv : Array[@types.Scalar] = []
   for c in batch.columns() {
     kv.push(c.get(r))
@@ -1737,8 +1741,8 @@ fn row_key(batch : @types.DataBatch, r : Int) -> String {
 }
 
 ///|
-fn row_counts(batch : @types.DataBatch) -> Map[String, Int] {
-  let counts : Map[String, Int] = Map([])
+fn row_counts(batch : @types.DataBatch) -> Map[String, Int32] {
+  let counts : Map[String, Int32] = Map([])
   for r in 0..<batch.row_count() {
     let k = row_key(batch, r)
     match counts.get(k) {

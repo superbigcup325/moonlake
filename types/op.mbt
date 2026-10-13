@@ -35,7 +35,7 @@ pub fn CmpOp::flip(self : CmpOp) -> CmpOp {
 ///|
 /// Apply a comparison operator to a three-valued ordering result
 /// (Scalar::compare output): None ordering stays NULL.
-pub fn CmpOp::apply(self : CmpOp, ord : Int?) -> Scalar {
+pub fn CmpOp::apply(self : CmpOp, ord : Int32?) -> Scalar {
   match ord {
     None => Null
     Some(o) =>

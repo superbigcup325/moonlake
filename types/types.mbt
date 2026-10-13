@@ -30,11 +30,11 @@ pub fn DataType::to_string(self : DataType) -> String {
 pub(all) enum Scalar {
   Null
   Boolean(Bool)
-  Int32(Int)
+  Int32(Int32)
   Int64(Int64)
   Float64(Double)
   Str(String)
-  Date(Int) // days since 1970-01-01
+  Date(Int32) // days since 1970-01-01
 } derive(Eq, Debug)
 
 ///|

@@ -9,7 +9,7 @@
 ///|
 priv struct PrunePlan {
   bq : BoundQuery
-  table_cols : Array[Array[Int]] // kept columns per FROM table, new order
+  table_cols : Array[Array[Int32]] // kept columns per FROM table, new order
 }
 
 ///|
@@ -18,7 +18,7 @@ fn prune_bound(
   schemas : Array[@catalog.TableSchema],
 ) -> PrunePlan {
   let ntab = schemas.length()
-  let widths : Array[Int] = []
+  let widths : Array[Int32] = []
   for s in schemas {
     widths.push(s.columns.length())
   }
@@ -41,8 +41,8 @@ fn prune_bound(
   // flat-space expressions resolve through the join layout
   let total = bq.steps[bq.steps.length() - 1].right_offset +
     bq.steps[bq.steps.length() - 1].right_width
-  let slot_of : Array[Int] = Array::make(total, 0)
-  let local_of : Array[Int] = Array::make(total, 0)
+  let slot_of : Array[Int32] = Array::make(total, 0)
+  let local_of : Array[Int32] = Array::make(total, 0)
   for step in bq.steps {
     for l in 0..<step.right_width {
       slot_of[step.right_offset + l] = step.table
@@ -118,9 +118,9 @@ fn prune_bound(
     }
   }
   if all_needed {
-    let cols : Array[Array[Int]] = []
+    let cols : Array[Array[Int32]] = []
     for t in 0..<ntab {
-      let full : Array[Int] = []
+      let full : Array[Int32] = []
       for l in 0..<widths[t] {
         full.push(l)
       }
@@ -129,12 +129,12 @@ fn prune_bound(
     return { bq, table_cols: cols, }
   }
   // per-table new local index (kept columns keep their relative order)
-  let new_local : Array[Array[Int]] = []
-  let table_cols : Array[Array[Int]] = []
-  let new_width : Array[Int] = []
+  let new_local : Array[Array[Int32]] = []
+  let table_cols : Array[Array[Int32]] = []
+  let new_width : Array[Int32] = []
   for t in 0..<ntab {
-    let map : Array[Int] = Array::make(widths[t], -1)
-    let cols : Array[Int] = []
+    let map : Array[Int32] = Array::make(widths[t], -1)
+    let cols : Array[Int32] = []
     for l in 0..<widths[t] {
       if needed[t][l] {
         map[l] = cols.length()
@@ -146,8 +146,8 @@ fn prune_bound(
     new_width.push(cols.length())
   }
   // new offsets in join order, and the old-flat -> new-flat map
-  let new_off : Array[Int] = Array::make(ntab, 0)
-  let flat_map : Array[Int] = Array::make(total, -1)
+  let new_off : Array[Int32] = Array::make(ntab, 0)
+  let flat_map : Array[Int32] = Array::make(total, -1)
   let mut acc_w = 0
   for step in bq.steps {
     let t = step.table
@@ -279,7 +279,7 @@ fn copy_dtypes(dts : Array[@types.DataType]) -> Array[@types.DataType] {
 /// index to (table, local column).
 fn collect_refs(
   e : PhysExpr,
-  resolve : (Int) -> (Int, Int),
+  resolve : (Int32) -> (Int32, Int32),
   needed : Array[Array[Bool]],
 ) -> Unit {
   match e {
@@ -334,7 +334,10 @@ fn collect_refs(
 
 ///|
 /// Deep-copy an expression list with every ColRef index remapped.
-fn rewrite_all(exprs : Array[PhysExpr], m : (Int) -> Int) -> Array[PhysExpr] {
+fn rewrite_all(
+  exprs : Array[PhysExpr],
+  m : (Int32) -> Int32,
+) -> Array[PhysExpr] {
   let out : Array[PhysExpr] = []
   for e in exprs {
     out.push(rewrite_refs(e, m))
@@ -343,7 +346,7 @@ fn rewrite_all(exprs : Array[PhysExpr], m : (Int) -> Int) -> Array[PhysExpr] {
 }
 
 ///|
-fn rewrite_opt(e : PhysExpr?, m : (Int) -> Int) -> PhysExpr? {
+fn rewrite_opt(e : PhysExpr?, m : (Int32) -> Int32) -> PhysExpr? {
   match e {
     Some(inner) => Some(rewrite_refs(inner, m))
     None => None
@@ -354,7 +357,7 @@ fn rewrite_opt(e : PhysExpr?, m : (Int) -> Int) -> PhysExpr? {
 /// Deep-copy ORDER BY keys with every ColRef index remapped.
 fn rewrite_order_exprs(
   keys : Array[(PhysExpr, Bool, Bool?)],
-  m : (Int) -> Int,
+  m : (Int32) -> Int32,
 ) -> Array[(PhysExpr, Bool, Bool?)] {
   let out : Array[(PhysExpr, Bool, Bool?)] = []
   for k in keys {
@@ -364,7 +367,7 @@ fn rewrite_order_exprs(
 }
 
 ///|
-fn rewrite_refs(e : PhysExpr, m : (Int) -> Int) -> PhysExpr {
+fn rewrite_refs(e : PhysExpr, m : (Int32) -> Int32) -> PhysExpr {
   match e {
     ColRef(i, dt) => ColRef(m(i), dt)
     Const(v) => Const(v)

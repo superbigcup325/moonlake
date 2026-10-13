@@ -6,7 +6,7 @@
 pub fn eval_scalar(
   e : PhysExpr,
   batch : @types.DataBatch,
-  row : Int,
+  row : Int32,
 ) -> @types.Scalar raise @types.SqlError {
   eval_with(e, fn(i) { batch.columns()[i].get(row) })
 }
@@ -23,7 +23,7 @@ fn eval_row(
 ///|
 fn eval_with(
   e : PhysExpr,
-  get : (Int) -> @types.Scalar,
+  get : (Int32) -> @types.Scalar,
 ) -> @types.Scalar raise @types.SqlError {
   match e {
     ColRef(i, _) => get(i)
@@ -322,7 +322,7 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
 }
 
 ///|
-fn char_count(s : String) -> Int {
+fn char_count(s : String) -> Int32 {
   let mut c = 0
   for _ in s {
     c += 1
@@ -371,7 +371,7 @@ fn sqrt_fn(v : Double) -> Double {
 }
 
 ///|
-fn pow10i(e : Int) -> Double {
+fn pow10i(e : Int32) -> Double {
   let mut v = 1.0
   for _ in 0..<e {
     v = v * 10.0

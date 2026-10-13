@@ -4,11 +4,11 @@
 
 ///|
 /// Rows per DataBatch emitted by the CSV scan.
-const BATCH_SIZE : Int = 4096
+const BATCH_SIZE : Int32 = 4096
 
 ///|
 /// Sample rows consulted per column when inferring a type.
-const INFER_SAMPLE : Int = 100
+const INFER_SAMPLE : Int32 = 100
 
 ///|
 /// Scan CSV content (with a header row) into a registered table entry.
@@ -272,14 +272,14 @@ fn build_column(
   dtype : @types.DataType,
   buf : Bytes,
   raw : RawCsv,
-  start : Int,
-  end : Int,
-  c : Int,
+  start : Int32,
+  end : Int32,
+  c : Int32,
 ) -> @types.ColumnVector raise @types.SqlError {
   let n = end - start
   match dtype {
     Int32 => {
-      let d : FixedArray[Int] = FixedArray::make(n, 0)
+      let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
@@ -371,7 +371,7 @@ fn build_column(
       @types.BoolV(d, valid)
     }
     Date => {
-      let d : FixedArray[Int] = FixedArray::make(n, 0)
+      let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
         let i = raw.row_start(r + 1) + c
@@ -414,8 +414,8 @@ fn build_batch(
   dtypes : Array[@types.DataType],
   buf : Bytes,
   raw : RawCsv,
-  start : Int,
-  end : Int,
+  start : Int32,
+  end : Int32,
 ) -> @types.DataBatch raise @types.SqlError {
   let columns : Array[@types.ColumnVector] = []
   for c, dtype in dtypes {

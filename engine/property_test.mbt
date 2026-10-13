@@ -6,19 +6,19 @@
 ///|
 /// Deterministic small tables: k in 0..3, s in {a,b,c} with occasional
 /// NULL (empty CSV cell), v in -5..14 with occasional NULL.
-fn gen_table(seed : Int) -> (String, Array[(Int, String?, Int?)]) {
+fn gen_table(seed : Int32) -> (String, Array[(Int32, String?, Int32?)]) {
   let rng : Rng = { state: (seed.to_uint64() & 0xFFFFUL) | 0x9E37UL, }
   let n = 1 + rng.next() % 12
   let sb = StringBuilder()
   sb.write_string("k,s,v\n")
-  let rows : Array[(Int, String?, Int?)] = []
+  let rows : Array[(Int32, String?, Int32?)] = []
   for _ in 0..<n {
     let k = rng.next() % 4
     let s : String? = match rng.next() % 8 {
       0 => None
       other => Some(["a", "b", "c"][other % 3])
     }
-    let v : Int? = match rng.next() % 8 {
+    let v : Int32? = match rng.next() % 8 {
       0 => None
       other => Some(other % 20 - 5)
     }
@@ -42,7 +42,7 @@ priv struct Rng {
 }
 
 ///|
-fn Rng::next(self : Rng) -> Int {
+fn Rng::next(self : Rng) -> Int32 {
   self.state = self.state * 6364136223846793005UL + 1442695040888963407UL
   (self.state >> 33).to_int()
 }
@@ -62,7 +62,7 @@ fn run_q(sql : String, cat : @catalog.Catalog) -> @engine.SelectResult {
 }
 
 ///|
-fn as_int(s : @types.Scalar) -> Int? {
+fn as_int(s : @types.Scalar) -> Int32? {
   match s {
     @types.Int32(x) => Some(x)
     @types.Int64(x) => Some(x.to_int())
@@ -74,9 +74,9 @@ fn as_int(s : @types.Scalar) -> Int? {
 /// Model for: SELECT k, count(*), count(v), sum(v), min(v), max(v)
 ///            FROM t WHERE s = 'a' GROUP BY k ORDER BY k
 fn model_group(
-  rows : Array[(Int, String?, Int?)],
-) -> Array[(Int, (Int, Int, Int?, Int?, Int?))] {
-  let picked : Array[(Int, Int?)] = []
+  rows : Array[(Int32, String?, Int32?)],
+) -> Array[(Int32, (Int32, Int32, Int32?, Int32?, Int32?))] {
+  let picked : Array[(Int32, Int32?)] = []
   for row in rows {
     match row.1 {
       Some("a") => picked.push((row.0, row.2))
@@ -84,15 +84,15 @@ fn model_group(
     }
   }
   picked.sort_by((x, y) => x.0 - y.0)
-  let out : Array[(Int, (Int, Int, Int?, Int?, Int?))] = []
+  let out : Array[(Int32, (Int32, Int32, Int32?, Int32?, Int32?))] = []
   let mut i = 0
   while i < picked.length() {
     let k = picked[i].0
     let mut cnt = 0
     let mut cnt_v = 0
-    let mut sum : Int? = Some(0)
-    let mut lo : Int? = None
-    let mut hi : Int? = None
+    let mut sum : Int32? = Some(0)
+    let mut lo : Int32? = None
+    let mut hi : Int32? = None
     while i < picked.length() && picked[i].0 == k {
       cnt += 1
       match picked[i].1 {
@@ -248,7 +248,7 @@ test "property: sum over groups equals the whole-table sum" {
       let cat = build_catalog(csv)
       let total = as_int(run_q("SELECT sum(v) AS s FROM t", cat).get(0, 0))
       let grouped = run_q("SELECT k, sum(v) AS s FROM t GROUP BY k", cat)
-      let mut acc : Int? = None
+      let mut acc : Int32? = None
       for r in 0..<grouped.row_count() {
         match as_int(grouped.get(r, 1)) {
           Some(x) =>
@@ -289,20 +289,20 @@ priv struct Rng2 {
 }
 
 ///|
-fn Rng2::next(self : Rng2) -> Int {
+fn Rng2::next(self : Rng2) -> Int32 {
   self.state = self.state * 6364136223846793005UL + 1442695040888963407UL
   (self.state >> 33).to_int()
 }
 
 ///|
-fn vprop_seed(seed : Int) -> UInt64 {
+fn vprop_seed(seed : Int32) -> UInt64 {
   ((seed.to_uint64() & 0xFFFFFFFFUL) * 2654435761UL) | 0x9E3779B9UL
 }
 
 ///|
 /// Columns: 0=i32a(mag 100) 1=i32b(mag 5) 2=i64a 3=f64a 4=str 5=bool
 /// 6=date. A NULL roughly every 9th (7th for str/bool) cell.
-fn vprop_batch(n : Int, seed : Int) -> @types.DataBatch {
+fn vprop_batch(n : Int32, seed : Int32) -> @types.DataBatch {
   let r : Rng2 = { state: vprop_seed(seed * 17 + 3), }
   let cols : Array[@types.ColumnVector] = []
   for spec in [(0, 100), (1, 5)] {
@@ -460,7 +460,7 @@ fn vprop_leaf(r : Rng2, ty : VT) -> @engine.PhysExpr {
 /// Typed random PhysExpr generator (depth-bounded). Every arm yields
 /// exactly its target type: comparisons and IS NULL are Bool-only,
 /// EXTRACT is Int32-only, and leaves fill the rest.
-fn vprop_expr(r : Rng2, ty : VT, depth : Int) -> @engine.PhysExpr raise {
+fn vprop_expr(r : Rng2, ty : VT, depth : Int32) -> @engine.PhysExpr raise {
   if depth <= 0 {
     return vprop_leaf(r, ty)
   }
@@ -624,7 +624,7 @@ fn vprop_pattern(r : Rng2) -> String {
 }
 
 ///|
-fn vprop_case(seed : Int) -> Bool raise {
+fn vprop_case(seed : Int32) -> Bool raise {
   let r : Rng2 = { state: vprop_seed(seed * 31 + 7), }
   let sizes = [0, 1, 2, 3, 5, 17, 4095, 4096, 4097]
   let n = sizes[r.next() % sizes.length()]
@@ -665,12 +665,12 @@ test "property: eval_vec agrees with eval_scalar on random expressions" {
 
 ///|
 fn jprop_tables(
-  seed : Int,
-) -> (Array[(Int, Int?, Int?)], Array[(Int, Int?, Int?)]) {
+  seed : Int32,
+) -> (Array[(Int32, Int32?, Int32?)], Array[(Int32, Int32?, Int32?)]) {
   let r : Rng2 = { state: vprop_seed(seed * 7 + 11), }
   let mode = r.next() % 3
-  fn keys(n : Int) -> Array[Int?] {
-    let out : Array[Int?] = []
+  fn keys(n : Int32) -> Array[Int32?] {
+    let out : Array[Int32?] = []
     for _ in 0..<n {
       out.push(
         match mode {
@@ -689,11 +689,11 @@ fn jprop_tables(
     out
   }
 
-  fn vals(n : Int) -> Array[Int?] {
+  fn vals(n : Int32) -> Array[Int32?] {
     // at least one non-NULL: an all-empty CSV column infers as STRING,
     // which would turn the residual into a type error, not a semantics
     // question
-    let out : Array[Int?] = []
+    let out : Array[Int32?] = []
     for _ in 0..<n {
       out.push(if r.next() % 5 == 0 { None } else { Some(r.next() % 5) })
     }
@@ -712,8 +712,8 @@ fn jprop_tables(
   kb[0] = Some(if r.next() % 2 == 0 { 1 } else { 2 })
   let va = vals(na)
   let vb = vals(nb)
-  let a : Array[(Int, Int?, Int?)] = []
-  let b : Array[(Int, Int?, Int?)] = []
+  let a : Array[(Int32, Int32?, Int32?)] = []
+  let b : Array[(Int32, Int32?, Int32?)] = []
   for i in 0..<na {
     a.push((i + 1, ka[i], va[i]))
   }
@@ -724,11 +724,11 @@ fn jprop_tables(
 }
 
 ///|
-fn jprop_csv(name : String, rows : Array[(Int, Int?, Int?)]) -> String {
+fn jprop_csv(name : String, rows : Array[(Int32, Int32?, Int32?)]) -> String {
   let sb = StringBuilder()
   sb.write_string(if name == "b" { "id,k,w\n" } else { "id,k,v\n" })
   for row in rows {
-    fn cell(x : Int?) -> String {
+    fn cell(x : Int32?) -> String {
       match x {
         Some(v) => v.to_string()
         None => ""
@@ -742,7 +742,7 @@ fn jprop_csv(name : String, rows : Array[(Int, Int?, Int?)]) -> String {
 }
 
 ///|
-fn jprop_key(ak : Int?, bk : Int?) -> Bool {
+fn jprop_key(ak : Int32?, bk : Int32?) -> Bool {
   match (ak, bk) {
     (Some(x), Some(y)) => x == y
     _ => false // NULL keys never match
@@ -750,7 +750,7 @@ fn jprop_key(ak : Int?, bk : Int?) -> Bool {
 }
 
 ///|
-fn jprop_res(av : Int?, bw : Int?, res : Bool) -> Bool {
+fn jprop_res(av : Int32?, bw : Int32?, res : Bool) -> Bool {
   if !res {
     return true
   }
@@ -771,12 +771,12 @@ fn jprop_cat(csv_a : String, csv_b : String) -> @catalog.Catalog {
 ///|
 /// Expected rows of the modeled join as (aid, bid) with NULLs last.
 fn jprop_expect(
-  a : Array[(Int, Int?, Int?)],
-  b : Array[(Int, Int?, Int?)],
-  kind : Int,
+  a : Array[(Int32, Int32?, Int32?)],
+  b : Array[(Int32, Int32?, Int32?)],
+  kind : Int32,
   res : Bool,
-) -> Array[(Int?, Int?)] {
-  let out : Array[(Int?, Int?)] = []
+) -> Array[(Int32?, Int32?)] {
+  let out : Array[(Int32?, Int32?)] = []
   match kind {
     // 0 inner (ON or WHERE residual — same predicate set)
     0 =>
@@ -932,7 +932,7 @@ fn jprop_expect(
 }
 
 ///|
-fn jprop_case(seed : Int) -> Bool {
+fn jprop_case(seed : Int32) -> Bool {
   let r : Rng2 = { state: vprop_seed(seed * 13 + 5), }
   let (a, b) = jprop_tables(seed)
   let res = r.next() % 2 == 0

@@ -44,7 +44,7 @@ fn code_dtype(code : Byte) -> DataType raise SqlError {
 }
 
 ///|
-fn write_i32(out : @buffer.Buffer, v : Int) -> Unit {
+fn write_i32(out : @buffer.Buffer, v : Int32) -> Unit {
   let x = v.reinterpret_as_uint()
   out.write_byte((x & 0xFF).to_byte())
   out.write_byte(((x >> 8) & 0xFF).to_byte())
@@ -63,9 +63,9 @@ fn write_i64(out : @buffer.Buffer, v : Int64) -> Unit {
 ///|
 fn read_i32_checked(
   buf : Bytes,
-  pos : Int,
+  pos : Int32,
   what : String,
-) -> Int raise SqlError {
+) -> Int32 raise SqlError {
   if pos + 4 > buf.length() {
     raise SqlError::Execute(
       "spill read: truncated at \{what} (pos \{pos}, len \{buf.length()})",
@@ -75,7 +75,7 @@ fn read_i32_checked(
 }
 
 ///|
-fn read_i32(buf : Bytes, pos : Int) -> Int {
+fn read_i32(buf : Bytes, pos : Int32) -> Int32 {
   let b0 = buf[pos].to_int()
   let b1 = buf[pos + 1].to_int()
   let b2 = buf[pos + 2].to_int()
@@ -84,7 +84,7 @@ fn read_i32(buf : Bytes, pos : Int) -> Int {
 }
 
 ///|
-fn read_i64(buf : Bytes, pos : Int) -> Int64 {
+fn read_i64(buf : Bytes, pos : Int32) -> Int64 {
   let mut v : UInt64 = 0UL
   for k in 0..<8 {
     v = v | ((buf[pos + k].to_int().to_uint64() & 0xFFUL) << (k * 8))
@@ -98,7 +98,7 @@ fn write_f64(out : @buffer.Buffer, v : Double) -> Unit {
 }
 
 ///|
-fn read_f64(buf : Bytes, pos : Int) -> Double {
+fn read_f64(buf : Bytes, pos : Int32) -> Double {
   read_i64(buf, pos).reinterpret_as_double()
 }
 
@@ -165,10 +165,10 @@ pub fn DataBatch::to_spill_bytes(batches : Array[DataBatch]) -> Bytes {
 ///|
 fn read_col(
   buf : Bytes,
-  start : Int,
+  start : Int32,
   dt : DataType,
-  n : Int,
-) -> (ColumnVector, Int) raise SqlError {
+  n : Int32,
+) -> (ColumnVector, Int32) raise SqlError {
   let vec = ColumnVector::make(dt, n)
   let flags = start
   let mut pos = start + n

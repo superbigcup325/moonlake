@@ -6,7 +6,7 @@
 /// (binder guarantees matching types). Callers that pre-filter NULL —
 /// sort comparators, min/max folds — use this instead of
 /// Scalar::compare to avoid an Option allocation per comparison.
-pub fn Scalar::compare_nn(a : Scalar, b : Scalar) -> Int {
+pub fn Scalar::compare_nn(a : Scalar, b : Scalar) -> Int32 {
   match (a, b) {
     (Int32(x), Int32(y)) => cmp_i(x, y)
     (Int64(x), Int64(y)) => if x < y { -1 } else if x > y { 1 } else { 0 }
@@ -26,7 +26,7 @@ pub fn Scalar::compare_nn(a : Scalar, b : Scalar) -> Int {
 ///|
 /// Three-valued comparison: Some(-1|0|1), or None when either side is Null
 /// or the types do not compare (binder guarantees matching types).
-pub fn Scalar::compare(a : Scalar, b : Scalar) -> Int? {
+pub fn Scalar::compare(a : Scalar, b : Scalar) -> Int32? {
   match (a, b) {
     (Int32(x), Int32(y)) => Some(cmp_i(x, y))
     (Int64(x), Int64(y)) =>
@@ -58,7 +58,7 @@ pub fn Scalar::compare(a : Scalar, b : Scalar) -> Int? {
 }
 
 ///|
-fn cmp_i(x : Int, y : Int) -> Int {
+fn cmp_i(x : Int32, y : Int32) -> Int32 {
   if x < y {
     -1
   } else if x > y {

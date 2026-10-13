@@ -31,7 +31,7 @@ pub extend TableSchema with Eq::{equal, not_equal}
 pub extend TableSchema with @debug.Debug::{to_repr}
 
 ///|
-pub fn TableSchema::index_of(self : TableSchema, name : String) -> Int? {
+pub fn TableSchema::index_of(self : TableSchema, name : String) -> Int32? {
   for i, col in self.columns {
     if col.name == name {
       return Some(i)

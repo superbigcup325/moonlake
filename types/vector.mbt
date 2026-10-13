@@ -4,16 +4,16 @@
 
 ///|
 pub(all) enum ColumnVector {
-  I32(FixedArray[Int], FixedArray[Bool])
+  I32(FixedArray[Int32], FixedArray[Bool])
   I64(FixedArray[Int64], FixedArray[Bool])
   F64(FixedArray[Double], FixedArray[Bool])
   BoolV(FixedArray[Bool], FixedArray[Bool])
   StrV(FixedArray[String], FixedArray[Bool])
-  DateV(FixedArray[Int], FixedArray[Bool]) // epoch days
+  DateV(FixedArray[Int32], FixedArray[Bool]) // epoch days
 }
 
 ///|
-pub fn ColumnVector::len(self : ColumnVector) -> Int {
+pub fn ColumnVector::len(self : ColumnVector) -> Int32 {
   match self {
     I32(d, _) => d.length()
     I64(d, _) => d.length()
@@ -38,7 +38,7 @@ pub fn ColumnVector::dtype(self : ColumnVector) -> DataType {
 
 ///|
 /// Element access with validity: invalid slots come back as Null.
-pub fn ColumnVector::get(self : ColumnVector, i : Int) -> Scalar {
+pub fn ColumnVector::get(self : ColumnVector, i : Int32) -> Scalar {
   let valid = match self {
     I32(_, v) => v[i]
     I64(_, v) => v[i]
@@ -62,7 +62,7 @@ pub fn ColumnVector::get(self : ColumnVector, i : Int) -> Scalar {
 
 ///|
 /// Allocate an all-valid vector of the given type and length.
-pub fn ColumnVector::make(dtype : DataType, n : Int) -> ColumnVector {
+pub fn ColumnVector::make(dtype : DataType, n : Int32) -> ColumnVector {
   let valid = FixedArray::make(n, true)
   match dtype {
     Int32 => I32(FixedArray::make(n, 0), valid)
@@ -77,7 +77,7 @@ pub fn ColumnVector::make(dtype : DataType, n : Int) -> ColumnVector {
 ///|
 /// Write a scalar at position i. Writing Null marks the slot invalid.
 /// Type must match the vector (caller responsibility, binder-checked).
-pub fn ColumnVector::set(self : ColumnVector, i : Int, v : Scalar) -> Unit {
+pub fn ColumnVector::set(self : ColumnVector, i : Int32, v : Scalar) -> Unit {
   match (self, v) {
     (I32(d, valid), Int32(x)) => {
       d[i] = x
@@ -120,7 +120,7 @@ pub fn ColumnVector::set(self : ColumnVector, i : Int, v : Scalar) -> Unit {
 /// A chunk of rows in column form.
 pub struct DataBatch {
   columns : Array[ColumnVector]
-  row_count : Int
+  row_count : Int32
 }
 
 ///|
@@ -129,14 +129,14 @@ pub fn DataBatch::columns(self : DataBatch) -> Array[ColumnVector] {
 }
 
 ///|
-pub fn DataBatch::row_count(self : DataBatch) -> Int {
+pub fn DataBatch::row_count(self : DataBatch) -> Int32 {
   self.row_count
 }
 
 ///|
 pub fn DataBatch::new(
   columns : Array[ColumnVector],
-  row_count : Int,
+  row_count : Int32,
 ) -> DataBatch {
   { columns, row_count, }
 }

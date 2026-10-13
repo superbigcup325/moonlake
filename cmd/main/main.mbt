@@ -34,7 +34,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   let mut analyze = false
   let mut json = false
   let mut sql_file : String? = None
-  let mut memory : Int = 0
+  let mut memory : Int32 = 0
   let mut spill_dir : String? = None
   let mut i = 2
   let n = args.length()
@@ -196,7 +196,7 @@ fn cli_fail(msg : String) -> @types.SqlError {
 fn run_query(
   sql : String,
   cat : @catalog.Catalog,
-  memory : Int,
+  memory : Int32,
   spill_dir : String?,
 ) -> @engine.SelectResult raise @types.SqlError {
   if memory <= 0 {
@@ -247,7 +247,7 @@ fn pick_spill_dir() -> String raise @types.SqlError {
 
 ///|
 /// Bytes with an optional K/M/G suffix (case-insensitive).
-fn parse_memory(text : String) -> Int raise @types.SqlError {
+fn parse_memory(text : String) -> Int32 raise @types.SqlError {
   if text.length() == 0 {
     raise @types.SqlError::Execute("--memory: empty value")
   }
@@ -289,7 +289,7 @@ fn join_names(names : Array[String]) -> String {
 }
 
 ///|
-fn join_row(result : @engine.SelectResult, r : Int) -> String {
+fn join_row(result : @engine.SelectResult, r : Int32) -> String {
   let sb = StringBuilder()
   for c in 0..<result.names().length() {
     if c > 0 {

@@ -13,16 +13,16 @@
 // is out of M1's scope) and not the query result itself.
 
 ///|
-const FANIN : Int = 8
+const FANIN : Int32 = 8
 
 ///|
 priv struct RunReader {
   batches : Array[@types.DataBatch]
-  mut bi : Int
-  mut ri : Int
+  mut bi : Int32
+  mut ri : Int32
   mut row : Array[@types.Scalar] // current pre-projection row, empty when exhausted
   mut keys : Array[@types.Scalar] // key values of the current row
-  width : Int
+  width : Int32
   types : Array[@types.DataType]
   keyspecs : Array[(PhysExpr, Bool, Bool?)]
 }
@@ -50,7 +50,7 @@ fn RunReader::advance(self : RunReader) -> Unit raise @types.SqlError {
     row.push(batch.columns()[c].get(self.ri))
   }
   self.row = row
-  let get : (Int) -> @types.Scalar = fn(i) { row[i] }
+  let get : (Int32) -> @types.Scalar = fn(i) { row[i] }
   let keys : Array[@types.Scalar] = []
   for kv in self.keyspecs {
     keys.push(eval_with(kv.0, get))
@@ -97,7 +97,7 @@ fn cmp_key_rows(
   a : Array[@types.Scalar],
   b : Array[@types.Scalar],
   keyspecs : Array[(PhysExpr, Bool, Bool?)],
-) -> Int {
+) -> Int32 {
   for k, kv in keyspecs {
     let x = a[k]
     let y = b[k]
@@ -105,7 +105,7 @@ fn cmp_key_rows(
       Some(f) => f
       None => false
     }
-    let ord : Int = match (x, y) {
+    let ord : Int32 = match (x, y) {
       (@types.Null, @types.Null) => 0
       (@types.Null, _) => if nf { -1 } else { 1 }
       (_, @types.Null) => if nf { 1 } else { -1 }
@@ -126,7 +126,7 @@ fn cmp_key_rows(
 }
 
 ///|
-fn estimate_batch_bytes(batch : @types.DataBatch) -> Int {
+fn estimate_batch_bytes(batch : @types.DataBatch) -> Int32 {
   let mut total = 16
   for col in batch.columns() {
     let n = col.len()
@@ -150,10 +150,10 @@ fn estimate_batch_bytes(batch : @types.DataBatch) -> Int {
 ///|
 fn chunk_of(
   batch : @types.DataBatch,
-  from : Int,
-  until : Int,
+  from : Int32,
+  until : Int32,
 ) -> @types.DataBatch {
-  let indices : Array[Int] = []
+  let indices : Array[Int32] = []
   for r in from..<until {
     indices.push(r)
   }
@@ -164,10 +164,10 @@ fn chunk_of(
 /// Sorted-run accumulator over the spill store.
 priv struct RunWriter {
   store : SpillStore
-  budget : Int
+  budget : Int32
   mut acc : Array[@types.DataBatch]
-  mut acc_bytes : Int
-  ids : Array[Int] // spill file ids in run order
+  mut acc_bytes : Int32
+  ids : Array[Int32] // spill file ids in run order
 }
 
 ///|
@@ -207,11 +207,11 @@ fn external_sort_project(
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
   distinct : Bool,
-  offset : Int?,
-  limit : Int?,
-  budget : Int,
+  offset : Int32?,
+  limit : Int32?,
+  budget : Int32,
   store : SpillStore,
-  stats : Array[(String, Int)],
+  stats : Array[(String, Int32)],
 ) -> @types.DataBatch raise @types.SqlError {
   let writer : RunWriter = { store, budget, acc: [], acc_bytes: 0, ids: [], }
   for batch in kept {
@@ -286,23 +286,23 @@ fn external_sort_project(
 /// merge. Removes every intermediate file it creates, successfully or
 /// not.
 fn reduce_and_merge(
-  runs0 : Array[Int],
+  runs0 : Array[Int32],
   keys : Array[(PhysExpr, Bool, Bool?)],
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
   distinct : Bool,
-  offset : Int?,
-  limit : Int?,
+  offset : Int32?,
+  limit : Int32?,
   store : SpillStore,
 ) -> @types.DataBatch raise @types.SqlError {
-  let created : Array[Int] = [] // intermediate files this function wrote
+  let created : Array[Int32] = [] // intermediate files this function wrote
   errdefer (for id in created {
     let _ = (store.remove)(id)
   })
-  fn go(level : Array[Int]) -> @types.DataBatch raise @types.SqlError {
+  fn go(level : Array[Int32]) -> @types.DataBatch raise @types.SqlError {
     let mut cur = level
     while cur.length() > FANIN {
-      let next : Array[Int] = []
+      let next : Array[Int32] = []
       let mut i = 0
       while i < cur.length() {
         if i + 1 < cur.length() {
@@ -324,13 +324,13 @@ fn reduce_and_merge(
 
 ///|
 fn final_merge(
-  runs : Array[Int],
+  runs : Array[Int32],
   keys : Array[(PhysExpr, Bool, Bool?)],
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
   distinct : Bool,
-  offset : Int?,
-  limit : Int?,
+  offset : Int32?,
+  limit : Int32?,
   store : SpillStore,
 ) -> @types.DataBatch raise @types.SqlError {
   let readers : Array[RunReader] = []
@@ -369,7 +369,7 @@ fn final_merge(
     if offset is Some(o) && skipped < o {
       skipped += 1
     } else {
-      let get : (Int) -> @types.Scalar = fn(i) { row[i] }
+      let get : (Int32) -> @types.Scalar = fn(i) { row[i] }
       let projected : Array[@types.Scalar] = []
       for e in out_exprs {
         projected.push(eval_with(e, get))
@@ -404,11 +404,11 @@ fn final_merge(
 /// Merge two run files into a new one (row payloads only, ordering
 /// preserved). Memory = the two inputs plus the merged buffer.
 fn merge_runs(
-  a : Int,
-  b : Int,
+  a : Int32,
+  b : Int32,
   keys : Array[(PhysExpr, Bool, Bool?)],
   store : SpillStore,
-) -> Int raise @types.SqlError {
+) -> Int32 raise @types.SqlError {
   let ra = RunReader::make(
     @types.DataBatch::from_spill_bytes((store.read)(a)),
     keys,
@@ -452,15 +452,15 @@ fn merge_runs(
 /// Column builder for streamed output rows.
 priv struct OutputBuilder {
   types : Array[@types.DataType]
-  cap : Int
-  mut filled : Int
+  cap : Int32
+  mut filled : Int32
   cols : Array[@types.ColumnVector]
 }
 
 ///|
 fn OutputBuilder::new(
   types : Array[@types.DataType],
-  cap : Int,
+  cap : Int32,
 ) -> OutputBuilder {
   let cols : Array[@types.ColumnVector] = []
   for dt in types {
@@ -503,8 +503,8 @@ fn finish_sorted(
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
   distinct : Bool,
-  offset : Int?,
-  limit : Int?,
+  offset : Int32?,
+  limit : Int32?,
 ) -> @types.DataBatch raise @types.SqlError {
   let projected = project(sorted, out_exprs, out_types)
   let projected = if distinct { dedupe_rows(projected) } else { projected }

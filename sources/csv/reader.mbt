@@ -9,8 +9,8 @@
 /// for a 600k-row table (SF0.1 lineitem) and the GC churn dominates the
 /// scan; FixedArray doubling amortizes to plain memory copies.
 priv struct GrowI {
-  mut data : FixedArray[Int]
-  mut len : Int
+  mut data : FixedArray[Int32]
+  mut len : Int32
 }
 
 ///|
@@ -19,9 +19,9 @@ fn GrowI::new() -> GrowI {
 }
 
 ///|
-fn GrowI::push(self : GrowI, v : Int) -> Unit {
+fn GrowI::push(self : GrowI, v : Int32) -> Unit {
   if self.len == self.data.length() {
-    let grown : FixedArray[Int] = FixedArray::make(self.len * 2, 0)
+    let grown : FixedArray[Int32] = FixedArray::make(self.len * 2, 0)
     for i in 0..<self.len {
       grown[i] = self.data[i]
     }
@@ -32,14 +32,14 @@ fn GrowI::push(self : GrowI, v : Int) -> Unit {
 }
 
 ///|
-fn GrowI::truncate(self : GrowI, n : Int) -> Unit {
+fn GrowI::truncate(self : GrowI, n : Int32) -> Unit {
   self.len = n
 }
 
 ///|
 priv struct GrowB {
   mut data : FixedArray[Bool]
-  mut len : Int
+  mut len : Int32
 }
 
 ///|
@@ -61,7 +61,7 @@ fn GrowB::push(self : GrowB, v : Bool) -> Unit {
 }
 
 ///|
-fn GrowB::truncate(self : GrowB, n : Int) -> Unit {
+fn GrowB::truncate(self : GrowB, n : Int32) -> Unit {
   self.len = n
 }
 
@@ -70,7 +70,7 @@ fn GrowB::truncate(self : GrowB, n : Int) -> Unit {
 /// while doubling, and the raw arrays outlive the scan in RawCsv.
 fn GrowI::trim(self : GrowI) -> Unit {
   if self.len != self.data.length() {
-    let exact : FixedArray[Int] = FixedArray::make(self.len, 0)
+    let exact : FixedArray[Int32] = FixedArray::make(self.len, 0)
     for i in 0..<self.len {
       exact[i] = self.data[i]
     }
@@ -99,21 +99,21 @@ priv struct RawCsv {
 }
 
 ///|
-fn RawCsv::n_rows(self : RawCsv) -> Int {
+fn RawCsv::n_rows(self : RawCsv) -> Int32 {
   self.rows.len - 1
 }
 
 ///|
 /// Cells of row r occupy [row_start(r), row_start(r + 1)) in the cell
 /// arrays.
-fn RawCsv::row_start(self : RawCsv, r : Int) -> Int {
+fn RawCsv::row_start(self : RawCsv, r : Int32) -> Int32 {
   self.rows.data[r]
 }
 
 ///|
 /// The cell carries no value: an unquoted empty field or a bare ""
 /// (both decode to the empty string, both read back as NULL).
-fn RawCsv::is_empty_cell(self : RawCsv, i : Int) -> Bool {
+fn RawCsv::is_empty_cell(self : RawCsv, i : Int32) -> Bool {
   self.starts.data[i] == self.ends.data[i] ||
   (self.quoted.data[i] && self.ends.data[i] - self.starts.data[i] == 2)
 }
@@ -205,7 +205,7 @@ fn scan_csv(buf : Bytes) -> RawCsv {
 ///|
 /// Decode one cell to its String value: quoted fields drop the outer
 /// quotes and fold "" escapes; everything else decodes the raw range.
-fn RawCsv::decode(self : RawCsv, i : Int) -> String {
+fn RawCsv::decode(self : RawCsv, i : Int32) -> String {
   let s = self.starts.data[i]
   let e = self.ends.data[i]
   if !self.quoted.data[i] {
