@@ -1,4 +1,4 @@
-# Benchmark the golden queries: moonlake (native binary, best of 3) vs
+# Benchmark the TPC-H queries: moonlake (native binary, best of 3) vs
 # duckdb (best of 3, in-process). Purely informational — the plan
 # promises reproducible numbers, not superiority.
 #
@@ -9,6 +9,7 @@
 #   uv run --with duckdb python harness/bench.py 0.1      # SF0.1
 
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -22,17 +23,31 @@ data = root / "harness" / "data" / tag
 
 BIN = root / "_build" / "native" / "debug" / "build" / "cmd" / "main" / "main.exe"
 
-# query name -> csv files it scans (the parquet chain is excluded)
-CSV = {
-    "q1": ["lineitem"],
-    "q3": ["customer", "orders", "lineitem"],
-    "q5": ["customer", "orders", "lineitem", "supplier", "nation", "region"],
-    "q6": ["lineitem"],
-    "q7": ["supplier", "lineitem", "orders", "customer", "nation", "nation"],
-    "q10": ["customer", "orders", "lineitem", "nation"],
-    "q12": ["orders", "lineitem"],
-    "q14": ["lineitem", "part"],
-}
+TABLES = (
+    "customer",
+    "lineitem",
+    "nation",
+    "orders",
+    "part",
+    "partsupp",
+    "region",
+    "supplier",
+)
+QUERIES = sorted((f"q{i}" for i in range(1, 23)), key=lambda q: int(q[1:]))
+
+
+# the csv files a query scans, derived from the official text (the
+# parquet chain is excluded). String literals are stripped first so
+# pattern words can never look like tables; tables follow FROM, JOIN
+# or a comma in a FROM list.
+def tables_for(sql: str) -> list[str]:
+    bare = re.sub(r"'[^']*'", "''", sql)
+    found: list[str] = []
+    for m in re.finditer(rf"(?:\bfrom\b|\bjoin\b|,)\s+({'|'.join(TABLES)})\b", bare, re.I):
+        t = m.group(1).lower()
+        if t not in found:
+            found.append(t)
+    return found
 
 
 def best_of(fn, n=3) -> float:
@@ -56,10 +71,10 @@ def main() -> int:
 
     print("| query | moonlake native (best of 3) | duckdb (best of 3) |")
     print("|---|---|---|")
-    for name in sorted(CSV):
+    for name in QUERIES:
         sql = (root / "harness" / "queries" / f"{name}.sql").read_text()
         csvs = []
-        for t in CSV[name]:
+        for t in tables_for(sql):
             csvs += ["--csv", str(data / f"{t}.csv")]
         def moonlake():
             subprocess.run(
