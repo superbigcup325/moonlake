@@ -203,8 +203,8 @@ pub(all) struct Select {
   items : Array[SelectItem]
   windows : Array[WindowSpec] // select-list window definitions, index = marker index
   order_by : Array[OrderItem]
-  limit : Int?
-  offset : Int? // rows skipped before LIMIT applies
+  limit : Int32?
+  offset : Int32? // rows skipped before LIMIT applies
   distinct : Bool // SELECT DISTINCT: dedupe the projected rows
   setop : (SetOpKind, Bool, Select)? // setop right; bool = ALL
 } derive(Eq, Debug)

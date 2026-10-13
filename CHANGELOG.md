@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- 2026-10-13 the in-house SQL front-end (lexer, parser, AST) moved out of `engine` into its own `sql` package: the engine imports `@sql`, the AST types (`Select`, `LExpr`, `AggFn`, …) live at `@sql.*`, and the parser-side `contains_win_marker` helper is now public there; the unused `moonbit-community/sqlparser` dependency was dropped from `moon.mod`; the in-house front-end is the roadmap and sqlparser remains upstream cooperation (visibility issues/PR), not a planned swap-in
+
 ### Added
 
 - 2026-10-05 hot-path perf arc — typed group indexes for hash aggregation (single int/date keys hash raw `Int64`s, a single string key hashes the column's own strings, composite keys share one reusable `StringBuilder` and materialize the boxed key row once per group instead of once per row); mutable accumulator payloads allocated once per group instead of an enum rebuild per fold step; numeric aggregate inputs (sum/avg/count/stddev/variance/median over `INT`/`FLOAT64`) fold straight from the typed arrays with no boxed `Scalar` per cell; `ORDER BY` sorts the key `ColumnVector`s directly via typed comparators (no boxed decoration, no `Option` per comparison — `Scalar::compare_nn` is the new non-null total compare, also used by the spill merge and min/max folds). SF0.1 Q1 2015 -> ~1.6 s (-21%), SF0.01 Q1 187 -> 136 ms (-27%), raw-table ORDER BY -4% (scan-dominated); all 27 duckdb goldens byte-identical throughout

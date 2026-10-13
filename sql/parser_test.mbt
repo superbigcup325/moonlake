@@ -4,7 +4,7 @@
 ///|
 test "parse precedence and between" {
   // a BETWEEN 1 AND 2 AND b > 0: BETWEEN consumes its own AND first
-  let sel = @engine.parse_select(
+  let sel = @sql.parse_select(
     "SELECT sum(x) AS s FROM t WHERE a BETWEEN 1 AND 2 AND b > 0",
   )
   match sel.filter {
@@ -19,9 +19,7 @@ test "parse precedence and between" {
 
 ///|
 test "arithmetic precedence: multiplication binds tighter" {
-  let sel = @engine.parse_select(
-    "SELECT sum(a) AS s FROM t WHERE a = 1 + 2 * 3",
-  )
+  let sel = @sql.parse_select("SELECT sum(a) AS s FROM t WHERE a = 1 + 2 * 3")
   match sel.filter {
     Some(
       Cmp(
@@ -44,7 +42,7 @@ test "arithmetic precedence: multiplication binds tighter" {
 
 ///|
 test "case insensitive keywords" {
-  let sel = @engine.parse_select("select SUM(a) revenue from t where x <> 1")
+  let sel = @sql.parse_select("select SUM(a) revenue from t where x <> 1")
   assert_eq(sel.from[0].table, Named("t"))
   assert_eq(sel.items[0].label, Some("revenue")) // bare alias (no AS)
   match sel.filter {
@@ -67,6 +65,6 @@ test "bad date literal is a parse error" {
 
 ///|
 fn parse_or_die(sql : String) -> @types.SqlError {
-  let _ = @engine.parse_select(sql) catch { e => return e }
+  let _ = @sql.parse_select(sql) catch { e => return e }
   abort("expected a parse error")
 }

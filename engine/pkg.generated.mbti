@@ -4,6 +4,7 @@ package "superbigcup325/moonlake/engine"
 import {
   "moonbitlang/core/debug",
   "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/sql",
   "superbigcup325/moonlake/types",
 }
 
@@ -16,8 +17,6 @@ pub fn explain(String, @catalog.Catalog) -> String raise @types.SqlError
 
 pub fn explain_analyze(String, @catalog.Catalog) -> String raise @types.SqlError
 
-pub fn parse_select(String) -> Select raise @types.SqlError
-
 pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError
 
 pub fn run_select_opts(String, @catalog.Catalog, ExecOptions) -> SelectResult raise @types.SqlError
@@ -25,25 +24,6 @@ pub fn run_select_opts(String, @catalog.Catalog, ExecOptions) -> SelectResult ra
 // Errors
 
 // Types and methods
-pub(all) enum AggFn {
-  Sum
-  Avg
-  Count
-  CountStar
-  CountDistinct
-  SdSamp
-  SdPop
-  StringAgg
-  VarSamp
-  VarPop
-  Median
-  Min
-  Max
-} derive(Eq, @debug.Debug)
-pub fn AggFn::equal(Self, Self) -> Bool
-pub fn AggFn::not_equal(Self, Self) -> Bool
-pub fn AggFn::to_repr(Self) -> @debug.Repr
-
 pub struct BoundQuery {
   // private fields
 } derive(@debug.Debug)
@@ -54,88 +34,6 @@ pub(all) struct ExecOptions {
   spill : SpillStore?
 }
 pub fn ExecOptions::in_memory() -> Self
-
-pub(all) enum ExtractField {
-  Year
-  Month
-  Day
-} derive(Eq, @debug.Debug)
-pub fn ExtractField::equal(Self, Self) -> Bool
-pub fn ExtractField::not_equal(Self, Self) -> Bool
-pub fn ExtractField::to_repr(Self) -> @debug.Repr
-
-pub(all) struct FromItem {
-  table : TableRef
-  tbl_alias : String?
-  col_aliases : Array[String]?
-  join : JoinKind
-  on : LExpr?
-} derive(Eq, @debug.Debug)
-pub fn FromItem::equal(Self, Self) -> Bool
-pub fn FromItem::not_equal(Self, Self) -> Bool
-pub fn FromItem::to_repr(Self) -> @debug.Repr
-
-pub(all) enum IntervalUnit {
-  Days
-  Months
-  Years
-} derive(Eq, @debug.Debug)
-pub fn IntervalUnit::equal(Self, Self) -> Bool
-pub fn IntervalUnit::not_equal(Self, Self) -> Bool
-pub fn IntervalUnit::to_repr(Self) -> @debug.Repr
-
-pub(all) enum JoinKind {
-  Inner
-  Left
-  Right
-  Full
-  Semi
-  Anti
-  AntiLoose
-  Cross
-} derive(Eq, @debug.Debug)
-pub fn JoinKind::equal(Self, Self) -> Bool
-pub fn JoinKind::not_equal(Self, Self) -> Bool
-pub fn JoinKind::to_repr(Self) -> @debug.Repr
-
-pub(all) enum LExpr {
-  Col(String)
-  ColQ(String, String)
-  Lit(@types.Scalar)
-  Arith(@types.ArithOp, LExpr, LExpr)
-  Cmp(@types.CmpOp, LExpr, LExpr)
-  And(LExpr, LExpr)
-  Or(LExpr, LExpr)
-  Not(LExpr)
-  Between(LExpr, LExpr, LExpr)
-  In(LExpr, Array[LExpr])
-  NotIn(LExpr, Array[LExpr])
-  Like(LExpr, LExpr)
-  NotLike(LExpr, LExpr)
-  IsNull(LExpr, Bool)
-  Star
-  Extract(ExtractField, LExpr)
-  Case(Array[(LExpr, LExpr)], LExpr?)
-  Agg(AggFn, LExpr?)
-  ScalarSub(Select)
-  InSelect(LExpr, Select, Bool)
-  Exists(Select, Bool)
-  Func(String, Array[LExpr])
-  Cast(LExpr, @types.DataType)
-  IntervalLit(Int64, IntervalUnit)
-} derive(Eq, @debug.Debug)
-pub fn LExpr::equal(Self, Self) -> Bool
-pub fn LExpr::not_equal(Self, Self) -> Bool
-pub fn LExpr::to_repr(Self) -> @debug.Repr
-
-pub(all) struct OrderItem {
-  key : LExpr
-  desc : Bool
-  nulls_first : Bool?
-} derive(Eq, @debug.Debug)
-pub fn OrderItem::equal(Self, Self) -> Bool
-pub fn OrderItem::not_equal(Self, Self) -> Bool
-pub fn OrderItem::to_repr(Self) -> @debug.Repr
 
 pub(all) enum PhysExpr {
   ColRef(Int, @types.DataType)
@@ -148,40 +46,15 @@ pub(all) enum PhysExpr {
   NotE(PhysExpr)
   LikeE(PhysExpr, String)
   IsNullE(PhysExpr, Bool)
-  ExtractE(PhysExpr, ExtractField)
+  ExtractE(PhysExpr, @sql.ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool)
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
   FuncE(String, Array[PhysExpr], @types.DataType)
   CastE(PhysExpr, @types.DataType)
-  DateArithE(PhysExpr, Int64, IntervalUnit)
+  DateArithE(PhysExpr, Int64, @sql.IntervalUnit)
   WinRef(Int, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
-
-pub(all) struct Select {
-  from : Array[FromItem]
-  filter : LExpr?
-  group_by : Array[LExpr]
-  having : LExpr?
-  items : Array[SelectItem]
-  windows : Array[WindowSpec]
-  order_by : Array[OrderItem]
-  limit : Int?
-  offset : Int?
-  distinct : Bool
-  setop : (SetOpKind, Bool, Select)?
-} derive(Eq, @debug.Debug)
-pub fn Select::equal(Self, Self) -> Bool
-pub fn Select::not_equal(Self, Self) -> Bool
-pub fn Select::to_repr(Self) -> @debug.Repr
-
-pub(all) struct SelectItem {
-  expr : LExpr
-  label : String?
-} derive(Eq, @debug.Debug)
-pub fn SelectItem::equal(Self, Self) -> Bool
-pub fn SelectItem::not_equal(Self, Self) -> Bool
-pub fn SelectItem::to_repr(Self) -> @debug.Repr
 
 pub struct SelectResult {
   // private fields
@@ -193,47 +66,11 @@ pub fn SelectResult::row_count(Self) -> Int
 pub fn SelectResult::to_json(Self) -> String
 pub fn SelectResult::types(Self) -> Array[@types.DataType]
 
-pub(all) enum SetOpKind {
-  Union
-  Intersect
-  Except
-} derive(Eq, @debug.Debug)
-pub fn SetOpKind::equal(Self, Self) -> Bool
-pub fn SetOpKind::not_equal(Self, Self) -> Bool
-pub fn SetOpKind::to_repr(Self) -> @debug.Repr
-
 pub(all) struct SpillStore {
   write : (Bytes) -> Int raise @types.SqlError
   read : (Int) -> Bytes raise @types.SqlError
   remove : (Int) -> Unit raise @types.SqlError
 }
-
-pub(all) enum TableRef {
-  Named(String)
-  Sub(Select)
-} derive(Eq, @debug.Debug)
-pub fn TableRef::equal(Self, Self) -> Bool
-pub fn TableRef::not_equal(Self, Self) -> Bool
-pub fn TableRef::to_repr(Self) -> @debug.Repr
-
-pub(all) enum WinFn {
-  RowNumber
-  Rank
-  DenseRank
-  Agg(AggFn, LExpr?)
-} derive(Eq, @debug.Debug)
-pub fn WinFn::equal(Self, Self) -> Bool
-pub fn WinFn::not_equal(Self, Self) -> Bool
-pub fn WinFn::to_repr(Self) -> @debug.Repr
-
-pub(all) struct WindowSpec {
-  fn_ : WinFn
-  partition : Array[LExpr]
-  order : Array[(LExpr, Bool, Bool?)]
-} derive(Eq, @debug.Debug)
-pub fn WindowSpec::equal(Self, Self) -> Bool
-pub fn WindowSpec::not_equal(Self, Self) -> Bool
-pub fn WindowSpec::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

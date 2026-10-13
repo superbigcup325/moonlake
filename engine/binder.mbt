@@ -15,7 +15,7 @@
 
 ///|
 pub(all) enum PhysExpr {
-  ColRef(Int, @types.DataType)
+  ColRef(Int32, @types.DataType)
   Const(@types.Scalar)
   Promote(PhysExpr, @types.DataType)
   ArithE(@types.ArithOp, PhysExpr, PhysExpr, @types.DataType)
@@ -25,17 +25,17 @@ pub(all) enum PhysExpr {
   NotE(PhysExpr)
   LikeE(PhysExpr, String) // pattern folded at bind time
   IsNullE(PhysExpr, Bool) // IS NULL (false) / IS NOT NULL (true)
-  ExtractE(PhysExpr, ExtractField)
+  ExtractE(PhysExpr, @sql.ExtractField)
   InSetE(PhysExpr, Map[String, Bool], Bool, Bool) // value, folded key set, negated, right side had NULL
   CaseE(Array[(PhysExpr, PhysExpr)], PhysExpr?, @types.DataType)
   FuncE(String, Array[PhysExpr], @types.DataType) // scalar function, name lowercased
   CastE(PhysExpr, @types.DataType) // CAST(expr AS type)
   // date +/- interval, quantity sign folded at bind (Sub negates)
-  DateArithE(PhysExpr, Int64, IntervalUnit)
+  DateArithE(PhysExpr, Int64, @sql.IntervalUnit)
   // select-list window marker: reads the Nth window output column
   // appended after the pre-projection row (exec_windows resolves it to
   // a plain ColRef once that column exists)
-  WinRef(Int, @types.DataType)
+  WinRef(Int32, @types.DataType)
 } derive(Debug)
 
 ///|
@@ -50,7 +50,7 @@ priv struct OrderSpec {
   expr : PhysExpr
   desc : Bool
   nulls_first : Bool?
-  out_col : Int?
+  out_col : Int32?
 } derive(Debug)
 
 ///|
@@ -112,15 +112,15 @@ fn BoundWin::out_type(self : BoundWin) -> @types.DataType {
 /// are Flat refs, keys_r Slot refs into the joining table; both are
 /// promoted to a common type so canonical keys match.
 priv struct JoinStep {
-  table : Int
-  kind : JoinKind
+  table : Int32
+  kind : @sql.JoinKind
   keys_l : Array[PhysExpr]
   keys_r : Array[PhysExpr]
   build_filter : PhysExpr? // Slot refs, applied to the joining table
   probe_filter : PhysExpr? // Flat refs, applied to accumulated rows
   residual : PhysExpr? // Flat refs, applied per candidate pair
-  right_offset : Int // flat offset of the joining table's first column
-  right_width : Int // column count of the joining table
+  right_offset : Int32 // flat offset of the joining table's first column
+  right_width : Int32 // column count of the joining table
   out_dtypes : Array[@types.DataType] // combined row layout after the step
 } derive(Debug)
 
@@ -139,8 +139,8 @@ pub struct BoundQuery {
   priv names : Array[String]
   priv out_types : Array[@types.DataType]
   priv order_by : Array[OrderSpec] // written-order sort keys
-  priv limit : Int?
-  priv offset : Int?
+  priv limit : Int32?
+  priv offset : Int32?
   priv distinct : Bool // SELECT DISTINCT: dedupe projected rows
 } derive(Debug)
 
@@ -151,26 +151,26 @@ pub extend BoundQuery with @debug.Debug::{to_repr}
 priv struct Binder {
   slots : Array[@catalog.TableSchema] // FROM order
   quals : Array[String] // alias (or table name) per slot, for ColQ lookup
-  mut offsets : Array[Int] // flat offset of each slot in JOIN order (set by plan_joins)
+  mut offsets : Array[Int32] // flat offset of each slot in JOIN order (set by plan_joins)
   runner : SubqueryRunner // executes non-correlated subqueries during binding
-  group_l : Array[LExpr] // GROUP BY exprs as written, for structural match
+  group_l : Array[@sql.LExpr] // GROUP BY exprs as written, for structural match
   group_types : Array[@types.DataType]
   aggs : Array[AggSpec]
-  agg_keys : Array[(AggFn, LExpr?)] // written shape of each spec, for dedup
+  agg_keys : Array[(@sql.AggFn, @sql.LExpr?)] // written shape of each spec, for dedup
   mut wins : Array[BoundWin] // bound window defs, set before items bind
 }
 
 ///|
 priv enum Space {
   Flat
-  Slot(Int)
+  Slot(Int32)
   AggOut
 }
 
 ///|
 priv struct Conjunct {
-  lexpr : LExpr
-  origin : Int? // Some(item index) for ON conjuncts, None for WHERE
+  lexpr : @sql.LExpr
+  origin : Int32? // Some(item index) for ON conjuncts, None for WHERE
 }
 
 ///|
@@ -187,7 +187,7 @@ priv struct SubqueryRunner {
 ///|
 fn SubqueryRunner::run_scalar(
   self : SubqueryRunner,
-  sel : Select,
+  sel : @sql.Select,
 ) -> (@types.Scalar, @types.DataType) raise @types.SqlError {
   let r = run_parsed(sel, self.catalog, [], self.opts)
   if r.names().length() != 1 {
@@ -214,7 +214,7 @@ fn SubqueryRunner::run_scalar(
 /// against its own FROM only).
 fn SubqueryRunner::run_exists(
   self : SubqueryRunner,
-  sel : Select,
+  sel : @sql.Select,
 ) -> Bool raise @types.SqlError {
   let r = run_parsed(sel, self.catalog, [], self.opts)
   r.row_count() > 0
@@ -223,7 +223,7 @@ fn SubqueryRunner::run_exists(
 ///|
 fn SubqueryRunner::run_key_set(
   self : SubqueryRunner,
-  sel : Select,
+  sel : @sql.Select,
 ) -> (Map[String, Bool], Bool, @types.DataType) raise @types.SqlError {
   let r = run_parsed(sel, self.catalog, [], self.opts)
   if r.names().length() != 1 {
@@ -242,7 +242,7 @@ fn SubqueryRunner::run_key_set(
 
 ///|
 fn bind_select(
-  sel : Select,
+  sel : @sql.Select,
   schemas : Array[@catalog.TableSchema],
   runner : SubqueryRunner,
 ) -> BoundQuery raise @types.SqlError {
@@ -264,7 +264,7 @@ fn bind_select(
   }
   // GROUP BY may reference select-list aliases (Q22's group by
   // cntrycode): substitute the aliased expression structurally
-  let group_by : Array[LExpr] = []
+  let group_by : Array[@sql.LExpr] = []
   for g in sel.group_by {
     let g = match g {
       Lit(@types.Int32(k)) => {
@@ -277,7 +277,7 @@ fn bind_select(
         sel.items[k - 1].expr
       }
       Col(name) => {
-        let mut hit : LExpr? = None
+        let mut hit : @sql.LExpr? = None
         for item in sel.items {
           match item.label {
             Some(l) => if l == name { hit = Some(item.expr) }
@@ -306,7 +306,7 @@ fn bind_select(
   }
   // GROUP BY may reference select-list aliases (Q22's group by
   // cntrycode): substitute the aliased expression structurally
-  let group_by : Array[LExpr] = []
+  let group_by : Array[@sql.LExpr] = []
   for g in sel.group_by {
     let g = match g {
       Lit(@types.Int32(k)) => {
@@ -318,7 +318,7 @@ fn bind_select(
         sel.items[k - 1].expr
       }
       Col(name) => {
-        let mut hit : LExpr? = None
+        let mut hit : @sql.LExpr? = None
         for item in sel.items {
           match item.label {
             Some(l) => if l == name { hit = Some(item.expr) }
@@ -371,7 +371,7 @@ fn bind_select(
   // FROM order (qualified refs keep duplicate names resolvable); in
   // aggregate mode the plain columns then fail binding with the usual
   // "must appear in GROUP BY" error, which is the right answer there too
-  let items : Array[SelectItem] = []
+  let items : Array[@sql.SelectItem] = []
   for item in sel.items {
     if item.expr is Star {
       for k, schema in schemas {
@@ -436,7 +436,7 @@ fn bind_select(
       ColQ(_, name) => Some(name)
       _ => None
     }
-    let mut idx : Int? = match key_name {
+    let mut idx : Int32? = match key_name {
       Some(name) => {
         let mut found = None
         for i, name2 in names {
@@ -500,7 +500,7 @@ fn bind_select(
 }
 
 ///|
-fn contains_agg(e : LExpr) -> Bool {
+fn contains_agg(e : @sql.LExpr) -> Bool {
   match e {
     Col(_) | ColQ(_, _) | Lit(_) => ()
     Agg(_, _) => return true
@@ -549,7 +549,7 @@ fn contains_agg(e : LExpr) -> Bool {
 }
 
 ///|
-fn default_name(expr : LExpr, index : Int) -> String {
+fn default_name(expr : @sql.LExpr, index : Int32) -> String {
   match expr {
     Col(name) => name
     ColQ(_, name) => name
@@ -567,7 +567,7 @@ fn default_name(expr : LExpr, index : Int) -> String {
 
 ///|
 /// Column-name label of an aggregate function (DuckDB-style lowercase).
-fn agg_label(fn_ : AggFn) -> String {
+fn agg_label(fn_ : @sql.AggFn) -> String {
   match fn_ {
     Sum => "sum"
     Avg => "avg"
@@ -583,7 +583,7 @@ fn agg_label(fn_ : AggFn) -> String {
 
 ///|
 /// The marker index of a select-list window item, None for anything else.
-fn win_marker_index(e : LExpr) -> Int? {
+fn win_marker_index(e : @sql.LExpr) -> Int32? {
   match e {
     Func("__win", [Lit(@types.Int32(k))]) => Some(k)
     _ => None
@@ -593,7 +593,7 @@ fn win_marker_index(e : LExpr) -> Int? {
 ///|
 /// Default output name of a window item (row_number, rank, ..., or the
 /// aggregate label), index-suffixed like aggregates.
-fn win_default_name(w : BoundWin, index : Int) -> String {
+fn win_default_name(w : BoundWin, index : Int32) -> String {
   let label = match w.kind {
     WRowNumber => "row_number"
     WRank => "rank"
@@ -628,8 +628,8 @@ fn agg_label_of_kind(kind : AggKind) -> String {
 fn Binder::lookup_slot(
   self : Binder,
   name : String,
-) -> Int raise @types.SqlError {
-  let mut hit : Int? = None
+) -> Int32 raise @types.SqlError {
+  let mut hit : Int32? = None
   let mut dup = false
   for k, s in self.slots {
     if s.index_of(name) is Some(_) {
@@ -653,7 +653,7 @@ fn Binder::lookup_slot(
 fn Binder::lookup_slot_by_qual(
   self : Binder,
   q : String,
-) -> Int raise @types.SqlError {
+) -> Int32 raise @types.SqlError {
   for k, s in self.slots {
     if self.quals[k] == q || s.table == q {
       return k
@@ -665,7 +665,10 @@ fn Binder::lookup_slot_by_qual(
 ///|
 /// Table mask of every column an expression references, resolved before
 /// binding (drives join conjunct classification).
-fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
+fn Binder::col_mask(
+  self : Binder,
+  e : @sql.LExpr,
+) -> Int32 raise @types.SqlError {
   match e {
     Col(name) => 1 << self.lookup_slot(name)
     ColQ(q, _) => 1 << self.lookup_slot_by_qual(q)
@@ -717,7 +720,7 @@ fn Binder::col_mask(self : Binder, e : LExpr) -> Int raise @types.SqlError {
 }
 
 ///|
-fn split_and(e : LExpr, out : Array[Conjunct], origin : Int?) -> Unit {
+fn split_and(e : @sql.LExpr, out : Array[Conjunct], origin : Int32?) -> Unit {
   match e {
     And(l, r) => {
       split_and(l, out, origin)
@@ -729,7 +732,7 @@ fn split_and(e : LExpr, out : Array[Conjunct], origin : Int?) -> Unit {
 
 ///|
 /// Top-level OR branches of a conjunct.
-fn or_branches(e : LExpr, out : Array[LExpr]) -> Unit {
+fn or_branches(e : @sql.LExpr, out : Array[@sql.LExpr]) -> Unit {
   match e {
     Or(l, r) => {
       or_branches(l, out)
@@ -741,7 +744,7 @@ fn or_branches(e : LExpr, out : Array[LExpr]) -> Unit {
 
 ///|
 /// Equality pairs inside a (possibly AND-chained) branch.
-fn and_eqs(e : LExpr, out : Array[(LExpr, LExpr)]) -> Unit {
+fn and_eqs(e : @sql.LExpr, out : Array[(@sql.LExpr, @sql.LExpr)]) -> Unit {
   match e {
     And(l, r) => {
       and_eqs(l, out)
@@ -757,27 +760,33 @@ fn and_eqs(e : LExpr, out : Array[(LExpr, LExpr)]) -> Unit {
 /// accumulated row and the joining table, return it (left, right).
 fn Binder::implied_eq(
   self : Binder,
-  e : LExpr,
-  acc_mask : Int,
-  cur_mask : Int,
-) -> (LExpr, LExpr)? raise @types.SqlError {
-  let disjuncts : Array[LExpr] = []
+  e : @sql.LExpr,
+  acc_mask : Int32,
+  cur_mask : Int32,
+) -> (@sql.LExpr, @sql.LExpr)? raise @types.SqlError {
+  let disjuncts : Array[@sql.LExpr] = []
   or_branches(e, disjuncts)
   if disjuncts.length() < 2 {
     return None
   }
-  let first : Array[(LExpr, LExpr)] = []
+  let first : Array[(@sql.LExpr, @sql.LExpr)] = []
   and_eqs(disjuncts[0], first)
-  let mut common : (LExpr, LExpr)? = None
+  let mut common : (@sql.LExpr, @sql.LExpr)? = None
   for cand in first {
     let mut all = true
     for k in 1..<disjuncts.length() {
-      let eqs : Array[(LExpr, LExpr)] = []
+      let eqs : Array[(@sql.LExpr, @sql.LExpr)] = []
       and_eqs(disjuncts[k], eqs)
       let mut found = false
       for pair in eqs {
-        if (LExpr::equal(cand.0, pair.0) && LExpr::equal(cand.1, pair.1)) ||
-          (LExpr::equal(cand.0, pair.1) && LExpr::equal(cand.1, pair.0)) {
+        if (
+            @sql.LExpr::equal(cand.0, pair.0) &&
+            @sql.LExpr::equal(cand.1, pair.1)
+          ) ||
+          (
+            @sql.LExpr::equal(cand.0, pair.1) &&
+            @sql.LExpr::equal(cand.1, pair.0)
+          ) {
           found = true
         }
       }
@@ -817,7 +826,7 @@ fn Binder::implied_eq(
 /// back as a deferred post-join filter.
 fn Binder::plan_joins(
   self : Binder,
-  sel : Select,
+  sel : @sql.Select,
 ) -> (Array[JoinStep], PhysExpr?) raise @types.SqlError {
   let pool : Array[Conjunct] = []
   match sel.filter {
@@ -835,7 +844,7 @@ fn Binder::plan_joins(
     consumed.push(false)
   }
   // join order
-  let order : Array[Int] = []
+  let order : Array[Int32] = []
   let mut has_left = false
   for item in sel.from {
     // any row-preserving join fixes the written order
@@ -848,7 +857,7 @@ fn Binder::plan_joins(
       order.push(i)
     }
   } else {
-    let remaining : Array[Int] = []
+    let remaining : Array[Int32] = []
     for i in 0..<sel.from.length() {
       remaining.push(i)
     }
@@ -881,7 +890,7 @@ fn Binder::plan_joins(
     }
   }
   // flat layout follows the join order
-  let offsets : Array[Int] = []
+  let offsets : Array[Int32] = []
   for _ in 0..<sel.from.length() {
     offsets.push(0)
   }
@@ -892,7 +901,7 @@ fn Binder::plan_joins(
   }
   self.offsets = offsets
   let steps : Array[JoinStep] = []
-  let acc_tables : Array[Int] = []
+  let acc_tables : Array[Int32] = []
   let mut acc_mask = 0
   for i in order {
     steps.push(
@@ -901,7 +910,7 @@ fn Binder::plan_joins(
     acc_tables.push(i)
     acc_mask = acc_mask | (1 << i)
   }
-  let leftover : Array[LExpr] = []
+  let leftover : Array[@sql.LExpr] = []
   for j, c in pool {
     if !consumed[j] {
       leftover.push(c.lexpr)
@@ -910,7 +919,7 @@ fn Binder::plan_joins(
   let deferred : PhysExpr? = if leftover.length() == 0 {
     None
   } else {
-    let mut acc : LExpr = leftover[0]
+    let mut acc : @sql.LExpr = leftover[0]
     for j in 1..<leftover.length() {
       acc = And(acc, leftover[j])
     }
@@ -930,8 +939,8 @@ fn Binder::plan_joins(
 /// across the accumulated row and table t?
 fn Binder::connects(
   self : Binder,
-  t : Int,
-  acc_mask : Int,
+  t : Int32,
+  acc_mask : Int32,
   pool : Array[Conjunct],
   consumed : Array[Bool],
 ) -> Bool raise @types.SqlError {
@@ -964,20 +973,20 @@ fn Binder::connects(
 ///|
 fn Binder::plan_step(
   self : Binder,
-  i : Int,
-  item : FromItem,
-  acc_tables : Array[Int], // slots joined so far, in join order
-  acc_mask : Int,
+  i : Int32,
+  item : @sql.FromItem,
+  acc_tables : Array[Int32], // slots joined so far, in join order
+  acc_mask : Int32,
   pool : Array[Conjunct],
   consumed : Array[Bool],
 ) -> JoinStep raise @types.SqlError {
   let cur_mask = 1 << i
   let both_masks = acc_mask | cur_mask
-  let build_l : Array[LExpr] = []
-  let probe_l : Array[LExpr] = []
-  let key_l : Array[LExpr] = []
-  let key_r : Array[LExpr] = []
-  let residual_l : Array[LExpr] = []
+  let build_l : Array[@sql.LExpr] = []
+  let probe_l : Array[@sql.LExpr] = []
+  let key_l : Array[@sql.LExpr] = []
+  let key_r : Array[@sql.LExpr] = []
+  let residual_l : Array[@sql.LExpr] = []
   for j, cj in pool {
     if consumed[j] {
       continue
@@ -1062,7 +1071,7 @@ fn Binder::plan_step(
           // a disjunction may imply an equality: Q19-style OR branches that
           // all contain the same equi pair (e.g. p_partkey = l_partkey)
           // yield a hash key while the full OR stays as the residual
-          let implied : (LExpr, LExpr)? = match cj.lexpr {
+          let implied : (@sql.LExpr, @sql.LExpr)? = match cj.lexpr {
             Or(_, _) => self.implied_eq(cj.lexpr, acc_mask, cur_mask)
             _ => None
           }
@@ -1137,14 +1146,14 @@ fn Binder::plan_step(
 ///|
 fn Binder::conjoin_bind(
   self : Binder,
-  lexprs : Array[LExpr],
+  lexprs : Array[@sql.LExpr],
   space : Space,
   what : String,
 ) -> PhysExpr? raise @types.SqlError {
   if lexprs.length() == 0 {
     return None
   }
-  let mut acc : LExpr = lexprs[0]
+  let mut acc : @sql.LExpr = lexprs[0]
   for j in 1..<lexprs.length() {
     acc = And(acc, lexprs[j])
   }
@@ -1162,13 +1171,13 @@ fn Binder::conjoin_bind(
 /// spec with the same written shape or create one.
 fn Binder::agg_ref(
   self : Binder,
-  fn_ : AggFn,
-  inner : LExpr?,
+  fn_ : @sql.AggFn,
+  inner : @sql.LExpr?,
 ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
   for k, key in self.agg_keys {
     let same_inner = match (key.1, inner) {
       (None, None) => true
-      (Some(a), Some(c)) => LExpr::equal(a, c)
+      (Some(a), Some(c)) => @sql.LExpr::equal(a, c)
       _ => false
     }
     if key.0 == fn_ && same_inner {
@@ -1187,8 +1196,8 @@ fn Binder::agg_ref(
 ///|
 fn Binder::bind_agg(
   self : Binder,
-  fn_ : AggFn,
-  inner : LExpr?,
+  fn_ : @sql.AggFn,
+  inner : @sql.LExpr?,
   space : Space,
 ) -> AggSpec raise @types.SqlError {
   if fn_ is CountStar {
@@ -1223,7 +1232,7 @@ fn Binder::bind_agg(
         )
     }
   }
-  if contains_win_marker(lexpr) {
+  if @sql.contains_win_marker(lexpr) {
     raise @types.SqlError::Bind(
       "window functions cannot appear inside aggregate arguments",
     )
@@ -1293,16 +1302,16 @@ fn Binder::bind_agg(
 /// Partition and order keys bind in the same space.
 fn Binder::bind_window(
   self : Binder,
-  w : WindowSpec,
+  w : @sql.WindowSpec,
   space : Space,
 ) -> BoundWin raise @types.SqlError {
   let spec : AggSpec = match w.fn_ {
     RowNumber | Rank | DenseRank =>
       { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
-    WinFn::Agg(f, inner) => self.bind_agg(f, inner, space)
+    @sql.WinFn::Agg(f, inner) => self.bind_agg(f, inner, space)
   }
-  fn check_no_nesting(e : LExpr) -> Unit raise @types.SqlError {
-    if contains_win_marker(e) {
+  fn check_no_nesting(e : @sql.LExpr) -> Unit raise @types.SqlError {
+    if @sql.contains_win_marker(e) {
       raise @types.SqlError::Bind("nested window functions are not allowed")
     }
   }
@@ -1320,14 +1329,14 @@ fn Binder::bind_window(
     order.push((pe, o.1, o.2))
   }
   match w.fn_ {
-    WinFn::Agg(_, Some(arg)) => check_no_nesting(arg)
+    @sql.WinFn::Agg(_, Some(arg)) => check_no_nesting(arg)
     _ => ()
   }
   let kind : WinKind = match w.fn_ {
     RowNumber => WRowNumber
     Rank => WRank
     DenseRank => WDenseRank
-    WinFn::Agg(_, _) => WAgg
+    @sql.WinFn::Agg(_, _) => WAgg
   }
   { kind, spec, partition, order, }
 }
@@ -1336,12 +1345,12 @@ fn Binder::bind_window(
 /// Bind a logical expression in the given space.
 fn Binder::bind(
   self : Binder,
-  e : LExpr,
+  e : @sql.LExpr,
   space : Space,
 ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
   if space is AggOut {
     for i, g in self.group_l {
-      if LExpr::equal(e, g) {
+      if @sql.LExpr::equal(e, g) {
         let dt = self.group_types[i]
         return (ColRef(i, dt), dt)
       }
@@ -1380,7 +1389,7 @@ fn Binder::bind(
           )
         _ => {
           let k = self.lookup_slot_by_qual(q)
-          let col_idx : Int? = self.slots[k].index_of(name)
+          let col_idx : Int32? = self.slots[k].index_of(name)
           match col_idx {
             Some(col_idx) => {
               let dt = self.slots[k].columns[col_idx].dtype
@@ -1537,12 +1546,15 @@ fn Binder::bind(
     }
     Between(v, low, high) => {
       // desugar: v >= low AND v <= high
-      let conj = And(Cmp(@types.Ge, v, low), Cmp(@types.Le, v, high))
+      let conj = @sql.And(
+        @sql.Cmp(@types.Ge, v, low),
+        @sql.Cmp(@types.Le, v, high),
+      )
       self.bind(conj, space)
     }
     In(v, items) => {
       // desugar: v = item1 OR v = item2 ... (empty list: FALSE)
-      let mut acc : LExpr = Lit(@types.Boolean(false))
+      let mut acc : @sql.LExpr = Lit(@types.Boolean(false))
       for item in items {
         acc = Or(Cmp(@types.Eq, v, item), acc)
       }
@@ -1699,8 +1711,8 @@ fn Binder::bind(
 fn Binder::bind_date_arith(
   self : Binder,
   op : @types.ArithOp,
-  l : LExpr,
-  r : LExpr,
+  l : @sql.LExpr,
+  r : @sql.LExpr,
   space : Space,
 ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
   if op is @types.Mul || op is @types.Div || op is @types.Mod {
@@ -1736,12 +1748,12 @@ fn Binder::bind_date_arith(
 fn Binder::bind_func(
   self : Binder,
   name : String,
-  args : Array[LExpr],
+  args : Array[@sql.LExpr],
   space : Space,
 ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
   let arity = args.length()
   fn want(
-    e : LExpr,
+    e : @sql.LExpr,
     dt : @types.DataType,
     what : String,
   ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
@@ -1753,7 +1765,9 @@ fn Binder::bind_func(
     }
     (pe, got)
   }
-  fn want_num(e : LExpr) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+  fn want_num(
+    e : @sql.LExpr,
+  ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
     let (pe, got) = self.bind(e, space)
     match got {
       @types.Int32 | @types.Int64 | @types.Float64 => ()
