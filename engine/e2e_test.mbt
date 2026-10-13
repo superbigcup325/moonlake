@@ -2390,12 +2390,16 @@ test "a budget without a spill store is a clear error" {
 }
 
 ///|
-test "aggregate ORDER BY stays in-memory under a budget" {
+test "aggregate GROUP BY under a budget matches in-memory" {
+  // spill milestone M3: the GROUP BY input (~24KB) exceeds the 9K
+  // budget, so the aggregation spills (each of the five groups is
+  // ~4.8KB and fits a partition); the grouped result must match the
+  // in-memory run row for row
   let cat = spill_catalog()
   let q = "SELECT k, sum(v) AS s1 FROM t GROUP BY k ORDER BY k"
   assert_same_result(
     run(q, cat),
-    run_opts(q, cat, { budget: 900, spill: Some(mem_store()), }),
+    run_opts(q, cat, { budget: 9000, spill: Some(mem_store()), }),
   )
 }
 
@@ -2606,4 +2610,113 @@ test "M2 errors: a skewed key that outgrows every partition is an error" {
     }
   }
   abort("expected a hash-skew error")
+}
+
+///|
+/// M3 fixtures: a 3000-row table whose group key carries NULLs and
+/// whose payload feeds every accumulator shape (sum/min/max/median/
+/// string_agg/count-distinct).
+fn m3_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  let sb = StringBuilder()
+  sb.write_string("id,k,v,s\n")
+  for i in 0..<3000 {
+    let k = if i % 23 == 0 { "" } else { (i % 11).to_string() }
+    sb.write_string("\{i},\{k},\{i * 3 % 97},s\{i % 7}\n")
+  }
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "M3 grace aggregation: accumulator family under a tiny budget matches in-memory" {
+  let cat = m3_catalog()
+  // budget 4096 against ~45KB of input forces many partitions; every
+  // accumulator shape must agree row for row, NULL group keys included
+  let queries = [
+    (
+      "sums", "SELECT k, count(*) AS c, sum(v) AS s, min(v) AS lo, max(v) AS hi FROM t GROUP BY k ORDER BY k",
+    ),
+    (
+      "median-strings", "SELECT k, median(v) AS m, string_agg(s, '|') AS g, count(DISTINCT s) AS d FROM t GROUP BY k ORDER BY k",
+    ),
+    (
+      "having", "SELECT k, count(*) AS c FROM t GROUP BY k HAVING count(*) > 200 ORDER BY k",
+    ),
+    ("null-keys", "SELECT k, count(*) AS c FROM t GROUP BY k ORDER BY k"),
+  ]
+  for entry in queries {
+    let (_, q) = entry
+    assert_same_result(
+      run(q, cat),
+      run_opts(q, cat, { budget: 4096, spill: Some(mem_store()), }),
+    )
+  }
+}
+
+///|
+test "M3 grace aggregation: 20k rows over 97 groups matches in-memory" {
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<20000 {
+    sb.write_string("\{i % 97},\{(i * 13) % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  // budget 65536 against ~160KB of input: ~50 partitions, each of the
+  // 97 groups lives in exactly one partition (~206 rows)
+  let q = "SELECT k, count(*) AS c, sum(v) AS s, median(v) AS m FROM t GROUP BY k ORDER BY k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 65536, spill: Some(mem_store()), }),
+  )
+}
+
+///|
+test "M3 errors: over budget without a spill store is a clean error" {
+  let cat = m3_catalog()
+  let _ = @engine.run_select_opts(
+    "SELECT k, sum(v) AS s FROM t GROUP BY k",
+    cat,
+    { budget: 100, spill: None, },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("provide a spill store"))
+      return
+    }
+  }
+  abort("expected an over-budget error")
+}
+
+///|
+test "M3 skew: a single group outgrowing every partition still aggregates" {
+  // one group holds all 5000 wide rows: after the 64-partition cap its
+  // partition exceeds the budget, and the aggregation falls back to an
+  // in-memory pass for that partition (group state cannot be split
+  // without a combine phase) — the result must still be exact
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<5000 {
+    let pad = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    sb.write_string("1,\{pad}\{i}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  let q = "SELECT k, count(*) AS c, min(v) AS lo, max(v) AS hi FROM t GROUP BY k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 8192, spill: Some(mem_store()), }),
+  )
 }

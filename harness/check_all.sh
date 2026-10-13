@@ -73,4 +73,13 @@ moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" \
 moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --memory 200K \
   "$(cat harness/queries/spilljoin.sql)" > "$work/spilljoin_spilled.txt"
 python3 harness/compare.py "$work/spilljoin_plain.txt" "$work/spilljoin_spilled.txt"
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort and grace-join equivalence checks"
+# grace hash aggregation equivalence: the same GROUP BY under a tiny
+# memory budget must match the in-memory run row-for-row (the input is
+# ~35x the budget, so the aggregation partitions across many files)
+echo "== spillagg (grace hash aggregation == in-memory)"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" \
+  "$(cat harness/queries/spillagg.sql)" > "$work/spillagg_plain.txt"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
+  "$(cat harness/queries/spillagg.sql)" > "$work/spillagg_spilled.txt"
+python3 harness/compare.py "$work/spillagg_plain.txt" "$work/spillagg_spilled.txt"
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort, grace-join and grace-aggregation equivalence checks"
