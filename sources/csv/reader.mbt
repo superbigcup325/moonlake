@@ -15,7 +15,7 @@ priv struct GrowI {
 
 ///|
 fn GrowI::new() -> GrowI {
-  { data: FixedArray::make(1024, 0), len: 0, }
+  { data: FixedArray::make(65536, 0), len: 0, }
 }
 
 ///|
@@ -27,7 +27,7 @@ fn GrowI::push(self : GrowI, v : Int32) -> Unit {
     }
     self.data = grown
   }
-  self.data[self.len] = v
+  self.data.unsafe_set(self.len, v)
   self.len += 1
 }
 
@@ -44,7 +44,7 @@ priv struct GrowB {
 
 ///|
 fn GrowB::new() -> GrowB {
-  { data: FixedArray::make(1024, false), len: 0, }
+  { data: FixedArray::make(65536, false), len: 0, }
 }
 
 ///|
@@ -56,7 +56,7 @@ fn GrowB::push(self : GrowB, v : Bool) -> Unit {
     }
     self.data = grown
   }
-  self.data[self.len] = v
+  self.data.unsafe_set(self.len, v)
   self.len += 1
 }
 
@@ -153,17 +153,27 @@ fn scan_csv(buf : Bytes) -> RawCsv {
         }
         // literal characters between the closing quote and the field
         // separator stay part of the field (lenient on malformed input)
-        while pos < n && buf[pos].to_int() != 44 && buf[pos].to_int() != 10 {
+        while pos < n {
+          let b = buf[pos].to_int()
+          if b == 44 || b == 10 {
+            break
+          }
           pos += 1
         }
         field_end = pos
       } else {
-        while pos < n && buf[pos].to_int() != 44 && buf[pos].to_int() != 10 {
+        // read each byte once: the field body touches it a single time
+        while pos < n {
+          let b = buf.unsafe_get(pos).to_int()
+          if b == 44 || b == 10 {
+            break
+          }
           pos += 1
         }
         field_end = pos
         // CRLF: the \r belongs to the terminator, not the field
-        if field_end > field_start && buf[field_end - 1].to_int() == 13 {
+        if field_end > field_start &&
+          buf.unsafe_get(field_end - 1).to_int() == 13 {
           field_end -= 1
         }
       }
