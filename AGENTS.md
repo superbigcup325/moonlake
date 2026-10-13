@@ -57,3 +57,5 @@ You can browse and install extra skills here:
 - moon fmt 曾把 README.md 替换成悬空软链吞内容；定式 = README.mbt.md 真身 + README.md 软链
 - GitHub Actions fresh runner 必须先 `moon update && moon install` 再 check/test（本地 .mooncakes 缓存会掩盖，验证法 = wipe .mooncakes 模拟 fresh clone）
 - 本地 `moon test` 走 `moon.mod` 的 preferred target（wasm-gc），不覆盖 native；CI 另跑 `test (native)`。改到 fs/CSV 这类后端有差异的路径必须 `moon test --target native` 自测（2026-10-09 实录：`scan_files` fixture 用 `fs.create_dir` 非递归建 `target/` 子目录，本地与 JS/wasm-gc 全绿、CI native 红）
+- 新 moon（0.1.20261012 起）拒收仍带旧版 `moon.mod.json` manifest 的依赖（quickcheck@0.14.0、mizchi/duckdb@0.6.4 实录，后者经 mizchi/parquet@0.2.2 传递引入）；`moon install` 后对 `.mooncakes/*/*/` 里仍有 `moon.mod.json` 的目录逐个跑 `moon fmt` 即可原地迁移成 `moon.mod`（CI 三个 workflow 已内置该步骤）。同版 `moon fmt` 会把源码里的 `Int` 规范改写为 `Int32`（`Int` 仍是合法别名，混合风格可编译过 `--deny-warn`），故任何 commit 触到 .mbt 文件都可能顺带带入该重写
+- cli.moonbitlang.com 安装脚本已改读 `MOONBIT_INSTALL_VERSION`/首个位置参数（CI 旧 `MOONBIT_VERSION` env 失效），且归档只服务 latest，显式 pin 任何版本（含当前版号）都 403，工具链无法回装或钉版；CI 改为装 latest 并只记录 `moon version` 不做 grep 门禁（2026-10-13 实录）
