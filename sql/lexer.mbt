@@ -6,7 +6,7 @@
 ///|
 priv enum Tok {
   Ident(String)
-  IntLit(Int)
+  IntLit(Int32)
   Int64Lit(Int64)
   DoubleLit(Double)
   StrLit(String)
@@ -74,7 +74,7 @@ priv enum Tok {
 ///|
 priv struct Lexer {
   chars : Array[Char]
-  mut pos : Int
+  mut pos : Int32
 }
 
 ///|

@@ -11,7 +11,7 @@
 ///|
 priv struct Parser {
   toks : Array[Tok]
-  mut pos : Int
+  mut pos : Int32
   // WITH cte AS (SELECT ...) name -> body token slice; a reference
   // re-parses the slice into a fresh derived table per occurrence
   ctes : Map[String, Array[Tok]]
@@ -27,7 +27,7 @@ fn Parser::peek(self : Parser) -> Tok {
 }
 
 ///|
-fn Parser::peek_at(self : Parser, off : Int) -> Tok {
+fn Parser::peek_at(self : Parser, off : Int32) -> Tok {
   let i = self.pos + off
   if i < self.toks.length() {
     self.toks[i]
@@ -288,7 +288,7 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
   } else {
     None
   }
-  let offset : Int? = if p.peek() is Ident(on) && ascii_lower(on) == "offset" {
+  let offset : Int32? = if p.peek() is Ident(on) && ascii_lower(on) == "offset" {
     let _ = p.advance()
     match p.advance() {
       IntLit(v) => Some(v)
@@ -370,8 +370,9 @@ fn parse_select_body(p : Parser) -> Select raise @types.SqlError {
 ///|
 /// True when the expression contains a `__win` select-list marker.
 /// Subquery boundaries stop the walk: a nested select body numbered its
-/// own markers and owns them.
-fn contains_win_marker(e : LExpr) -> Bool {
+/// own markers and owns them. The binder's window lowering also consults
+/// this (window functions cannot nest inside aggregates or each other).
+pub fn contains_win_marker(e : LExpr) -> Bool {
   match e {
     Func("__win", _) => true
     Col(_) | ColQ(_, _) | Lit(_) | Star | IntervalLit(_, _) => false
@@ -429,7 +430,7 @@ fn contains_win_marker(e : LExpr) -> Bool {
 ///|
 /// Renumber `__win` markers from statement-wide to select-body-local
 /// indexes (`g -> g - base`). Subquery boundaries stop the walk.
-fn reindex_win_markers(e : LExpr, base : Int) -> LExpr {
+fn reindex_win_markers(e : LExpr, base : Int32) -> LExpr {
   match e {
     Func("__win", [Lit(@types.Int32(g))]) =>
       Func("__win", [Lit(@types.Scalar::Int32(g - base))])

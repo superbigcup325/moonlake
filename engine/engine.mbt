@@ -28,14 +28,14 @@ pub fn SelectResult::batch(self : SelectResult) -> @types.DataBatch {
 /// Scalar cell accessor for result consumption (row, column).
 pub fn SelectResult::get(
   self : SelectResult,
-  row : Int,
-  col : Int,
+  row : Int32,
+  col : Int32,
 ) -> @types.Scalar {
   self.batch.columns()[col].get(row)
 }
 
 ///|
-pub fn SelectResult::row_count(self : SelectResult) -> Int {
+pub fn SelectResult::row_count(self : SelectResult) -> Int32 {
   self.batch.row_count()
 }
 
@@ -54,7 +54,7 @@ pub fn run_select_opts(
   catalog : @catalog.Catalog,
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
-  let sel = parse_select(sql)
+  let sel = @sql.parse_select(sql)
   run_parsed(sel, catalog, [], opts)
 }
 
@@ -63,9 +63,9 @@ pub fn run_select_opts(
 /// base tables come from the catalog, derived tables recurse and
 /// materialize (everything in the engine is eager, so this is direct).
 fn run_parsed(
-  sel : Select,
+  sel : @sql.Select,
   catalog : @catalog.Catalog,
-  stats : Array[(String, Int)],
+  stats : Array[(String, Int32)],
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
@@ -277,9 +277,9 @@ pub fn explain_analyze(
   sql : String,
   catalog : @catalog.Catalog,
 ) -> String raise @types.SqlError {
-  let stats : Array[(String, Int)] = []
+  let stats : Array[(String, Int32)] = []
   let result = run_parsed(
-    parse_select(sql),
+    @sql.parse_select(sql),
     catalog,
     stats,
     ExecOptions::in_memory(),
@@ -308,7 +308,7 @@ pub fn explain_analyze(
 /// with NULL-safe keys; ALL variants use multiset counts, DISTINCT
 /// dedupes the result.
 fn apply_setop(
-  kind : SetOpKind,
+  kind : @sql.SetOpKind,
   all : Bool,
   left : SelectResult,
   right : SelectResult,
@@ -340,8 +340,8 @@ fn apply_setop(
     }
     Intersect => {
       let counts = row_counts(right.batch())
-      let taken : Map[String, Int] = Map([])
-      let keep : Array[Int] = []
+      let taken : Map[String, Int32] = Map([])
+      let keep : Array[Int32] = []
       for r in 0..<batch.row_count() {
         let k = row_key(batch, r)
         let used = match taken.get(k) {
@@ -363,8 +363,8 @@ fn apply_setop(
     }
     Except => {
       let counts = row_counts(right.batch())
-      let taken : Map[String, Int] = Map([])
-      let keep : Array[Int] = []
+      let taken : Map[String, Int32] = Map([])
+      let keep : Array[Int32] = []
       for r in 0..<batch.row_count() {
         let k = row_key(batch, r)
         let used = match taken.get(k) {
@@ -389,10 +389,10 @@ fn apply_setop(
 
 ///|
 fn run_setop(
-  sel : Select,
-  _kind : SetOpKind,
+  sel : @sql.Select,
+  _kind : @sql.SetOpKind,
   _all : Bool,
-  _right_sel : Select,
+  _right_sel : @sql.Select,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
@@ -400,8 +400,8 @@ fn run_setop(
   // DISTINCT written after the last core)
   let window_sel = sel
   // walk root -> first: the arrays come out in reverse execution order
-  let walked : Array[Select] = []
-  let walked_ops : Array[(SetOpKind, Bool)] = []
+  let walked : Array[@sql.Select] = []
+  let walked_ops : Array[(@sql.SetOpKind, Bool)] = []
   let mut cur = sel
   while cur.setop is Some((kind2, all2, left)) {
     walked.push({ ..cur, setop: None, })
@@ -409,8 +409,8 @@ fn run_setop(
     cur = left
   }
   walked.push({ ..cur, setop: None, })
-  let cores : Array[Select] = walked.rev()
-  let ops : Array[(SetOpKind, Bool)] = walked_ops.rev() // ops[i-1] joins cores i-1, i
+  let cores : Array[@sql.Select] = walked.rev()
+  let ops : Array[(@sql.SetOpKind, Bool)] = walked_ops.rev() // ops[i-1] joins cores i-1, i
   // execute every branch, then apply ops with precedence: INTERSECT
   // binds tighter and collapses first, UNION / EXCEPT run left-to-right
   let work_results : Array[SelectResult] = []
@@ -440,7 +440,7 @@ fn run_setop(
       }
     }
     work_results = nr
-    let no : Array[(SetOpKind, Bool)] = []
+    let no : Array[(@sql.SetOpKind, Bool)] = []
     for i, o in work_ops {
       if i != j {
         no.push(o)
@@ -453,9 +453,9 @@ fn run_setop(
   let names = first_result.names()
   let types = first_result.types()
   let batch = first_result.batch()
-  let order_keys : Array[(Int, Bool, Bool?)] = []
+  let order_keys : Array[(Int32, Bool, Bool?)] = []
   for item in window_sel.order_by {
-    let idx : Int? = match item.key {
+    let idx : Int32? = match item.key {
       Col(name) => {
         let mut found = None
         for i, name2 in names {
@@ -498,7 +498,7 @@ pub fn explain(
   sql : String,
   catalog : @catalog.Catalog,
 ) -> String raise @types.SqlError {
-  let sel = parse_select(sql)
+  let sel = @sql.parse_select(sql)
   let schemas : Array[@catalog.TableSchema] = []
   for item in sel.from {
     match item.table {

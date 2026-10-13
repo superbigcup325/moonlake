@@ -13,9 +13,9 @@
 ///|
 priv struct Correlator {
   catalog : @catalog.Catalog
-  outer_items : Array[FromItem]
-  mut sub_items : Array[FromItem] // the inner query's FROM, per attempt
-  mut counter : Int
+  outer_items : Array[@sql.FromItem]
+  mut sub_items : Array[@sql.FromItem] // the inner query's FROM, per attempt
+  mut counter : Int32
   opts : ExecOptions
 }
 
@@ -46,10 +46,10 @@ fn RefSide::merge(self : RefSide, other : RefSide) -> RefSide {
 /// Returns the rewritten select plus the synthetic tables (schemas and
 /// their pre-executed batches, aligned with the appended FromItems).
 fn decorrelate(
-  sel : Select,
+  sel : @sql.Select,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
-) -> (Select, Array[@catalog.TableSchema], Array[Array[@types.DataBatch]]) raise @types.SqlError {
+) -> (@sql.Select, Array[@catalog.TableSchema], Array[Array[@types.DataBatch]]) raise @types.SqlError {
   let extra_schemas : Array[@catalog.TableSchema] = []
   let extra_batches : Array[Array[@types.DataBatch]] = []
   let cor : Correlator = {
@@ -61,8 +61,8 @@ fn decorrelate(
   }
   // select items are walked even without a WHERE clause: correlated
   // scalar subqueries live there too
-  let scalar_items : Array[FromItem] = []
-  let new_exprs : Array[LExpr] = []
+  let scalar_items : Array[@sql.FromItem] = []
+  let new_exprs : Array[@sql.LExpr] = []
   let mut items_rewritten = false
   for it in sel.items {
     let rewritten = rewrite_scalar_items(
@@ -82,13 +82,13 @@ fn decorrelate(
     Some(f) => split_and(f, conjuncts, None)
     None => ()
   }
-  let kept : Array[LExpr] = []
-  let extra_items : Array[FromItem] = []
+  let kept : Array[@sql.LExpr] = []
+  let extra_items : Array[@sql.FromItem] = []
   for cj in conjuncts {
     // NOT EXISTS / NOT IN arrive as Not wrappers: flip the negation
     let lexpr = match cj.lexpr {
-      Not(Exists(sub, negated)) => Exists(sub, !negated)
-      Not(InSelect(v, sub, negated)) => InSelect(v, sub, !negated)
+      Not(Exists(sub, negated)) => @sql.Exists(sub, !negated)
+      Not(InSelect(v, sub, negated)) => @sql.InSelect(v, sub, !negated)
       other => other
     }
     match lexpr {
@@ -127,7 +127,7 @@ fn decorrelate(
   if extra_items.length() == 0 && scalar_items.length() == 0 {
     return (sel, extra_schemas, extra_batches)
   }
-  let filter : LExpr? = match kept.length() {
+  let filter : @sql.LExpr? = match kept.length() {
     0 => None
     _ => {
       let mut acc = kept[0]
@@ -145,7 +145,7 @@ fn decorrelate(
     from.push(item)
   }
   let items = if items_rewritten {
-    let out : Array[SelectItem] = []
+    let out : Array[@sql.SelectItem] = []
     for i, it in sel.items {
       out.push({ expr: new_exprs[i], label: it.label, })
     }
@@ -161,8 +161,8 @@ fn decorrelate(
 /// split the inner filter. None on anything unclassifiable.
 fn Correlator::prepare(
   self : Correlator,
-  sub : Select,
-) -> (Array[(LExpr, LExpr)], Array[LExpr], Array[LExpr])? {
+  sub : @sql.Select,
+) -> (Array[(@sql.LExpr, @sql.LExpr)], Array[@sql.LExpr], Array[@sql.LExpr])? {
   // a windowed subquery is never rewritten: lifting touches the WHERE
   // conjuncts and the select list, not the window definitions, so a
   // correlated one would silently keep outer references. Uncorrelated
@@ -190,9 +190,9 @@ fn Correlator::prepare(
     }
   }
   self.sub_items = sub.from
-  let pairs : Array[(LExpr, LExpr)] = []
-  let inner_only : Array[LExpr] = []
-  let residual : Array[LExpr] = []
+  let pairs : Array[(@sql.LExpr, @sql.LExpr)] = []
+  let inner_only : Array[@sql.LExpr] = []
+  let residual : Array[@sql.LExpr] = []
   let conjuncts : Array[Conjunct] = []
   match sub.filter {
     Some(f) => split_and(f, conjuncts, None)
@@ -235,15 +235,15 @@ fn Correlator::prepare(
 
 ///|
 /// Classify an EXISTS subquery. Some(item) replaces the conjunct with
-/// a SEMI / ANTI FromItem against a fresh synthetic table appended to
+/// a SEMI / ANTI @sql.FromItem against a fresh synthetic table appended to
 /// the two arrays; None leaves the conjunct alone.
 fn Correlator::try_exists(
   self : Correlator,
-  sub : Select,
+  sub : @sql.Select,
   _negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-) -> FromItem? raise @types.SqlError {
+) -> @sql.FromItem? raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
     sub.limit is Some(_) ||
     sub.offset is Some(_) ||
@@ -257,7 +257,7 @@ fn Correlator::try_exists(
   if sub.having is Some(_) {
     return self.try_exists_grouped(sub, _negated, extra_schemas, extra_batches)
   }
-  let sink : Array[LExpr] = []
+  let sink : Array[@sql.LExpr] = []
   match self.prepare(sub) {
     Some((pairs, inner_filter, residual)) =>
       if pairs.length() == 0 {
@@ -288,11 +288,11 @@ fn Correlator::try_exists(
 /// keeps those rows (AntiLoose).
 fn Correlator::try_exists_grouped(
   self : Correlator,
-  sub : Select,
+  sub : @sql.Select,
   negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-) -> FromItem? raise @types.SqlError {
+) -> @sql.FromItem? raise @types.SqlError {
   // the select list is discarded: EXISTS only asks whether a group
   // satisfying the HAVING exists, so any arity is fine
   let (pairs, inner_only, residual) = match self.prepare(sub) {
@@ -302,13 +302,13 @@ fn Correlator::try_exists_grouped(
   if pairs.length() == 0 || residual.length() > 0 {
     return None
   }
-  let items : Array[SelectItem] = []
-  let group_by : Array[LExpr] = []
+  let items : Array[@sql.SelectItem] = []
+  let group_by : Array[@sql.LExpr] = []
   for p in pairs {
     items.push({ expr: p.0, label: Some("__sk\{group_by.length()}"), })
     group_by.push(p.0)
   }
-  let filter : LExpr? = match inner_only.length() {
+  let filter : @sql.LExpr? = match inner_only.length() {
     0 => None
     _ => {
       let mut acc = inner_only[0]
@@ -318,7 +318,7 @@ fn Correlator::try_exists_grouped(
       Some(acc)
     }
   }
-  let inner_sel : Select = {
+  let inner_sel : @sql.Select = {
     from: sub.from,
     filter,
     group_by,
@@ -340,7 +340,7 @@ fn Correlator::try_exists_grouped(
   }
   extra_schemas.push({ table: name, columns, })
   extra_batches.push([inner.batch()])
-  let mut on : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
+  let mut on : @sql.LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
   for i in 1..<pairs.length() {
     on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
   }
@@ -362,13 +362,13 @@ fn Correlator::try_exists_grouped(
 /// expression, which pairs with the outer value expression.
 fn Correlator::try_in(
   self : Correlator,
-  v : LExpr,
-  sub : Select,
+  v : @sql.LExpr,
+  sub : @sql.Select,
   negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-  kept : Array[LExpr],
-) -> FromItem? raise @types.SqlError {
+  kept : Array[@sql.LExpr],
+) -> @sql.FromItem? raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
     sub.having is Some(_) ||
     sub.limit is Some(_) ||
@@ -418,12 +418,12 @@ fn Correlator::try_in(
 fn Correlator::try_scalar(
   self : Correlator,
   op : @types.CmpOp,
-  outer_e : LExpr,
-  sub : Select,
+  outer_e : @sql.LExpr,
+  sub : @sql.Select,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-  kept : Array[LExpr],
-) -> FromItem? raise @types.SqlError {
+  kept : Array[@sql.LExpr],
+) -> @sql.FromItem? raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
     sub.having is Some(_) ||
     sub.limit is Some(_) ||
@@ -467,24 +467,24 @@ fn Correlator::try_scalar(
 ///|
 /// Shared by the WHERE-conjunct and select-item scalar rewrites: run
 /// the subquery grouped by the correlation keys as a synthetic LEFT
-/// join table; returns the FromItem and the synthetic table name (the
+/// join table; returns the @sql.FromItem and the synthetic table name (the
 /// value column is __sk<pairs.length()>).
 fn Correlator::build_scalar_table(
   self : Correlator,
-  sub : Select,
-  pairs : Array[(LExpr, LExpr)],
-  inner_only : Array[LExpr],
+  sub : @sql.Select,
+  pairs : Array[(@sql.LExpr, @sql.LExpr)],
+  inner_only : Array[@sql.LExpr],
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-) -> (FromItem, String) raise @types.SqlError {
-  let items : Array[SelectItem] = []
-  let group_by : Array[LExpr] = []
+) -> (@sql.FromItem, String) raise @types.SqlError {
+  let items : Array[@sql.SelectItem] = []
+  let group_by : Array[@sql.LExpr] = []
   for p in pairs {
     items.push({ expr: p.0, label: Some("__sk\{group_by.length()}"), })
     group_by.push(p.0)
   }
   items.push({ expr: sub.items[0].expr, label: Some("__sk\{pairs.length()}"), })
-  let filter : LExpr? = match inner_only.length() {
+  let filter : @sql.LExpr? = match inner_only.length() {
     0 => None
     _ => {
       let mut acc = inner_only[0]
@@ -494,7 +494,7 @@ fn Correlator::build_scalar_table(
       Some(acc)
     }
   }
-  let inner_sel : Select = {
+  let inner_sel : @sql.Select = {
     from: sub.from,
     filter,
     group_by,
@@ -516,11 +516,11 @@ fn Correlator::build_scalar_table(
   }
   extra_schemas.push({ table: name, columns, })
   extra_batches.push([inner.batch()])
-  let mut on : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
+  let mut on : @sql.LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
   for i in 1..<pairs.length() {
     on = And(on, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
   }
-  let item : FromItem = {
+  let item : @sql.FromItem = {
     table: Named(name),
     tbl_alias: Some(name),
     col_aliases: None,
@@ -536,11 +536,11 @@ fn Correlator::build_scalar_table(
 /// runner keeps its unsupported-correlation error).
 fn Correlator::try_scalar_item(
   self : Correlator,
-  sub : Select,
+  sub : @sql.Select,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-  extra_items : Array[FromItem],
-) -> LExpr? raise @types.SqlError {
+  extra_items : Array[@sql.FromItem],
+) -> @sql.LExpr? raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
     sub.having is Some(_) ||
     sub.limit is Some(_) ||
@@ -570,13 +570,13 @@ fn Correlator::try_scalar_item(
 /// Rewrite every correlated scalar subquery of a select-item expression
 /// into a reference on its synthetic grouped table.
 fn rewrite_scalar_items(
-  e : LExpr,
+  e : @sql.LExpr,
   cor : Correlator,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-  extra_items : Array[FromItem],
-) -> LExpr raise @types.SqlError {
-  fn walk(e : LExpr) -> LExpr raise @types.SqlError {
+  extra_items : Array[@sql.FromItem],
+) -> @sql.LExpr raise @types.SqlError {
+  fn walk(e : @sql.LExpr) -> @sql.LExpr raise @types.SqlError {
     match e {
       ScalarSub(sub) =>
         match
@@ -591,14 +591,14 @@ fn rewrite_scalar_items(
       Not(x) => Not(walk(x))
       Between(v, lo, hi) => Between(walk(v), walk(lo), walk(hi))
       In(v, items) => {
-        let new_items : Array[LExpr] = []
+        let new_items : Array[@sql.LExpr] = []
         for item in items {
           new_items.push(walk(item))
         }
         In(walk(v), new_items)
       }
       NotIn(v, items) => {
-        let new_items : Array[LExpr] = []
+        let new_items : Array[@sql.LExpr] = []
         for item in items {
           new_items.push(walk(item))
         }
@@ -609,7 +609,7 @@ fn rewrite_scalar_items(
       IsNull(v, n) => IsNull(walk(v), n)
       Extract(f, x) => Extract(f, walk(x))
       Case(whens, else_) => {
-        let new_whens : Array[(LExpr, LExpr)] = []
+        let new_whens : Array[(@sql.LExpr, @sql.LExpr)] = []
         for w in whens {
           new_whens.push((walk(w.0), walk(w.1)))
         }
@@ -620,7 +620,7 @@ fn rewrite_scalar_items(
         Case(new_whens, new_else)
       }
       Func(name, args) => {
-        let new_args : Array[LExpr] = []
+        let new_args : Array[@sql.LExpr] = []
         for a in args {
           new_args.push(walk(a))
         }
@@ -643,42 +643,42 @@ fn rewrite_scalar_items(
 
 ///|
 /// Build the synthetic table, run the decorrelated inner query, and
-/// return the semi/anti FromItem. When check_null_in_key is set (NOT
+/// return the semi/anti @sql.FromItem. When check_null_in_key is set (NOT
 /// IN) a NULL in the inner key column poisons the whole conjunct into
 /// a constant false.
 fn Correlator::finish_semi(
   self : Correlator,
-  inner_from : Array[FromItem],
-  pairs : Array[(LExpr, LExpr)],
-  inner_filter : Array[LExpr],
-  residual : Array[LExpr],
+  inner_from : Array[@sql.FromItem],
+  pairs : Array[(@sql.LExpr, @sql.LExpr)],
+  inner_filter : Array[@sql.LExpr],
+  residual : Array[@sql.LExpr],
   negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
   check_null_in_key : Bool,
   from_exists : Bool,
-  kept : Array[LExpr],
-) -> FromItem? raise @types.SqlError {
+  kept : Array[@sql.LExpr],
+) -> @sql.FromItem? raise @types.SqlError {
   let name = "__semi\{self.counter}"
   self.counter = self.counter + 1
   // residual conjuncts may reference inner columns: lift every distinct
   // inner reference into its own synthetic column so the residual can
   // be evaluated over (outer row, inner row)
   let ref_names : Array[String] = [] // synthetic column per lifted ref
-  let ref_exprs : Array[LExpr] = [] // the inner expression behind it
+  let ref_exprs : Array[@sql.LExpr] = [] // the inner expression behind it
   let ref_keys : Array[String] = [] // canonical "qual.col" / "col" key
   for r in residual {
     lift_inner_refs(r, self, pairs.length(), ref_names, ref_exprs, ref_keys)
   }
   // the inner side of every pair becomes one output column
-  let items : Array[SelectItem] = []
+  let items : Array[@sql.SelectItem] = []
   for i, p in pairs {
     items.push({ expr: p.0, label: Some("__sk\{i}"), })
   }
   for i, e in ref_exprs {
     items.push({ expr: e, label: Some("__sk\{pairs.length() + i}"), })
   }
-  let filter : LExpr? = match inner_filter.length() {
+  let filter : @sql.LExpr? = match inner_filter.length() {
     0 => None
     _ => {
       let mut acc = inner_filter[0]
@@ -688,7 +688,7 @@ fn Correlator::finish_semi(
       Some(acc)
     }
   }
-  let inner_sel : Select = {
+  let inner_sel : @sql.Select = {
     from: inner_from,
     filter,
     group_by: [],
@@ -713,16 +713,16 @@ fn Correlator::finish_semi(
     }
   }
   // rewrite the residual's inner references onto the pseudo columns
-  let rewritten : Array[LExpr] = []
+  let rewritten : Array[@sql.LExpr] = []
   for r in residual {
     rewritten.push(substitute_inner_refs(r, name, ref_keys, ref_names))
   }
   // ON: outer expr = pseudo column, AND-chained; the rewritten residual
   // rides along — plan_step classifies it as the step residual
-  let on : LExpr = if pairs.length() == 1 && rewritten.length() == 0 {
+  let on : @sql.LExpr = if pairs.length() == 1 && rewritten.length() == 0 {
     Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
   } else {
-    let mut acc : LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
+    let mut acc : @sql.LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
     for i in 1..<pairs.length() {
       acc = And(acc, Cmp(@types.Eq, pairs[i].1, ColQ(name, "__sk\{i}")))
     }
@@ -753,7 +753,7 @@ fn Correlator::finish_semi(
 ///|
 /// Where an expression's references live. Unqualified names resolve to
 /// the inner scope first (SQL nearest-scope rule).
-fn Correlator::side_of(self : Correlator, e : LExpr) -> RefSide {
+fn Correlator::side_of(self : Correlator, e : @sql.LExpr) -> RefSide {
   match e {
     Col(name) => self.side_of_name(name)
     ColQ(q, c) => {
@@ -891,14 +891,14 @@ fn ref_key(qual : String?, name : String) -> String {
 /// synthetic names start at `base` = the pair-key column count, so they
 /// line up with the items finish_semi appends after the keys.
 fn lift_inner_refs(
-  e : LExpr,
+  e : @sql.LExpr,
   cor : Correlator,
-  base : Int,
+  base : Int32,
   ref_names : Array[String],
-  ref_exprs : Array[LExpr],
+  ref_exprs : Array[@sql.LExpr],
   ref_keys : Array[String],
 ) -> Unit {
-  fn visit(e : LExpr) -> Unit {
+  fn visit(e : @sql.LExpr) -> Unit {
     match e {
       Col(name) => {
         let key = ref_key(None, name)
@@ -994,11 +994,11 @@ fn lift_inner_refs(
 /// Recursively replace lifted inner references with their pseudo-table
 /// columns. Outer references pass through untouched.
 fn substitute_inner_refs(
-  e : LExpr,
+  e : @sql.LExpr,
   pseudo : String,
   ref_keys : Array[String],
   ref_names : Array[String],
-) -> LExpr {
+) -> @sql.LExpr {
   match e {
     Col(c) => {
       let key = ref_key(None, c)
@@ -1050,14 +1050,14 @@ fn substitute_inner_refs(
         substitute_inner_refs(hi, pseudo, ref_keys, ref_names),
       )
     In(v, items) => {
-      let new_items : Array[LExpr] = []
+      let new_items : Array[@sql.LExpr] = []
       for item in items {
         new_items.push(substitute_inner_refs(item, pseudo, ref_keys, ref_names))
       }
       In(substitute_inner_refs(v, pseudo, ref_keys, ref_names), new_items)
     }
     NotIn(v, items) => {
-      let new_items : Array[LExpr] = []
+      let new_items : Array[@sql.LExpr] = []
       for item in items {
         new_items.push(substitute_inner_refs(item, pseudo, ref_keys, ref_names))
       }
@@ -1071,7 +1071,7 @@ fn substitute_inner_refs(
     Extract(f, x) =>
       Extract(f, substitute_inner_refs(x, pseudo, ref_keys, ref_names))
     Case(whens, else_) => {
-      let new_whens : Array[(LExpr, LExpr)] = []
+      let new_whens : Array[(@sql.LExpr, @sql.LExpr)] = []
       for w in whens {
         new_whens.push(
           (
@@ -1087,7 +1087,7 @@ fn substitute_inner_refs(
       Case(new_whens, new_else)
     }
     Func(name, args) => {
-      let new_args : Array[LExpr] = []
+      let new_args : Array[@sql.LExpr] = []
       for a in args {
         new_args.push(substitute_inner_refs(a, pseudo, ref_keys, ref_names))
       }

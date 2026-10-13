@@ -133,7 +133,7 @@ sit next to, not on top of, its neighbours:
 
 | project | what it is | boundary with moonlake |
 |---|---|---|
-| [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) | SQL lexer/parser (AST) | parsing only, no execution; moonlake ships an in-house subset front-end today (sqlparser's select-statement AST is not destructurable cross-package yet) and stays pinned as the future swap-in once its visibility improves |
+| [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) | SQL lexer/parser (AST) | parsing only, no execution; moonlake runs on its own in-house front-end (lexer, parser, AST in the in-repo `sql` package) and that is the roadmap, not a placeholder: sqlparser's select-statement AST is not destructurable cross-package, so the relationship is upstream cooperation (issues/PRs), not a planned swap-in |
 | [mizchi/parquet](https://github.com/mizchi/parquet) | Parquet reader/writer | format decoding only; moonlake adapts its columnar read into the same vectors the executor consumes |
 | [shunge/arrow](https://github.com/buildliming/MoonArrow) (MoonArrow) | Arrow IPC format read/write | memory-format interchange; a future `to_arrow` bridge is cooperation, not competition |
 | [uiwcvb/moonsql](https://github.com/uiwcvb/moonsql) | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
@@ -158,7 +158,6 @@ matrices plus the TPC-H cross-validation job.
 
 moonlake is being built on top of these open-source MoonBit packages:
 
-- [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) (Apache-2.0) — SQL lexer/parser
 - [mizchi/parquet](https://github.com/mizchi/parquet) (Apache-2.0) — Parquet reading
 - [moonbitlang/quickcheck](https://github.com/moonbitlang/quickcheck) (Apache-2.0) — property-based testing
 
