@@ -1039,6 +1039,8 @@ fn exec_joins(
   tables : Array[Array[@types.DataBatch]],
   steps : Array[JoinStep],
   deferred : PhysExpr?,
+  opts : ExecOptions,
+  stats : Array[(String, Int32)],
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   if steps.length() == 0 {
     let cols : Array[@types.ColumnVector] = []
@@ -1051,10 +1053,44 @@ fn exec_joins(
     } else {
       acc = filter_batches(acc, step.probe_filter)
       let right = filter_batches(tables[step.table], step.build_filter)
-      acc = [join_step(acc, right, step)]
+      acc = [join_or_spill(acc, right, step, opts, stats)]
     }
   }
   filter_batches(acc, deferred)
+}
+
+///|
+/// One join step under the memory budget: within budget the historical
+/// in-memory join_step runs; over budget the join spills (grace hash
+/// join) when a store is provided, and is a clean error without one.
+fn join_or_spill(
+  acc : Array[@types.DataBatch],
+  right : Array[@types.DataBatch],
+  step : JoinStep,
+  opts : ExecOptions,
+  stats : Array[(String, Int32)],
+) -> @types.DataBatch raise @types.SqlError {
+  if opts.budget <= 0 {
+    return join_step(acc, right, step)
+  }
+  let total = batches_bytes(acc) + batches_bytes(right)
+  if total <= opts.budget {
+    return join_step(acc, right, step)
+  }
+  match opts.spill {
+    Some(store) => {
+      if step.keys_l.length() == 0 {
+        raise @types.SqlError::Execute(
+          "cross join input exceeds the memory budget (\{total} bytes > \{opts.budget}); a cross join has no keys to partition on",
+        )
+      }
+      grace_join(acc, right, step, opts.budget, store, stats)
+    }
+    None =>
+      raise @types.SqlError::Execute(
+        "join input exceeds the memory budget (\{total} bytes > \{opts.budget}); provide a spill store (--spill-dir) or raise the budget (--memory)",
+      )
+  }
 }
 
 ///|
