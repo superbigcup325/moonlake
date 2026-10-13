@@ -6,6 +6,37 @@
 
 ///|
 pub fn parse_i32_bytes(buf : Bytes, start : Int32, end : Int32) -> Int32? {
+  // fast path: short digit runs accumulate in Int32 directly (9 digits
+  // cap at 999999999, far below 2^31); anything else — long runs, edge
+  // magnitudes, non-digit junk — falls back to the int64 parser with
+  // its overflow model, keeping the semantics identical
+  let n = end - start
+  if n > 0 && n <= 9 {
+    let mut i = start
+    let mut neg = false
+    let first = buf.unsafe_get(i).to_int()
+    if first == 45 || first == 43 {
+      neg = first == 45
+      i += 1
+    }
+    if end - i > 0 && end - i <= 9 {
+      let mut acc = 0
+      let mut ok = true
+      while i < end {
+        let v = buf.unsafe_get(i).to_int()
+        if v < 48 || v > 57 {
+          ok = false
+          break
+        }
+        acc = acc * 10 + (v - 48)
+        i += 1
+      }
+      if ok {
+        return Some(if neg { -acc } else { acc })
+      }
+      return None
+    }
+  }
   match parse_i64_bytes(buf, start, end) {
     Some(v) =>
       if v >= -2147483648L && v <= 2147483647L {
@@ -24,7 +55,7 @@ pub fn parse_i64_bytes(buf : Bytes, start : Int32, end : Int32) -> Int64? {
   let mut seen_sign = false
   let mut digits = 0
   for i in start..<end {
-    let v = buf[i].to_int()
+    let v = buf.unsafe_get(i).to_int()
     if !seen_sign && (v == 45 || v == 43) {
       // '-' or '+'
       neg = v == 45
@@ -71,18 +102,18 @@ pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
   }
   let mut value = 0.0
   let mut int_digits = 0
-  while i < end && is_digit_byte(buf[i]) {
-    value = value * 10.0 + (buf[i].to_int() - 48).to_double()
+  while i < end && is_digit_byte(buf.unsafe_get(i)) {
+    value = value * 10.0 + (buf.unsafe_get(i).to_int() - 48).to_double()
     int_digits += 1
     i += 1
   }
   let mut frac_div = 1.0
-  if i < end && buf[i].to_int() == 46 {
+  if i < end && buf.unsafe_get(i).to_int() == 46 {
     // '.'
     i += 1
-    while i < end && is_digit_byte(buf[i]) {
+    while i < end && is_digit_byte(buf.unsafe_get(i)) {
       frac_div = frac_div * 10.0
-      value = value * 10.0 + (buf[i].to_int() - 48).to_double()
+      value = value * 10.0 + (buf.unsafe_get(i).to_int() - 48).to_double()
       i += 1
     }
   }
@@ -129,17 +160,17 @@ pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
 pub fn parse_bool_bytes(buf : Bytes, start : Int32, end : Int32) -> Bool? {
   let n = end - start
   if n == 4 &&
-    buf[start].to_int() == 116 && // t
-    buf[start + 1].to_int() == 114 && // r
-    buf[start + 2].to_int() == 117 && // u
-    buf[start + 3].to_int() == 101 {
+    buf.unsafe_get(start).to_int() == 116 && // t
+    buf.unsafe_get(start + 1).to_int() == 114 && // r
+    buf.unsafe_get(start + 2).to_int() == 117 && // u
+    buf.unsafe_get(start + 3).to_int() == 101 {
     Some(true)
   } else if n == 5 &&
-    buf[start].to_int() == 102 && // f
-    buf[start + 1].to_int() == 97 && // a
-    buf[start + 2].to_int() == 108 && // l
-    buf[start + 3].to_int() == 115 && // s
-    buf[start + 4].to_int() == 101 {
+    buf.unsafe_get(start).to_int() == 102 && // f
+    buf.unsafe_get(start + 1).to_int() == 97 && // a
+    buf.unsafe_get(start + 2).to_int() == 108 && // l
+    buf.unsafe_get(start + 3).to_int() == 115 && // s
+    buf.unsafe_get(start + 4).to_int() == 101 {
     Some(false)
   } else {
     None
@@ -150,8 +181,8 @@ pub fn parse_bool_bytes(buf : Bytes, start : Int32, end : Int32) -> Bool? {
 /// Strict ISO "yyyy-mm-dd" over a byte range, mirroring parse_date.
 pub fn parse_date_bytes(buf : Bytes, start : Int32, end : Int32) -> Int32? {
   if end - start != 10 ||
-    buf[start + 4].to_int() != 45 ||
-    buf[start + 7].to_int() != 45 {
+    buf.unsafe_get(start + 4).to_int() != 45 ||
+    buf.unsafe_get(start + 7).to_int() != 45 {
     return None
   }
   let y = match digits4(buf, start) {
@@ -185,10 +216,10 @@ fn is_digit_byte(b : Byte) -> Bool {
 fn digits4(buf : Bytes, off : Int32) -> Int32? {
   match
     (
-      digit_byte(buf[off]),
-      digit_byte(buf[off + 1]),
-      digit_byte(buf[off + 2]),
-      digit_byte(buf[off + 3]),
+      digit_byte(buf.unsafe_get(off)),
+      digit_byte(buf.unsafe_get(off + 1)),
+      digit_byte(buf.unsafe_get(off + 2)),
+      digit_byte(buf.unsafe_get(off + 3)),
     ) {
     (Some(a), Some(b), Some(c), Some(d)) =>
       Some(a * 1000 + b * 100 + c * 10 + d)
@@ -198,7 +229,7 @@ fn digits4(buf : Bytes, off : Int32) -> Int32? {
 
 ///|
 fn digits2(buf : Bytes, off : Int32) -> Int32? {
-  match (digit_byte(buf[off]), digit_byte(buf[off + 1])) {
+  match (digit_byte(buf.unsafe_get(off)), digit_byte(buf.unsafe_get(off + 1))) {
     (Some(a), Some(b)) => Some(a * 10 + b)
     _ => None
   }

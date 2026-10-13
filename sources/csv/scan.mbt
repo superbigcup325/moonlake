@@ -227,19 +227,20 @@ fn infer_types(
       let s = raw.starts.data[i]
       let e = raw.ends.data[i]
       seen = true
-      if @types.parse_i32_bytes(buf, s, e) is None {
+      // each parser runs only while its type is still a candidate
+      if all_i32 && @types.parse_i32_bytes(buf, s, e) is None {
         all_i32 = false
       }
-      if @types.parse_i64_bytes(buf, s, e) is None {
+      if all_i64 && @types.parse_i64_bytes(buf, s, e) is None {
         all_i64 = false
       }
-      if @types.parse_f64_bytes(buf, s, e) is None {
+      if all_double && @types.parse_f64_bytes(buf, s, e) is None {
         all_double = false
       }
-      if @types.parse_bool_bytes(buf, s, e) is None {
+      if all_bool && @types.parse_bool_bytes(buf, s, e) is None {
         all_bool = false
       }
-      if @types.parse_date_bytes(buf, s, e) is None {
+      if all_date && @types.parse_date_bytes(buf, s, e) is None {
         all_date = false
       }
     }
@@ -277,20 +278,28 @@ fn build_column(
   c : Int32,
 ) -> @types.ColumnVector raise @types.SqlError {
   let n = end - start
+  // the raw offset arrays are stable across materialization (trim ran at
+  // scan end); the data locals plus unchecked reads/writes keep the
+  // per-cell work to plain memory ops — every index here derives from
+  // the scanner's own offsets, structurally in bounds
+  let rows_data = raw.rows.data
+  let starts_data = raw.starts.data
+  let ends_data = raw.ends.data
+  let quoted_data = raw.quoted.data
   match dtype {
     Int32 => {
       let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
-        if !raw.is_empty_cell(i) {
-          let s = raw.starts.data[i]
-          let e = raw.ends.data[i]
+        let i = rows_data.unsafe_get(r + 1) + c
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
           let w = r - start
           match @types.parse_i32_bytes(buf, s, e) {
             Some(v) => {
-              d[w] = v
-              valid[w] = true
+              d.unsafe_set(w, v)
+              valid.unsafe_set(w, true)
             }
             None =>
               raise @types.SqlError::Scan(
@@ -305,15 +314,15 @@ fn build_column(
       let d : FixedArray[Int64] = FixedArray::make(n, 0L)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
-        if !raw.is_empty_cell(i) {
-          let s = raw.starts.data[i]
-          let e = raw.ends.data[i]
+        let i = rows_data.unsafe_get(r + 1) + c
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
           let w = r - start
           match @types.parse_i64_bytes(buf, s, e) {
             Some(v) => {
-              d[w] = v
-              valid[w] = true
+              d.unsafe_set(w, v)
+              valid.unsafe_set(w, true)
             }
             None =>
               raise @types.SqlError::Scan(
@@ -328,15 +337,15 @@ fn build_column(
       let d : FixedArray[Double] = FixedArray::make(n, 0.0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
-        if !raw.is_empty_cell(i) {
-          let s = raw.starts.data[i]
-          let e = raw.ends.data[i]
+        let i = rows_data.unsafe_get(r + 1) + c
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
           let w = r - start
           match @types.parse_f64_bytes(buf, s, e) {
             Some(v) => {
-              d[w] = v
-              valid[w] = true
+              d.unsafe_set(w, v)
+              valid.unsafe_set(w, true)
             }
             None =>
               raise @types.SqlError::Scan(
@@ -351,15 +360,15 @@ fn build_column(
       let d : FixedArray[Bool] = FixedArray::make(n, false)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
-        if !raw.is_empty_cell(i) {
-          let s = raw.starts.data[i]
-          let e = raw.ends.data[i]
+        let i = rows_data.unsafe_get(r + 1) + c
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
           let w = r - start
           match @types.parse_bool_bytes(buf, s, e) {
             Some(v) => {
-              d[w] = v
-              valid[w] = true
+              d.unsafe_set(w, v)
+              valid.unsafe_set(w, true)
             }
             None =>
               raise @types.SqlError::Scan(
@@ -374,15 +383,15 @@ fn build_column(
       let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
-        if !raw.is_empty_cell(i) {
-          let s = raw.starts.data[i]
-          let e = raw.ends.data[i]
+        let i = rows_data.unsafe_get(r + 1) + c
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
           let w = r - start
           match @types.parse_date_bytes(buf, s, e) {
             Some(v) => {
-              d[w] = v
-              valid[w] = true
+              d.unsafe_set(w, v)
+              valid.unsafe_set(w, true)
             }
             None =>
               raise @types.SqlError::Scan(
@@ -397,11 +406,13 @@ fn build_column(
       let d : FixedArray[String] = FixedArray::make(n, "")
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = raw.row_start(r + 1) + c
+        let i = rows_data.unsafe_get(r + 1) + c
         let w = r - start
-        if !raw.is_empty_cell(i) {
-          d[w] = raw.decode(i)
-          valid[w] = true
+        let s = starts_data.unsafe_get(i)
+        let e = ends_data.unsafe_get(i)
+        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+          d.unsafe_set(w, raw.decode(i))
+          valid.unsafe_set(w, true)
         }
       }
       @types.StrV(d, valid)
