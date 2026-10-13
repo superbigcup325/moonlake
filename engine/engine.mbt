@@ -177,7 +177,14 @@ fn run_parsed(
     stats.push(("joins", joined_rows))
   }
   let kept : Array[@types.DataBatch] = if bq.aggregate {
-    let grouped = aggregate(joined, bq.group_exprs, bq.group_types, bq.aggs)
+    let grouped = aggregate_within_budget(
+      joined,
+      bq.group_exprs,
+      bq.group_types,
+      bq.aggs,
+      opts,
+      stats,
+    )
     let grouped = match bq.having {
       Some(h) => compact(grouped, eval_mask(h, grouped))
       None => grouped
@@ -189,9 +196,9 @@ fn run_parsed(
   }
   // Spill milestone M1: a non-aggregate ORDER BY under a budget sorts
   // externally (runs on disk, streaming merge into the projection and
-  // the OFFSET/LIMIT window). Aggregate outputs are one small batch and
-  // window functions materialize the pre row anyway — both stay
-  // in-memory.
+  // the OFFSET/LIMIT window). Aggregate GROUP BY inputs spill through
+  // the M3 grace path above; window functions materialize the pre row
+  // anyway and stay in-memory.
   if opts.budget > 0 &&
     !bq.aggregate &&
     bq.windows.length() == 0 &&
