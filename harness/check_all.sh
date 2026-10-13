@@ -64,4 +64,13 @@ moon run cmd/main -- exec --csv "$DATA/lineitem.csv" "$(cat harness/queries/spil
 moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
   "$(cat harness/queries/spillorder.sql)" > "$work/spillorder_spilled.txt"
 python3 harness/compare.py "$work/spillorder_plain.txt" "$work/spillorder_spilled.txt"
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort equivalence check"
+# grace hash join equivalence: the same join under a tiny memory budget
+# must match the in-memory run row-for-row (the join inputs are ~10x the
+# budget, so the spilled run partitions across many files)
+echo "== spilljoin (grace hash join == in-memory)"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" \
+  "$(cat harness/queries/spilljoin.sql)" > "$work/spilljoin_plain.txt"
+moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --memory 200K \
+  "$(cat harness/queries/spilljoin.sql)" > "$work/spilljoin_spilled.txt"
+python3 harness/compare.py "$work/spilljoin_plain.txt" "$work/spilljoin_spilled.txt"
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort and grace-join equivalence checks"

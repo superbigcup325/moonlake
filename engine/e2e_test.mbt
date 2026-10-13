@@ -2429,3 +2429,181 @@ test "spill merge past 4096 rows: partial last chunk concatenates" {
     run_opts(q2, cat, { budget: 3000, spill: Some(mem_store()), }),
   )
 }
+
+///|
+/// M2 fixtures: two 300-row tables whose join keys carry NULLs and
+/// whose id columns make the ORDER BY total, so the in-memory and
+/// grace-spilled results compare row for row.
+fn m2_catalog() -> @catalog.Catalog {
+  let cat = @catalog.Catalog::new()
+  let sb = StringBuilder()
+  sb.write_string("id,k,p\n")
+  for i in 0..<300 {
+    let k = if i % 17 == 0 { "" } else { (i % 10).to_string() }
+    sb.write_string("\{i},\{k},r\{i}\n")
+  }
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k,q\n")
+  for i in 0..<300 {
+    let k = if i % 19 == 0 { "" } else { (i % 13).to_string() }
+    sb2.write_string("\{i},\{k},\{i * 2}\n")
+  }
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+test "M2 grace join: every flavor under a tiny budget matches in-memory" {
+  let cat = m2_catalog()
+  // budget 2048 against ~10KB of inputs forces many partitions; the
+  // residual query exercises the vectorized residual inside spilled
+  // partitions, and NULL keys must never match in either path
+  let queries = [
+    (
+      "inner", "SELECT t1.id AS a, t2.id AS b FROM t1 JOIN t2 ON t1.k = t2.k ORDER BY a, b",
+    ),
+    (
+      "left", "SELECT t1.id AS a, t2.id AS b FROM t1 LEFT JOIN t2 ON t1.k = t2.k ORDER BY a, b",
+    ),
+    (
+      "right", "SELECT t1.id AS a, t2.id AS b FROM t1 RIGHT JOIN t2 ON t1.k = t2.k ORDER BY a, b",
+    ),
+    (
+      "full", "SELECT t1.id AS a, t2.id AS b FROM t1 FULL JOIN t2 ON t1.k = t2.k ORDER BY a, b",
+    ),
+    (
+      "semi", "SELECT id AS a FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.k = t1.k) ORDER BY a",
+    ),
+    (
+      "anti", "SELECT id AS a FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.k = t1.k) ORDER BY a",
+    ),
+    (
+      "residual", "SELECT t1.id AS a, t2.id AS b, t2.q AS q FROM t1 JOIN t2 ON t1.k = t2.k AND t2.q > t1.id ORDER BY a, b",
+    ),
+  ]
+  for entry in queries {
+    let (_, q) = entry
+    assert_same_result(
+      run(q, cat),
+      run_opts(q, cat, { budget: 2048, spill: Some(mem_store()), }),
+    )
+  }
+}
+
+///|
+test "M2 grace join: 20k rows across many partitions matches in-memory" {
+  let sb = StringBuilder()
+  sb.write_string("id,k,v\n")
+  for i in 0..<20000 {
+    sb.write_string("\{i},\{i % 97},\{i * 3}\n")
+  }
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k,w\n")
+  for i in 0..<20000 {
+    sb2.write_string("\{i},\{i % 89},\{i * 7}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "a") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "b") catch {
+      e => abort("\{e}")
+    },
+  )
+  let q = "SELECT count(*) AS c, sum(a.v) AS s FROM a JOIN b ON a.k = b.k"
+  assert_same_result(
+    run(q, cat),
+    run_opts(q, cat, { budget: 65536, spill: Some(mem_store()), }),
+  )
+  let q2 = "SELECT count(*) AS c FROM a LEFT JOIN b ON a.k = b.k WHERE b.w IS NULL"
+  assert_same_result(
+    run(q2, cat),
+    run_opts(q2, cat, { budget: 65536, spill: Some(mem_store()), }),
+  )
+}
+
+///|
+test "M2 errors: over budget without a spill store is a clean error" {
+  let cat = m2_catalog()
+  let _ = @engine.run_select_opts(
+    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    cat,
+    { budget: 100, spill: None, },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("provide a spill store"))
+      return
+    }
+  }
+  abort("expected an over-budget error")
+}
+
+///|
+test "M2 errors: cross join cannot spill" {
+  // the select must carry a column: count(*) alone narrows the batches
+  // to zero columns, which always fits the budget
+  let cat = m2_catalog()
+  let _ = @engine.run_select_opts(
+    "SELECT t1.id AS a FROM t1 CROSS JOIN t2",
+    cat,
+    { budget: 100, spill: Some(mem_store()), },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("cross join"))
+      return
+    }
+  }
+  abort("expected a cross-join error")
+}
+
+///|
+test "M2 errors: a skewed key that outgrows every partition is an error" {
+  // one key holds the whole 5000-row side: after the 64-partition cap
+  // each partition still exceeds the budget, and grace hashing has no
+  // further recourse
+  let sb = StringBuilder()
+  sb.write_string("id,k,pad\n")
+  for i in 0..<5000 {
+    let pad = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    sb.write_string("\{i},1,\{pad}\n")
+  }
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k\n")
+  for i in 0..<10 {
+    sb2.write_string("\{i},1\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  let _ = @engine.run_select_opts(
+    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    cat,
+    { budget: 8192, spill: Some(mem_store()), },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("exceeds the memory budget"))
+      return
+    }
+  }
+  abort("expected a hash-skew error")
+}
