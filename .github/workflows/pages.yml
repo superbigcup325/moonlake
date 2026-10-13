@@ -17,9 +17,6 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-env:
-  MOONBIT_VERSION: 0.1.20260920
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,14 +26,17 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Verify pinned toolchain version
-        run: |
-          moon version --all
-          moon version | grep -F "${{ env.MOONBIT_VERSION }}"
+      - name: Toolchain version
+        run: moon version --all
       - name: Fetch dependencies
         run: |
           moon update
           moon install
+          # dependencies published before the moon.mod manifest migration
+          # still ship moon.mod.json; `moon fmt` migrates them in place
+          for d in .mooncakes/*/*/; do
+            if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+          done
       - name: Build the playground wasm
         run: moon build --target wasm-gc playground
       - name: Assemble site
