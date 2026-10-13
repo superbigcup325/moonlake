@@ -27,12 +27,17 @@ jobs:
       - name: Fetch dependencies
         run: |
           moon update
-          moon install
-          # dependencies published before the moon.mod manifest migration
-          # still ship moon.mod.json; `moon fmt` migrates them in place
-          for d in .mooncakes/*/*/; do
-            if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+          # `moon install` aborts on dependencies still shipping the
+          # legacy moon.mod.json manifest, after extracting what it can.
+          # Alternate install attempts with `moon fmt` migrations until
+          # none remain, then gate on a final install.
+          for i in 1 2 3 4 5; do
+            moon install && break
+            for d in .mooncakes/*/*/; do
+              if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+            done
           done
+          moon install
           # dependencies published before the moon.mod manifest migration
           # still ship moon.mod.json; `moon fmt` migrates them in place
           for d in .mooncakes/*/*/; do
@@ -62,12 +67,17 @@ jobs:
       - name: Fetch dependencies
         run: |
           moon update
-          moon install
-          # dependencies published before the moon.mod manifest migration
-          # still ship moon.mod.json; `moon fmt` migrates them in place
-          for d in .mooncakes/*/*/; do
-            if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+          # `moon install` aborts on dependencies still shipping the
+          # legacy moon.mod.json manifest, after extracting what it can.
+          # Alternate install attempts with `moon fmt` migrations until
+          # none remain, then gate on a final install.
+          for i in 1 2 3 4 5; do
+            moon install && break
+            for d in .mooncakes/*/*/; do
+              if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+            done
           done
+          moon install
       - name: Test (${{ matrix.target }})
         run: moon test --target ${{ matrix.target }}
 
@@ -86,12 +96,17 @@ jobs:
       - name: Fetch dependencies
         run: |
           moon update
-          moon install
-          # dependencies published before the moon.mod manifest migration
-          # still ship moon.mod.json; `moon fmt` migrates them in place
-          for d in .mooncakes/*/*/; do
-            if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+          # `moon install` aborts on dependencies still shipping the
+          # legacy moon.mod.json manifest, after extracting what it can.
+          # Alternate install attempts with `moon fmt` migrations until
+          # none remain, then gate on a final install.
+          for i in 1 2 3 4 5; do
+            moon install && break
+            for d in .mooncakes/*/*/; do
+              if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
+            done
           done
+          moon install
           # dependencies published before the moon.mod manifest migration
           # still ship moon.mod.json; `moon fmt` migrates them in place
           for d in .mooncakes/*/*/; do
