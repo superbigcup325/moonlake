@@ -82,8 +82,8 @@ moonlake 的约束：进程内库 + native CLI 双发布、wasm/js playground �
   零 fs，native CLI 注入真实现，wasm 侧落在形态 D"明确失败"）——
   DuckDB 内存库"默认不落盘、显式给目录才开"的语义与这个双目标天然同构。
 - **里程碑排序有现成背书**：DataFusion 用了多年才让排序 spill 成熟、
-  hash join 2025 年仍是提案。moonlake 的 M1 排序 → M2 hash join →
-  M3 聚合 → M4 集合操作 的次序与其一致，不是保守，是现实。
+  hash join 2025 年仍是提案。moonlake 排序 → hash join →
+  聚合 → 集合操作 的次序与其一致，不是保守，是现实。
 - **落盘格式的 moonlake 特有问题**：DataFusion 复用 Arrow IPC，moonlake
   没有现成列式序列化。候选：(a) 自写精简批序列化（可控、无依赖）；
   (b) **直接用 mizchi/parquet 的 writer/reader 当 spill 格式**——零新

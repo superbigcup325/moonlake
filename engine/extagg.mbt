@@ -1,4 +1,4 @@
-// Grace hash aggregation (spill milestone M3): when a GROUP BY's input
+// Grace hash aggregation: when a GROUP BY's input
 // exceeds the memory budget, the input is partitioned by the hash of
 // its group keys into per-partition spill runs (the same SpillStore the
 // sort and the join use), and the existing in-memory aggregate() runs

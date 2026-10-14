@@ -117,7 +117,7 @@ string_agg/median/count DISTINCT）、NULL 分区键归组、GROUP BY 交互
 复现：数据与脚本见提交记录（`t.csv` 8 行 + 29 条查询清单）；e2e 期望值
 手算钉死在 `engine/e2e_test.mbt` 窗口节。
 
-## 5.5 外排里程碑 M1：ORDER BY 外排序（2026-10-04）
+## 5.5 ORDER BY 外排序（2026-10-04）
 
 机制：`ExecOptions { budget, spill }` 注入预算与落盘存储（engine 保持零
 fs，`SpillStore` 为函数字段结构体，native CLI 注入 `spill.FsStore`，
