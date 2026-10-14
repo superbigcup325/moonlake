@@ -2391,7 +2391,7 @@ test "a budget without a spill store is a clear error" {
 
 ///|
 test "aggregate GROUP BY under a budget matches in-memory" {
-  // spill milestone M3: the GROUP BY input (~24KB) exceeds the 9K
+  // the GROUP BY input (~24KB) exceeds the 9K
   // budget, so the aggregation spills (each of the five groups is
   // ~4.8KB and fits a partition); the grouped result must match the
   // in-memory run row for row
@@ -2435,10 +2435,10 @@ test "spill merge past 4096 rows: partial last chunk concatenates" {
 }
 
 ///|
-/// M2 fixtures: two 300-row tables whose join keys carry NULLs and
+/// Grace join fixtures: two 300-row tables whose join keys carry NULLs and
 /// whose id columns make the ORDER BY total, so the in-memory and
 /// grace-spilled results compare row for row.
-fn m2_catalog() -> @catalog.Catalog {
+fn grace_join_catalog() -> @catalog.Catalog {
   let cat = @catalog.Catalog::new()
   let sb = StringBuilder()
   sb.write_string("id,k,p\n")
@@ -2466,8 +2466,8 @@ fn m2_catalog() -> @catalog.Catalog {
 }
 
 ///|
-test "M2 grace join: every flavor under a tiny budget matches in-memory" {
-  let cat = m2_catalog()
+test "grace join: every flavor under a tiny budget matches in-memory" {
+  let cat = grace_join_catalog()
   // budget 2048 against ~10KB of inputs forces many partitions; the
   // residual query exercises the vectorized residual inside spilled
   // partitions, and NULL keys must never match in either path
@@ -2504,7 +2504,7 @@ test "M2 grace join: every flavor under a tiny budget matches in-memory" {
 }
 
 ///|
-test "M2 grace join: 20k rows across many partitions matches in-memory" {
+test "grace join: 20k rows across many partitions matches in-memory" {
   let sb = StringBuilder()
   sb.write_string("id,k,v\n")
   for i in 0..<20000 {
@@ -2539,8 +2539,8 @@ test "M2 grace join: 20k rows across many partitions matches in-memory" {
 }
 
 ///|
-test "M2 errors: over budget without a spill store is a clean error" {
-  let cat = m2_catalog()
+test "grace join errors: over budget without a spill store is a clean error" {
+  let cat = grace_join_catalog()
   let _ = @engine.run_select_opts(
     "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
     cat,
@@ -2555,10 +2555,10 @@ test "M2 errors: over budget without a spill store is a clean error" {
 }
 
 ///|
-test "M2 errors: cross join cannot spill" {
+test "grace join errors: cross join cannot spill" {
   // the select must carry a column: count(*) alone narrows the batches
   // to zero columns, which always fits the budget
-  let cat = m2_catalog()
+  let cat = grace_join_catalog()
   let _ = @engine.run_select_opts(
     "SELECT t1.id AS a FROM t1 CROSS JOIN t2",
     cat,
@@ -2573,7 +2573,7 @@ test "M2 errors: cross join cannot spill" {
 }
 
 ///|
-test "M2 errors: a skewed key that outgrows every partition is an error" {
+test "grace join errors: a skewed key that outgrows every partition is an error" {
   // one key holds the whole 5000-row side: after the 64-partition cap
   // each partition still exceeds the budget, and grace hashing has no
   // further recourse
@@ -2613,10 +2613,10 @@ test "M2 errors: a skewed key that outgrows every partition is an error" {
 }
 
 ///|
-/// M3 fixtures: a 3000-row table whose group key carries NULLs and
+/// Grace aggregation fixtures: a 3000-row table whose group key carries NULLs and
 /// whose payload feeds every accumulator shape (sum/min/max/median/
 /// string_agg/count-distinct).
-fn m3_catalog() -> @catalog.Catalog {
+fn grace_agg_catalog() -> @catalog.Catalog {
   let cat = @catalog.Catalog::new()
   let sb = StringBuilder()
   sb.write_string("id,k,v,s\n")
@@ -2633,8 +2633,8 @@ fn m3_catalog() -> @catalog.Catalog {
 }
 
 ///|
-test "M3 grace aggregation: accumulator family under a tiny budget matches in-memory" {
-  let cat = m3_catalog()
+test "grace aggregation: accumulator family under a tiny budget matches in-memory" {
+  let cat = grace_agg_catalog()
   // budget 4096 against ~45KB of input forces many partitions; every
   // accumulator shape must agree row for row, NULL group keys included
   let queries = [
@@ -2659,7 +2659,7 @@ test "M3 grace aggregation: accumulator family under a tiny budget matches in-me
 }
 
 ///|
-test "M3 grace aggregation: 20k rows over 97 groups matches in-memory" {
+test "grace aggregation: 20k rows over 97 groups matches in-memory" {
   let sb = StringBuilder()
   sb.write_string("k,v\n")
   for i in 0..<20000 {
@@ -2681,8 +2681,8 @@ test "M3 grace aggregation: 20k rows over 97 groups matches in-memory" {
 }
 
 ///|
-test "M3 errors: over budget without a spill store is a clean error" {
-  let cat = m3_catalog()
+test "grace aggregation errors: over budget without a spill store is a clean error" {
+  let cat = grace_agg_catalog()
   let _ = @engine.run_select_opts(
     "SELECT k, sum(v) AS s FROM t GROUP BY k",
     cat,
@@ -2697,7 +2697,7 @@ test "M3 errors: over budget without a spill store is a clean error" {
 }
 
 ///|
-test "M3 skew: a single group outgrowing every partition still aggregates" {
+test "grace aggregation skew: a single group outgrowing every partition still aggregates" {
   // one group holds all 5000 wide rows: after the 64-partition cap its
   // partition exceeds the budget, and the aggregation falls back to an
   // in-memory pass for that partition (group state cannot be split

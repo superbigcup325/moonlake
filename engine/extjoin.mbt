@@ -1,4 +1,4 @@
-// Grace hash join (spill milestone M2): when a join's inputs exceed the
+// Grace hash join: when a join's inputs exceed the
 // memory budget, both sides are partitioned by the hash of their join
 // keys into per-partition spill runs (the same SpillStore the sort
 // uses), and the existing in-memory join_step replays one partition at

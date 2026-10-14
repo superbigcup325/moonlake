@@ -194,10 +194,10 @@ fn run_parsed(
   } else {
     joined
   }
-  // Spill milestone M1: a non-aggregate ORDER BY under a budget sorts
+  // External sort: a non-aggregate ORDER BY under a budget sorts
   // externally (runs on disk, streaming merge into the projection and
   // the OFFSET/LIMIT window). Aggregate GROUP BY inputs spill through
-  // the M3 grace path above; window functions materialize the pre row
+  // the grace path above; window functions materialize the pre row
   // anyway and stay in-memory.
   if opts.budget > 0 &&
     !bq.aggregate &&

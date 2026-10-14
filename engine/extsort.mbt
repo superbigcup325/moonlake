@@ -1,4 +1,4 @@
-// External sort for ORDER BY (spill milestone M1).
+// External sort for ORDER BY.
 //
 // Sorted runs: every source batch is sorted in memory and split into
 // chunks; chunks accumulate until ~budget/4 bytes, then flush as one
@@ -10,7 +10,7 @@
 // materialized as such.
 //
 // The budget bounds the run state, not the base tables (scan laziness
-// is out of M1's scope) and not the query result itself.
+// is out of the sort's scope) and not the query result itself.
 
 ///|
 const FANIN : Int32 = 8
