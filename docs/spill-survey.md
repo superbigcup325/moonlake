@@ -1,138 +1,179 @@
-# 超内存处理方案调研：形态对比（外排设计前哨）
+# Out-of-core survey: how each system handles data larger than memory
 
-> 2026-10-04。目标不是定设计，而是把"查询数据超过内存"这个问题上各家
-> 的处理形态摸清，为 moonlake 的外排（spill）设计稿圈定落点。
-> 背景数字见 `docs/verification.md` §5：内存随数据近线性，SF0.1 ≈ 353 MB，
-> 外推 SF1.0 ≈ 3.5 GB——当前架构下超内存即不可查询。
+> 2026-10-04. The goal is not to settle a design but to map how each system
+> handles "query data exceeds memory", so that moonlake's spill design doc can
+> be scoped. Background numbers are in `docs/verification.md` §5: memory grows
+> near-linearly with data, SF0.1 ≈ 353 MB, extrapolating to SF1.0 ≈ 3.5 GB —
+> under the current architecture, exceeding memory means the query cannot run.
 
-## 1. 六个系统的速写
+## 1. Six systems at a glance
 
-**DuckDB**（进程内 OLAP，C++）。`memory_limit`（默认约物理内存 80%，软
-限制）+ `temp_directory`。超预算时算子把中间块溢写继续跑：radix 分区的
-并行外存 hash join、hash 聚合（分区落盘出口归并）、外归并排序、窗口。
-关键默认：**file-backed 库默认 spill 开**（temp 目录 = 库文件旁 `.tmp`）；
-**`:memory:` 库 temp_directory 默认为空 = 不落盘，超了直接报错**，除非
-显式给目录。外部 CSV/Parquet 流式扫描不整体进内存；持久库基表走磁盘
-存储 + buffer manager。
+**DuckDB** (in-process OLAP, C++). `memory_limit` (a soft limit, ~80% of
+physical RAM by default) plus `temp_directory`. When over budget, operators
+spill intermediate blocks and keep going: radix-partitioned parallel
+out-of-core hash join, hash aggregation (partitions written to disk, merged on
+exit), external merge sort, window. Key defaults: a **file-backed database has
+spill on by default** (temp dir = a `.tmp` beside the database file); a
+**`:memory:` database has an empty `temp_directory` by default = no spilling,
+an error once over budget**, unless a directory is given explicitly. External
+CSV/Parquet scans stream and are not materialized wholesale; a persistent
+database keeps base tables on disk behind a buffer manager.
 
-**PostgreSQL**（服务端，行存迭代器）。教科书形态：每个执行节点受
-`work_mem` 约束，超了在算子内部降级——hash join 分 batch（build 侧按
-哈希落盘、probe 对齐同 batch）、排序走 tuplesort 的 run 生成 + 多路
-归并、hash agg 分区。临时数据进 `base/pgsql_tmp`。预算是 per-node 的
-会话设置，没有全局统一记账。
+**PostgreSQL** (server, row-store iterators). The textbook shape: every
+execution node is bounded by `work_mem`, and degrades inside the operator once
+exceeded — hash join splits into batches (build side spilled by hash, probe
+aligned to the same batch), sort generates tuplesort runs + a multi-way merge,
+hash agg partitions. Temp data lands in `base/pgsql_tmp`. The budget is a
+per-node session setting; there is no global accounting.
 
-**ClickHouse**（服务端列存）。同样算子自持：`max_bytes_before_external_sort`
-/ `max_bytes_before_external_group_by` 是**按算子**的设置（而非全局
-limit），超了把排序/聚合状态写到 `tmp_path`（可配 disk policy），出口
-归并。聚合超阈值时部分状态落盘再合并，是和 Postgres 同族但按算子配
-参的变体。
+**ClickHouse** (server, column store). Also self-managed per operator:
+`max_bytes_before_external_sort` / `max_bytes_before_external_group_by` are
+**per-operator** settings (not a global limit); once exceeded, sort/aggregation
+state is written to `tmp_path` (a configurable disk policy) and merged on exit.
+Aggregation spills partial state above the threshold and merges — the same
+family as Postgres, varied by being configurable per operator.
 
-**Apache DataFusion**（进程内列式，Rust——与 moonlake 架位最像）。
-MemoryPool **预留制**：算子先申请内存，池子给不出就 spill 后重试；池子
-有 fair/untracked/greedy 几种策略。落盘统一走 SpillManager/DiskManager
-抽象，spill 文件就是 Arrow IPC（49.0 起支持压缩）。成熟轨迹值得抄作业：
-**排序先落地**（50.0 宣称"几乎所有排序查询不再 OOM"），**hash join spill
-到 2025-08 还是 proposal**（#17267），聚合的中间归并可留在盘上直到最终
-回放。
+**Apache DataFusion** (in-process columnar, Rust — architecturally closest to
+moonlake). MemoryPool is **reservation-based**: operators ask for memory, and
+when the pool cannot grant it they spill and retry; the pool offers
+fair/untracked/greedy strategies. Spilling goes through a uniform
+SpillManager/DiskManager abstraction, and a spill file is just Arrow IPC
+(compression supported from 49.0). Its maturity trajectory is worth copying:
+**sort landed first** (50.0 claims "almost all sort queries no longer OOM"),
+while **hash join spill was still a proposal as of 2025-08** (#17267);
+aggregation's intermediate merge can stay on disk until the final replay.
 
-**Polars**（进程内 DataFrame，Rust）。代表第三条路：不改算子、改执行
-模型。新流式引擎（Polars 2.0 起 default）按有界批推进整个流水线，内存
-天然有界，超内存靠流式本身 + 落盘兜底。成熟度教训同样有价值：多 join
-链内存累积的 issue（#24206）至今开放，早期流式引擎"比 DuckDB/DataFusion
-更早 OOM"的社区反馈说明这条路的工程深度。
+**Polars** (in-process DataFrame, Rust). A third path: don't change operators,
+change the execution model. The new streaming engine (default since Polars 2.0)
+advances the whole pipeline in bounded batches, so memory is bounded by
+construction; running past memory relies on the streaming itself with spill as
+a backstop. Its maturity lessons are equally valuable: the multi-join-chain
+memory-accumulation issue (#24206) is still open, and early community feedback
+that the streaming engine "OOMs earlier than DuckDB/DataFusion" shows the
+engineering depth this path demands.
 
-**SQLite**（嵌入式，页存）。形态最另类：没有算子级 spill 概念，一切
-数据（含临时 B 树、排序中间态）都是页，pager 统一管理；cache 不够时
-脏页写回、临时对象进 temp 文件（`temp_store` 可选 default/file/memory）。
-代价是必须先有页式存储引擎——这本身就是它的产品形态。
+**SQLite** (embedded, page store). The odd one out: there is no notion of
+operator-level spill — all data (including temp B-trees and sort intermediates)
+is pages, managed uniformly by the pager; when the cache falls short, dirty
+pages are written back and temp objects go to a temp file (`temp_store` =
+default/file/memory). The cost is that a page-based storage engine is a
+prerequisite — which is itself its product shape.
 
-## 2. 形态对比
+## 2. Shape comparison
 
-| | 触发模型 | 落盘位置 | 覆盖算子 | 需要存储引擎？ | 前提重构 |
+| | Trigger model | Spill location | Operators covered | Needs a storage engine? | Prerequisite refactor |
 |---|---|---|---|---|---|
-| DuckDB | 全局 soft limit | temp 目录 | join/agg/sort/window | 持久库需要（buffer manager） | 无（内存库也可 spill） |
-| PostgreSQL | per-node work_mem | pgsql_tmp | join/sort/agg | 否 | 无 |
-| ClickHouse | per-op 设置 | tmp_path/disk policy | sort/agg | 否 | 无 |
-| DataFusion | MemoryPool 预留制 | SpillManager（Arrow IPC） | sort（成熟）→ agg → join | 否 | 无 |
-| Polars 流式 | 有界批 + 流式调度 | 流式框架兜底 | 全流水线 | 否 | **整个执行模型** |
-| SQLite | 统一页缓存 | pager 页写回 | 全部（隐式） | **是**（页引擎是前提） | 全部 |
+| DuckDB | global soft limit | temp directory | join/agg/sort/window | yes for persistent DBs (buffer manager) | none (in-memory DB can spill too) |
+| PostgreSQL | per-node work_mem | pgsql_tmp | join/sort/agg | no | none |
+| ClickHouse | per-operator setting | tmp_path / disk policy | sort/agg | no | none |
+| DataFusion | MemoryPool reservations | SpillManager (Arrow IPC) | sort (mature) → agg → join | no | none |
+| Polars streaming | bounded batches + streaming scheduler | streaming framework backstop | whole pipeline | no | **the entire execution model** |
+| SQLite | unified page cache | pager write-back | everything (implicit) | **yes** (the page engine is the premise) | everything |
 
-归纳为四种形态：
+Reduced to four shapes:
 
-- **A 统一页缓存**（SQLite、DuckDB 持久库）：算子无感知，存储层兜底。
-  前提是页式存储引擎——等于先成为数据库。
-- **B 算子自持外排**（Postgres、ClickHouse、DuckDB 内存库、DataFusion）：
-  阻塞算子超预算自己分桶/归并，预算接口 + 临时文件抽象注入。不需要
-  存储引擎，增量可落地。
-- **C 有界流式**（Polars 新引擎）：重写执行模型为有界批流式，落盘只是
-  兜底。能力上限最高，重构面最大，成熟坑最多。
-- **D 纯内存 + 明确失败**（各家内存库默认、moonlake 现状）：语义诚实，
-  是 A/B/C 的回退态，不是终点。
+- **A. Unified page cache** (SQLite, DuckDB persistent DBs): operators are
+  unaware; the storage layer absorbs it. Requires a page-based storage engine —
+  i.e. becoming a database first.
+- **B. Operator-managed spill** (Postgres, ClickHouse, DuckDB in-memory,
+  DataFusion): blocking operators partition/merge on their own once over
+  budget, with a budget interface and a temp-file abstraction injected. No
+  storage engine needed; can land incrementally.
+- **C. Bounded streaming** (Polars' new engine): rewrite the execution model
+  as a bounded streaming pipeline, with spill only as a backstop. Highest
+  ceiling, largest refactor, most maturity pitfalls.
+- **D. Pure in-memory + explicit failure** (the default of every in-memory DB,
+  and moonlake's current state): honest semantics, the fallback state of A/B/C,
+  not a destination.
 
-## 3. moonlake 的落点论证（约束 → 形态）
+## 3. Where moonlake lands (constraints → shape)
 
-moonlake 的约束：进程内库 + native CLI 双发布、wasm/js playground 必须
-可编译（engine 包零 fs 依赖是既有纪律）、纯列式批、eager 全物化、
-"不是数据库"的边界声明。
+moonlake's constraints: in-process library + native CLI dual release; the
+wasm/js playground must compile (the engine package carrying zero fs
+dependencies is existing discipline); pure columnar batches; eager full
+materialization; an explicit "not a database" boundary claim.
 
-- **形态 A 出局**：页式存储引擎违反产品边界，且 wasm 目标要跟着背。
-- **形态 C 出局（现阶段）**：推翻 eager 执行模型相当于重写引擎；Polars
-  的现状证明这条路的成熟曲线以年计。
-- **形态 B 是唯一自然落点**：预算句柄 + 临时文件抽象注入（engine 保持
-  零 fs，native CLI 注入真实现，wasm 侧落在形态 D"明确失败"）——
-  DuckDB 内存库"默认不落盘、显式给目录才开"的语义与这个双目标天然同构。
-- **里程碑排序有现成背书**：DataFusion 用了多年才让排序 spill 成熟、
-  hash join 2025 年仍是提案。moonlake 排序 → hash join →
-  聚合 → 集合操作 的次序与其一致，不是保守，是现实。
-- **落盘格式的 moonlake 特有问题**：DataFusion 复用 Arrow IPC，moonlake
-  没有现成列式序列化。候选：(a) 自写精简批序列化（可控、无依赖）；
-  (b) **直接用 mizchi/parquet 的 writer/reader 当 spill 格式**——零新
-  序列化代码、自带列式压缩，且外排 run 天然对应行组（将来上游接了
-  #4 的行组级读取，spill 回放也受益）；代价是引入 writer 成熟度与
-  编码开销的权衡。这是设计稿里真正要拍板的点。
-- **基表物化问题独立于形态 B 存在**：即便算子都会 spill，扫描层整表
-  物化仍是内存大头。设计稿需决定扫描懒化的范围（外部文件按批供数即可，
-  不动 catalog 语义）还是先以"算子 spill + 大表走查询内多次扫描"过渡。
+- **Shape A is out**: a page-based storage engine violates the product boundary,
+  and the wasm target would have to carry it too.
+- **Shape C is out (for now)**: overturning the eager execution model amounts to
+  rewriting the engine; Polars' current state shows this path's maturity curve
+  is measured in years.
+- **Shape B is the only natural landing spot**: a budget handle + a temp-file
+  abstraction injected (the engine stays fs-free, the native CLI injects the
+  real implementation, wasm falls back to shape D "explicit failure") —
+  DuckDB's in-memory semantics ("don't spill by default, only when a directory
+  is given") are naturally isomorphic to this dual target.
+- **The milestone order already has backing**: DataFusion took years to make
+  sort spill mature, and hash join is still a proposal in 2025. moonlake's order
+  of sort → hash join → aggregation → set operations matches it; that is not
+  conservatism, it is reality.
+- **A moonlake-specific problem for the spill format**: DataFusion reuses Arrow
+  IPC, but moonlake has no ready-made columnar serialization. Candidates:
+  (a) a small hand-written batch serializer (controllable, dependency-free);
+  (b) **use mizchi/parquet's writer/reader directly as the spill format** — zero
+  new serialization code, columnar compression for free, and a spill run maps
+  naturally onto a row group (once upstream gains #4's row-group-level reading,
+  spill replay benefits too); the cost is a trade-off against writer maturity
+  and encoding overhead. This is the real decision point in the design doc.
+- **Base-table materialization is a problem independent of shape B**: even if
+  every operator spills, the scan layer materializing a whole table remains the
+  memory hog. The design doc must decide the scope of scan laziness (external
+  files supplied batch-by-batch is enough; catalog semantics unchanged) or
+  settle first for "operator spill + large tables scanned multiple times within
+  a query" as a transition.
 
-## 3.5 落盘格式 bake-off（2026-10-04，分支实测）
+## 3.5 Spill-format bake-off (2026-10-04, measured on branches)
 
-§4 的拍板点②不再靠纸面判断：两个分支各实现了同接口的 spill 格式，
-同一负载（SF0.01 lineitem，60175 行 × 16 列，含 int/date/string/double
-与 NULL）、同一两段式驱动（write 扫 CSV 序列化，read 反序列化并重算
-标量流 FNV 校验和，write/read 校验和跨臂一致 = 语义等价）、best-of-3
-墙钟 + 隔离 getrusage maxRSS（release 构建，过程含 CSV 扫描基线）：
+Decision point ② from §4 no longer rests on paper: two branches each
+implemented the same spill-format interface, on the same workload (SF0.01
+lineitem, 60175 rows × 16 columns, covering int/date/string/double and NULL),
+with the same two-phase driver (write scans the CSV and serializes; read
+deserializes and recomputes an FNV checksum over the scalar stream; write/read
+checksums matching across arms = semantic equivalence), best-of-3 wall clock
+plus isolated `getrusage` maxRSS (release build, the process including the CSV
+scan baseline):
 
-| 分支 | write | read | 文件 | write RSS | read RSS |
+| Branch | write | read | file | write RSS | read RSS |
 |---|---|---|---|---|---|
-| `spill/raw-fmt`（自写 MLSPILL1） | 158 ms | 114 ms | 8.48 MB | 66.4 MB | 32.2 MB |
-| `spill/parquet-fmt`（mizchi/parquet 包裹） | 248 ms | 125 ms | 7.53 MB | 48.6 MB | 32.6 MB |
+| `spill/raw-fmt` (hand-written MLSPILL1) | 158 ms | 114 ms | 8.48 MB | 66.4 MB | 32.2 MB |
+| `spill/parquet-fmt` (mizchi/parquet wrapper) | 248 ms | 125 ms | 7.53 MB | 48.6 MB | 32.6 MB |
 
-扣掉共同扫描基线（~115 ms），格式本身的写成本约 43 ms vs 133 ms——
-parquet 臂 ~3 倍，主因是上游写路径只有行式（new_parquet_file 收
-Array[Array[Value]]，列式结构在包外无法构造），每批付一次列→行转码。
+Subtracting the shared scan baseline (~115 ms), the format's own write cost is
+~43 ms vs 133 ms — the parquet arm ~3×, because upstream's write path is
+row-oriented only (`new_parquet_file` takes `Array[Array[Value]]`; the columnar
+structure cannot be built outside the package), paying a column→row transcode
+per batch.
 
-比数字更硬的是过程中出土的两个上游事实（0.2.2）：
+Harder than the numbers are two upstream facts unearthed along the way (0.2.2):
 
-1. **writer 类型覆盖 = Int32 | Int64 | String | Binary**。Double 和
-   Boolean 直接写不了，parquet 臂靠位模式 hack（Double→Int64 IEEE 位、
-   Bool→Int32 0/1）才通过 round-trip——在 upstream writer 补类型前，
-   "复用 writer"不是慢，是语义不成立。
-2. 读路径（read_bytes_columnar）是列式的且工作良好，文件还小 11%
-   （字符串压缩）；配合 mizchi/parquet#4 落地行组级读取后，spill run
-   与行组天然对齐——**作为将来的再评估项保留，不是现在**。
+1. **The writer's type coverage is Int32 | Int64 | String | Binary.** Double and
+   Boolean simply cannot be written; the parquet arm only round-tripped by
+   hacking bit patterns (Double→Int64 IEEE bits, Bool→Int32 0/1) — until
+   upstream adds the types, "reuse the writer" is not slow, it is semantically
+   invalid.
+2. The read path (`read_bytes_columnar`) is columnar and works well, and the
+   file is 11% smaller (string compression); combined with mizchi/parquet#4
+   landing row-group-level reads, a spill run aligns naturally with a row
+   group — **kept as a future re-evaluation item, not now**.
 
-结论：**自写精简格式胜出**——写入快 1.6 倍、读持平、类型零 hack、
-无信封、热路径不依赖上游版本。两分支保留作证据与将来复评基线。
+Verdict: **the hand-written compact format wins** — 1.6× faster writes, equal
+reads, zero type hacks, no envelope, and the hot path free of upstream version
+dependencies. Both branches are retained as evidence and as a future
+re-evaluation baseline.
 
-> 2026-10-15 补记：parquet 依赖已从项目中移除（上游制品 manifest 陈旧
-> 导致发布与安装受阻，改用自研解码器，见 CHANGELOG 0.2.0）。因此「将来
-> 再评估 parquet 作为 spill 格式」这条路若重启，写路径同样需要自研——本
-> 节的对比数字与上游事实仍然成立，但前提已变。
+> 2026-10-15 addendum: the parquet dependency has been removed from the project
+> (a stale upstream artifact manifest blocked publishing and installation; we
+> switched to an in-house decoder, see CHANGELOG 0.2.0). So if "re-evaluate
+> parquet as a spill format later" is ever revived, the write path would have to
+> be in-house too — the comparison numbers and upstream facts in this section
+> still hold, but the premise has changed.
 
-## 4. 设计稿的接续点
+## 4. Hand-off points for the design doc
 
-专场起草时从三个拍板点切入：① 预算注入的接口形状（DataFusion 预留制
-vs DuckDB 全局软限制的 moonlake 简化版）；② spill 文件格式（自写 vs
-parquet 复用）；③ 扫描懒化的最小范围。验证策略沿用仓库惯例：小预算
-强制 spill 对 TPC-H 金标准逐位比对 + spill/内存等价 property + measure.py
-maxRSS 封顶验证。
+When drafting the dedicated design doc, start from three decision points:
+① the shape of the budget injection interface (DataFusion's reservation model
+vs a moonlake simplification of DuckDB's global soft limit); ② the spill file
+format (hand-written vs parquet reuse); ③ the minimal scope of scan laziness.
+Verification strategy follows repo convention: force spilling with a small
+budget and compare against TPC-H goldens bit-for-bit + a spill/ memory
+equivalence property + a `measure.py` maxRSS ceiling check.

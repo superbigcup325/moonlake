@@ -1,15 +1,13 @@
 # What `moon package` / `moon publish` put in the archive.
 #
-# Publishing honors .gitignore by default, but a .moonignore in the same
-# directory replaces it for that whole tree (the two files are not combined),
-# so the non-dot-prefixed rules from .gitignore are repeated here. Paths whose
-# name begins with `.` are excluded by default at every depth, and the
-# package-root `_build/` is always excluded. Git's `.git/info/exclude` and the
-# global git ignore configuration are never consulted, so anything that has to
-# stay out of a release belongs in this file.
+# A `.moonignore` here replaces this tree's `.gitignore` for packaging (the two
+# are not merged), and Git's `.git/info/exclude` / global gitignore are never
+# consulted — anything that must stay out of a release belongs in this file.
+# Dot-prefixed paths are excluded by default at every depth, so local-only
+# material under dot-directories needs no entry here.
 
 # Local build output — bare `target` matches at every depth, like .gitignore
-# does; `/target` would only cover the root and let a nested one ship
+# does; `/target` would only cover the root and let a nested one ship.
 target/
 target
 
@@ -22,11 +20,5 @@ __pycache__/
 # archive into ~51 MB of test data.
 /harness/data/
 
-# Agent-internal planning documents, also kept out of git
-/docs/PLAN.md
-/docs/application.md
-
-# Agent workflow guide and local commit hook — dev-side tooling, not part of
-# the shipped module (AGENTS.md carries an "agent memory" section)
-/AGENTS.md
+# Local commit hook — dev-side tooling, not part of the shipped module.
 /hooks/

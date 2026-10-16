@@ -1,233 +1,275 @@
-# moonlake 正确性与性能验证报告
+# moonlake correctness and performance verification report
 
-> 2026-10-06 · 验证弧的沉淀。目标：超越「SF0.01 + 1e-9 相对容差对拍」的
-> 表层证据，对向量化、哈希连接、谓词下推给出可复现的规范化验证，并给出
-> 性能、内存、溢出、并发、边界的实证数字。所有条目可按文中命令复现。
+> 2026-10-06 · distillation of the verification arc. Goal: go beyond the
+> surface evidence of "SF0.01 + 1e-9 relative tolerance cross-check", give
+> reproducible, normalized verification for vectorization, hash join and
+> predicate pushdown, and provide empirical numbers for performance, memory,
+> spilling, concurrency and edge cases. Every item is reproducible with the
+> commands quoted in the text.
 
-## 1. 向量化（eval_vec vs 标量解释器）
+## 1. Vectorization (eval_vec vs the scalar interpreter)
 
-**方法**：随机性质测试（`engine/property_test.mbt`）。种子化生成器构造
-**类型一致**的随机物理表达式树——覆盖全部六种列类型（I32/I64/F64/Str/
-Bool/Date），比较与 IS NULL 只作为 Bool 生成、EXTRACT 只作为 Int32、
-CASE 分支与目标同型；每列按约 1/9（Str/Bool 为 1/7）布点 NULL。断言
-`eval_vec` 与 `eval_scalar` **逐格相等**（值 + NULL 位置），批长覆盖
-`0/1/2/3/5/17/4095/4096/4097`（含扫描批大小 4096 及其 ±1 邻居）。两侧
-均为 NaN 时视为相等（0/0 合法），其余必须精确一致。60 case × 每case
-4 个表达式。
+**Method**: randomized property testing (`engine/property_test.mbt`). A seeded
+generator builds **type-consistent** random physical expression trees covering
+all six column types (I32/I64/F64/Str/Bool/Date): comparisons and IS NULL are
+generated only as Bool, EXTRACT only as Int32, and CASE branches share the
+target type; each column gets a NULL about every 1/9 points (1/7 for Str/Bool).
+The assertion is that `eval_vec` and `eval_scalar` are **cell-for-cell equal**
+(value + NULL positions), with batch lengths covering
+`0/1/2/3/5/17/4095/4096/4097` (including the scan batch size 4096 and its ±1
+neighbours). Both sides NaN counts as equal (0/0 is legal); everything else must
+match exactly. 60 cases × 4 expressions per case.
 
-**变异验证**（证明性质有牙）：
-- `cmp_vec` 的 Lt/Gt 对调 → 7 个测试失败、性质被证伪 ✓
-- `arith_vec` 的 I32 Sub 改为 Add → 性质被证伪 ✓
-- 还原后 93/93 全绿。
+**Mutation verification** (proving the property has teeth):
+- swapping Lt/Gt in `cmp_vec` → 7 tests fail, the property is falsified ✓
+- changing I32 Sub to Add in `arith_vec` → property falsified ✓
+- restored, 93/93 green.
 
-**开发中顺带修复**：生成器初版把 IsNullE/ExtractE 按任意类型生成
-（引擎无错，生成器违反类型纪律），两次证伪均定位为生成器 bug——
-性质测试的证伪必须先审生成器再审引擎，这一纪律被记录在案。
+**Fixed along the way**: the generator's first version generated IsNullE/ExtractE
+at arbitrary types (the engine was fine; the generator violated type discipline),
+and both falsifications were traced to the generator — falsifying a property test
+must audit the generator before the engine, a discipline now on record.
 
-## 2. 哈希连接（嵌套循环 oracle 对拍）
+## 2. Hash join (cross-check against a nested-loop oracle)
 
-**方法**：性质测试内置朴素嵌套循环连接 oracle，对八种连接形态逐格对拍：
-inner / LEFT+ON 残差 / LEFT+WHERE 跨表残差 / RIGHT / FULL / semi(EXISTS) /
-anti(NOT EXISTS) / anti(NOT IN)。键分布三种病态模式：重复密集（域 {0,1,2}
-+ 30% NULL）、散布（近唯一）、近全 NULL（仅 1 个非空键）；残差为跨表
-`b.w > a.v`（50% 开关）。80 case。
+**Method**: the property test embeds a naive nested-loop join oracle and
+compares cell-for-cell across eight join shapes: inner / LEFT+ON residual /
+LEFT+WHERE cross-table residual / RIGHT / FULL / semi(EXISTS) / anti(NOT EXISTS)
+/ anti(NOT IN). Three pathological key distributions: dense duplicates (domain
+{0,1,2} + 30% NULL), scattered (near-unique), near-all-NULL (exactly one non-null
+key); the residual is a cross-table `b.w > a.v` (on/off 50%). 80 cases.
 
-**变异验证**：把 anti 保留规则 `!matched && (!null_key ||
-!null_key_excludes)` 砍成 `!matched` → 性质被证伪 ✓；还原后全绿。
+**Mutation verification**: cutting the anti-retention rule
+`!matched && (!null_key || !null_key_excludes)` down to `!matched` → property
+falsified ✓; restored, all green.
 
-**oracle 直接抓到并修复的真 bug**（`0f03d28`）：
-`NOT EXISTS` 在相关键为 NULL 时被 anti join 按 NOT IN 的三值逻辑丢弃。
-DuckDB 仲裁：`c=(1,10),(2,NULL),(3,30)`、`o=(10,5)` 时 NOT EXISTS 应返回
-{2,3}，修复前 moonlake 返回 {3}。根因：`JoinKind::Anti` 把两种否定语义
-混为一谈。修复引入 `AntiLoose`（NOT EXISTS：只有真匹配才丢行；NOT IN：
-NULL 探测键为 UNKNOWN 丢弃）。TPC-H 22 条发现不了它——所有相关键非空。
+**Real bugs the oracle caught and fixed** (`0f03d28`):
+`NOT EXISTS` was being dropped by anti join under NOT IN's three-valued logic
+when the correlated key was NULL. DuckDB arbitrates: with
+`c=(1,10),(2,NULL),(3,30)` and `o=(10,5)`, NOT EXISTS should return {2,3};
+before the fix moonlake returned {3}. Root cause: `JoinKind::Anti` conflated the
+two negation semantics. The fix introduced `AntiLoose` (NOT EXISTS: drop a row
+only on a true match; NOT IN: discard when the probe key is NULL/UNKNOWN). The 22
+TPC-H queries cannot find this — all their correlated keys are non-null.
 
-**边界测试**（`engine/e2e_test.mbt`）：
-- 批边界 4095/4096/4097 行 ×（过滤 / 分组 / 自连接扇出），模型对拍
-- int64 极值键（±2^63-1）哈希互不混淆；NULL 键不匹配；字面量比较
-- `parse_f64` 精确性修复（`09539e5`）：十进制累加器把 **2^63**（恰好可被
-  double 精确表示）解析到邻居值，`k = -9223372036854775808` 返回 0 行而
-  `k >=` 同字面量返回 1 行。现在 ≤20 位十进制整数经 UInt64 精确转换
-  （正确舍入），更宽的输入保持 1e-9 相对契约
+**Boundary tests** (`engine/e2e_test.mbt`):
+- batch boundaries 4095/4096/4097 rows × (filter / group / self-join fan-out),
+  compared against the model
+- int64 extreme keys (±2^63-1) hash without collisions; NULL keys do not match;
+  literal comparison
+- `parse_f64` precision fix (`09539e5`): the decimal accumulator resolved
+  **2^63** (exactly representable as a double) to a neighbour value, so
+  `k = -9223372036854775808` returned 0 rows while `k >=` the same literal
+  returned 1. Now decimal integers up to 20 digits convert via UInt64 exactly
+  (correct rounding), and wider input keeps the 1e-9 relative contract.
 
-## 3. 谓词下推（随机差分 vs DuckDB）
+## 3. Predicate pushdown (randomized differential vs DuckDB)
 
-**方法**：`harness/fuzz_pushdown.py`——在 INNER/LEFT 连接图（a-b-c，键域
-0..40，含 NULL 键）上生成 2–5 个合取项的随机 WHERE 树：单表比较/IN/
-BETWEEN/LIKE/IS NULL、跨表等式与非等式、带隐含连接键的 OR（Q19 形状），
-逐条与 DuckDB 对拍（1e-9 容差，NULL 语义对齐）。**300 条随机查询：
-300/300 一致，0 引擎拒绝**（种子 20261005，可复现）。
+**Method**: `harness/fuzz_pushdown.py` — over an INNER/LEFT join graph (a-b-c,
+key domain 0..40, NULL keys included) it generates random WHERE trees of 2–5
+conjuncts: single-table comparison/IN/BETWEEN/LIKE/IS NULL, cross-table equality
+and inequality, and OR with an implied join key (the Q19 shape), each compared
+against DuckDB (1e-9 tolerance, NULL semantics aligned). **300 random queries:
+300/300 match, 0 engine rejections** (seed 20261005, reproducible).
 
-**变异验证**：把保留侧守卫（LEFT WHERE 逃逸修复 `5aa02c4`）禁用后，
-150 条内即被抓住——失败形状恰为「LEFT JOIN + WHERE 形式跨表等式」：
-`... LEFT JOIN c ON b.k2 = c.k2 WHERE c.s IS NULL AND b.k2 = a.k1`，
-moonlake -9753 vs duckdb -7743。fuzzer 特意包含该判别性模板（WHERE 形式
-跨表等式是 key 放置 vs 延迟过滤唯一可区分的形状）。
+**Mutation verification**: disabling the preserved-side guard (the LEFT WHERE
+escape fix `5aa02c4`) gets caught within 150 queries — the failing shape is
+exactly "LEFT JOIN + WHERE-form cross-table equality":
+`... LEFT JOIN c ON b.k2 = c.k2 WHERE c.s IS NULL AND b.k2 = a.k1`,
+moonlake -9753 vs duckdb -7743. The fuzzer deliberately includes that
+discriminating template (WHERE-form cross-table equality is the only shape that
+distinguishes key placement from delayed filtering).
 
-## 4. 溢出与边界（定义语义钉死）
+## 4. Overflow and edge cases (semantics pinned down)
 
-`engine/e2e_test.mbt` 溢出电池 + `types/types_test.mbt`：
-- CSV 推断越界即加宽：2147483648 保持精确（Int64）、9223372036854775808
-  转 Float64——**从不回绕**
-- 字面量算术回绕为**定义语义**：2147483647+1 → -2^31；9223372036854775807+1
-  → -2^63
-- 除法恒为 DOUBLE：`x/0` → ±inf、`0/0` → nan；`%0` → NULL
-- 越界 CAST = 干净的 bind 错误（绝不回绕）
-- 月份运算月尾钳制：1996-03-31 + 1 month = 1996-04-30
+The `engine/e2e_test.mbt` overflow battery plus `types/types_test.mbt`:
+- CSV inference widens past the boundary instead of overflowing: 2147483648 stays
+  exact (Int64), 9223372036854775808 becomes Float64 — **never wraps**
+- literal arithmetic wraps as **defined semantics**: 2147483647+1 → -2^31;
+  9223372036854775807+1 → -2^63
+- division is always DOUBLE: `x/0` → ±inf, `0/0` → nan; `%0` → NULL
+- an out-of-range CAST is a clean bind error (never wraps)
+- month arithmetic clamps to month end: 1996-03-31 + 1 month = 1996-04-30
 
-**已记录的边界限制**（文档化行为，非 bug）：
-1. 全空 CSV 列推断为 STRING——全 NULL 键列之间无法连接（类型错误拒绝，
-   不静默错答）
-2. SELECT 列表的裸 NULL 需要类型上下文（用 `CAST(NULL AS T)`）
-3. 含超 int64 值的整列整体推断为 Float64——行级精确性受列类型约束
+**Documented boundary limits** (documented behaviour, not bugs):
+1. an all-empty CSV column infers as STRING — all-NULL key columns cannot be
+   joined (a type error rejects it rather than silently answering wrong)
+2. a bare NULL in the SELECT list needs type context (use `CAST(NULL AS T)`)
+3. an entire column containing values beyond int64 infers as Float64 — row-level
+   exactness is bounded by the column type
 
-## 5. 性能与内存
+## 5. Performance and memory
 
-`harness/measure.py`（native 二进制直接测量，非 `moon run`；隔离子进程
-`getrusage(RUSAGE_CHILDREN)` 取 maxRSS；best-of-3）。数字为
-2026-10-06 CSV 摄入装箱消除（cell offsets 迁入 trimmed FixedArray）
-之后的复测：摄入 SF0.1 -16%（1374 -> 1150 ms），端到端查询 -11~18%，
-maxRSS 降至旧基线以下：
+`harness/measure.py` (measures the native binary directly, not `moon run`;
+isolated child process, maxRSS via `getrusage(RUSAGE_CHILDREN)`; best-of-3).
+These numbers are re-measured after the 2026-10-06 CSV-ingest boxing elimination
+(cell offsets moved into a trimmed FixedArray): ingest SF0.1 -16% (1374 → 1150
+ms), end-to-end queries -11~18%, maxRSS down below the old baseline:
 
-| 查询 | SF0.01 | SF0.1 | 时间比 | RSS SF0.01 | RSS SF0.1 |
+| Query | SF0.01 | SF0.1 | time ratio | RSS SF0.01 | RSS SF0.1 |
 |---|---|---|---|---|---|
-| q1（聚合扫全表） | 184 ms | 1847 ms | 10.0x | 41.4 MB | 353.3 MB |
-| q6（选择性过滤） | 124 ms | 1213 ms | 9.8x | 41.3 MB | 353.2 MB |
-| q5（6 表连接） | 149 ms | 1531 ms | 10.3x | 45.3 MB | 426.2 MB |
-| q2（相关标量子查询） | 24 ms | 281 ms | 11.7x | 12.3 MB | 63.1 MB |
-| q17（相关聚合子查询） | 148 ms | 1539 ms | 10.4x | 41.4 MB | 353.2 MB |
-| 摄入（lineitem LIMIT 0） | 115 ms | 1150 ms | 10.0x | 41.3 MB | 353.2 MB |
+| q1 (aggregate, full scan) | 184 ms | 1847 ms | 10.0x | 41.4 MB | 353.3 MB |
+| q6 (selective filter) | 124 ms | 1213 ms | 9.8x | 41.3 MB | 353.2 MB |
+| q5 (6-table join) | 149 ms | 1531 ms | 10.3x | 45.3 MB | 426.2 MB |
+| q2 (correlated scalar subquery) | 24 ms | 281 ms | 11.7x | 12.3 MB | 63.1 MB |
+| q17 (correlated aggregate subquery) | 148 ms | 1539 ms | 10.4x | 41.4 MB | 353.2 MB |
+| ingest (lineitem LIMIT 0) | 115 ms | 1150 ms | 10.0x | 41.3 MB | 353.2 MB |
 
-结论：时间与内存对数据量**近线性**（10 倍数据 → 9.8–11.7 倍时间、
-~8.5 倍内存）；全量物化（eager）的架构使 RSS ≈ 数据体量的常数倍
-（SF0.1 约 353 MB / 60 万行 lineitem）。测试机：本地 Linux，单次运行，数字为该机
-参考值。复现：`moon build cmd/main --target native && python3
-harness/measure.py`。
+Conclusion: time and memory are **near-linear** in data size (10× data → 9.8–11.7×
+time, ~8.5× memory); the eager, fully materializing architecture makes RSS a
+roughly constant multiple of the data volume (SF0.1 ≈ 353 MB for 600k lineitem
+rows). Test machine: local Linux, single run; numbers are this machine's reference
+values. Reproduce: `moon build cmd/main --target native && python3
+harness/measure.py`.
 
-## 5.5 窗口函数（差分 battery）
+## 5.1 Window functions (differential battery)
 
-2026-10-04 窗口函数落地时，用同款小数据集（含并列值、NULL 值、三分区）
-对 29 条查询做了 moonlake vs DuckDB 的行多重集比对（浮点 1e-9 相对容差），
-29/29 一致。覆盖：三个排名函数（并列/NULL 排序键）、整分区与 RANGE
-UNBOUNDED PRECEDING TO CURRENT ROW 运行帧（同侪共享值，count/sum/min/
-string_agg/median/count DISTINCT）、NULL 分区键归组、GROUP BY 交互
-（`sum(sum(x)) OVER ()`）、窗口值参与行表达式、DISTINCT/WHERE/LIMIT/
-别名 ORDER BY 组合、多条窗口共存。报错路径（缺 OVER、SELECT 列表外、
-显式帧子句、嵌套窗口、聚合参数内窗口、GROUP BY 约束）各有确定性报错。
-复现：数据与脚本见提交记录（`t.csv` 8 行 + 29 条查询清单）；e2e 期望值
-手算钉死在 `engine/e2e_test.mbt` 窗口节。
+When window functions landed on 2026-10-04, 29 queries were compared as row
+multisets between moonlake and DuckDB on the same small dataset (ties, NULLs,
+three partitions; floats at 1e-9 relative tolerance), 29/29 matching. Covered:
+the three ranking functions (tie/NULL sort keys), whole-partition and RANGE
+UNBOUNDED PRECEDING TO CURRENT ROW running frames (peers sharing values,
+count/sum/min/string_agg/median/count DISTINCT), NULL partition-key grouping,
+GROUP BY interaction (`sum(sum(x)) OVER ()`), window values inside row
+expressions, DISTINCT/WHERE/LIMIT/alias-ORDER BY combinations, and multiple
+windows coexisting. Error paths (missing OVER, outside the SELECT list, an
+explicit frame clause, nested windows, a window inside an aggregate argument,
+GROUP BY constraints) each give a deterministic error. Reproduce: data and
+script are in the commit (`t.csv`, 8 rows + a 29-query list); e2e expected values
+are hand-computed and pinned in the window section of `engine/e2e_test.mbt`.
 
-## 5.5 ORDER BY 外排序（2026-10-04）
+## 5.2 ORDER BY external sort (2026-10-04)
 
-机制：`ExecOptions { budget, spill }` 注入预算与落盘存储（engine 保持零
-fs，`SpillStore` 为函数字段结构体，native CLI 注入 `spill.FsStore`，
-wasm 落在"预算必须配存储"的明确报错上）。非聚合查询的 ORDER BY 在预算
-下走外排：批内排序 → ~budget/4 刷成有序 run → 两两归并降到 ≤8 路 →
-最终 k 路归并**流式**喂进投影/DISTINCT/OFFSET/LIMIT——带 LIMIT 时内存
-里只有输出窗口，不带 LIMIT 时物化的就是查询结果本身。查询结束（含出
-错路径，errdefer）删除全部 run 文件。
+Mechanism: `ExecOptions { budget, spill }` injects a budget and a spill store
+(the engine stays fs-free; `SpillStore` is a struct of function fields, the
+native CLI injects `spill.FsStore`, and wasm lands on an explicit "a budget must
+be paired with a store" error). ORDER BY on a non-aggregate query runs external
+sort under a budget: in-batch sort → flush sorted runs at ~budget/4 → pairwise
+merge down to ≤8 ways → a final k-way merge **streamed** into
+projection/DISTINCT/OFFSET/LIMIT — with LIMIT only the output window is in
+memory, without LIMIT what materializes is the query result itself. All run files
+are deleted when the query ends (including on the error path, via errdefer).
 
-验证：
-- wire 格式（`types.spillfmt`，MLSPILL1）round-trip 覆盖全部 dtype +
-  NULL + int64/double 极值；解析带截断防御（越界是带位置的 Execute
-  错误，不再是 range panic——调试期发现并修复的 bug：序列化用了向量
-  容量而非批行数，builder 产出的部分填充向量会写垃圾尾巴，e2e 等价
-  测试当场抓获）
-- e2e：2400 行重复值 fixture，预算 900/1500 强制多 run + 归并，LIMIT /
-  无 LIMIT / OFFSET / DISTINCT / 混合升降序 五种形态与内存路径逐格相等
-- 金标准链新增自洽检查：SF0.01 lineitem 全量非聚合 ORDER BY 在
-  `--memory 200K` 下与内存路径逐行一致（`check_all.sh` 末尾）
-- 语义边界（如实声明）：预算约束 run 状态，不约束基表物化（扫描懒化
-  另立），不约束无 LIMIT 的最终结果
+Verification:
+- the wire format (`types.spillfmt`, MLSPILL1) round-trips every dtype + NULL +
+  int64/double extremes; parsing has truncation defences (out-of-range is an
+  Execute error with a position, no longer a range panic — a bug found and fixed
+  during debugging: serialization used vector capacity instead of batch row
+  count, so a partially filled vector from the builder wrote a garbage tail;
+  the e2e equivalence test caught it on the spot)
+- e2e: a 2400-row duplicate-value fixture, budgets 900/1500 forcing multiple
+  runs + merging; LIMIT / no-LIMIT / OFFSET / DISTINCT / mixed asc-desc five
+  shapes are cell-for-cell equal to the in-memory path
+- the golden chain gains a self-consistency check: a full non-aggregate ORDER BY
+  over SF0.01 lineitem under `--memory 200K` matches the in-memory path row for
+  row (at the end of `check_all.sh`)
+- semantic boundary (stated plainly): the budget bounds run state, not base-table
+  materialization (scan laziness is a separate item), and not the final result
+  when there is no LIMIT
 
-CLI：`exec --memory <n>[K|M|G]`（配 `--spill-dir <dir>`，默认 TMPDIR 下
-按后缀探测的 per-run 目录，查询结束移除）。库形态：`execute_with(sql,
-catalog, opts)`。
+CLI: `exec --memory <n>[K|M|G]` (with `--spill-dir <dir>`, defaulting to a
+per-run directory probed by suffix under TMPDIR, removed when the query ends).
+Library form: `execute_with(sql, catalog, opts)`.
 
-## 6. 并发
+## 6. Concurrency
 
-- **全局状态审计**：engine/types/catalog/sources 无任何包级可变全局
-  （`let mut` 顶层 / `Ref` / 原子变量均为零）。`execute(sql, catalog)`
-  的全部状态在调用栈内——库形态的线程安全契约 = 每线程独立 Catalog
-  （或外部同步共享只读 Catalog）。
-- **并行进程确定性**：8 个并发 CLI 进程对同一数据集执行 q5，输出
-  md5 全部一致（1 个唯一哈希）。
-- MoonBit 语言层未向用户暴露线程原语，进程内并行不在契约范围。
-- **语言层并行能力调研**（2026-10-04，moon 0.1.20260920）：进程内数据
-  并行当前**不可表达**，这是语言/工具链限制而非引擎设计缺口——
-  moonbitlang/async 自述 "single-threaded, cooperative multitasking"，
-  "user code can only utilize one hardware processor"（内部线程仅用于
-  IO worker）；core builtin 与 moonbitlang/x 全量无 thread/spawn/atomic
-  原语；社区 actor 库（fuwaroid 型）同为单串行循环。native FFI
-  (`extern "C"`) 理论上可挂 C 线程，但 GC 托管对象无法跨 FFI 线程共享，
-  退化为带更差工程性的进程级并行——不如直接多进程。结论：并行化维持
-  进程级契约（每线程独立 Catalog / 外部同步只读共享），同一查询内并行
-  等语言层提供用户线程或 wasm 共享内存线程后再立项；列式布局下
-  scan/join/agg 按分区并行是自然的切入点。
+- **Global-state audit**: engine/types/catalog/sources contain no package-level
+  mutable globals (zero top-level `let mut` / `Ref` / atomics). All of
+  `execute(sql, catalog)`'s state lives on the call stack — the library's
+  thread-safety contract = one independent Catalog per thread (or a read-only
+  Catalog shared with external synchronization).
+- **Parallel-process determinism**: 8 concurrent CLI processes run q5 over the
+  same dataset; their output md5 is identical (1 unique hash).
+- The MoonBit language does not expose thread primitives to users; in-process
+  parallelism is out of contract.
+- **Survey of language-level parallelism** (2026-10-04, moon 0.1.20260920):
+  in-process data parallelism is currently **inexpressible** — a language/toolchain
+  limitation, not an engine design gap. moonbitlang/async describes itself as
+  "single-threaded, cooperative multitasking", "user code can only utilize one
+  hardware processor" (internal threads serve IO workers only); core builtin and
+  moonbitlang/x expose no thread/spawn/atomic primitives at all; community actor
+  libraries (fuwaroid-style) are likewise single serial loops. native FFI
+  (`extern "C"`) could in theory attach a C thread, but GC-managed objects cannot
+  be shared across FFI threads, degrading to process-level parallelism with worse
+  engineering — better to just use multiple processes. Conclusion: parallelism
+  stays a process-level contract (one Catalog per thread / externally synchronized
+  read-only sharing); in-query parallelism waits until the language offers user
+  threads or wasm shared-memory threads. Under a columnar layout, partitioning
+  scan/join/agg is the natural entry point.
 
-## 6.5 Parquet 解码（2026-10-15）
+## 6.5 Parquet decoding (2026-10-15)
 
-自写解码器的正确性证据分三层，逐层收紧：
+The hand-written decoder's correctness evidence comes in three tightening layers:
 
-**1 解码器单元测试**（`sources/parquet/thrift_wbtest.mbt`、`page_wbtest.mbt`，
-15 项，手写字节缓冲所以三后端都跑）：compact 协议的 varint/zigzag 与字段
-delta、未知字段的通用跳过、PLAIN 各类型布局（含空字符串、位打包布尔值）、
-RLE/bit-packed hybrid 流（含 RLE run、任意 bit 宽度的 bit-packed run、**跨
-run 的字节步进**）、定义层级的 4 字节长度前缀、以及畸形输入必须抛 scan
-错误而不是 trap。
+**1. Decoder unit tests** (`sources/parquet/thrift_wbtest.mbt`,
+`page_wbtest.mbt`, 15 items, hand-built byte buffers so all three backends run
+them): the compact protocol's varint/zigzag and field delta, generic skipping of
+unknown fields, PLAIN layouts per type (including empty strings, bit-packed
+booleans), the RLE/bit-packed hybrid stream (RLE runs, bit-packed runs of
+arbitrary bit width, **byte stepping across runs**), the 4-byte length prefix of
+definition levels, and malformed input raising a scan error rather than trapping.
 
-**2 fixture × DuckDB 金标准**（`harness/gen_parquet_fixtures.py` +
-`check_all.sh`）：三种形状各生成一份——全物理类型 + NULL 列、低基数触发字典
-页、双行组；每个形状按解码器声称支持的 codec 变体各生成一份（plain/
-uncompressed、plain/snappy、dictionary/snappy、dictionary/uncompressed、
-双行组/snappy），全部与同一份 DuckDB 金标准对拍（金标准按形状一份，变体共用），
-另加分组聚合与全表聚合两条查询。**「支持范围」由这组 fixture 定义，不由文档
-承诺定义**。
+**2. Fixture × DuckDB golden** (`harness/gen_parquet_fixtures.py` +
+`check_all.sh`): one fixture per shape — a full physical-type + NULL column, a
+low-cardinality dictionary page, and two row groups; each shape is generated in
+one variant per codec the decoder claims to support (plain/uncompressed,
+plain/snappy, dictionary/snappy, dictionary/uncompressed, two-row-group/snappy),
+all compared against the same DuckDB golden (one golden per shape, shared across
+variants), plus two queries for grouped and full-table aggregation. **The
+supported range is defined by this fixture set, not by a documentation promise.**
 
-**3 真数据端到端**：q6p 走 60,175 行的 `lineitem.parquet`（DuckDB 写出的
-SNAPPY + PLAIN_DICTIONARY，16 列含 date/string/double），结果与 DuckDB
-金标准一致。
+**3. Real-data end to end**: q6p runs over the 60,175-row `lineitem.parquet`
+(written by DuckDB as SNAPPY + PLAIN_DICTIONARY, 16 columns including
+date/string/double); the result matches the DuckDB golden.
 
-**4 第三方语料交叉核对**（`harness/check_parquet_corpus.py`，nightly 跑）：
-拉 apache/parquet-testing 全部 71 个文件，逐个与 DuckDB 的行数对照，射程外
-的必须是**点名拒绝**而不是静默错答。结果：**20 个读对**（含
-`int32_with_null_pages` 1000 行、`overflow_i16_page_cnt` 40000 行、
-`nation.dict-malformed`、`plain-dict-uncompressed-checksum`、`sort_columns`、
-`unknown-logical-type` 等边界件）、**48 个按设计点名拒绝**——按原因分：
-嵌套 schema 13、其余压缩 codec（LZ4/LZ4_RAW/ZSTD/Brotli）8、INT96 7、
-FIXED_LEN_BYTE_ARRAY 6、GZIP 4、只声明 DELTA_* 编码 4、v2 数据页 3、
-TIMESTAMP 1、repeated 1、空字典页 1——**3 个 DuckDB 自己也读不了**（跳过）、
-**0 个错答**。
+**4. Third-party corpus cross-check** (`harness/check_parquet_corpus.py`, run
+nightly): pull all 71 files from apache/parquet-testing, compare each row count
+against DuckDB, and anything out of range must be **rejected by name**, not
+silently answered wrong. Result: **20 read correctly** (including
+`int32_with_null_pages` 1000 rows, `overflow_i16_page_cnt` 40000 rows,
+`nation.dict-malformed`, `plain-dict-uncompressed-checksum`, `sort_columns`,
+`unknown-logical-type` and other boundary files), **48 rejected by name by
+design** — by reason: nested schema 13, other compression codecs
+(LZ4/LZ4_RAW/ZSTD/Brotli) 8, INT96 7, FIXED_LEN_BYTE_ARRAY 6, GZIP 4, DELTA_*
+encodings only 4, v2 data pages 3, TIMESTAMP 1, repeated 1, empty dictionary page
+1 — **3 that DuckDB itself cannot read either** (skipped), and **0 wrong answers**.
 
-**支持范围**（其余一律结构化 scan error，不猜）：扁平 schema、v1 数据页、
-PLAIN 与字典编码（含 RLE/bit-packed 索引与定义层级）、UNCOMPRESSED 与
-SNAPPY。拒绝：嵌套/repeated、INT96、v2 数据页、DELTA_*、
-BYTE_STREAM_SPLIT、GZIP/ZSTD/其余 codec、空字典页。
+**Supported range** (everything else is a structured scan error, no guessing):
+flat schema, v1 data pages, PLAIN and dictionary encodings (including
+RLE/bit-packed indices and definition levels), UNCOMPRESSED and SNAPPY.
+Rejected: nested/repeated, INT96, v2 data pages, DELTA_*, BYTE_STREAM_SPLIT,
+GZIP/ZSTD and other codecs, empty dictionary pages.
 
-**过程中被这组门抓到的真 bug**（层 1/2/3 各自发挥作用，记录以便复评）：
-1. compact varint 未抹掉 continuation 位（0x80 当数据位），偏移值整体
-   +64——层 2 的 fixture 对拍暴露
-2. bit-packed run 的字节步进写成 `count` 而不是 `count * bit_width`，
-   只有跨 run 读取才暴露——层 1 的单元测试补上该形态后定死
-3. 紧凑值数组（只存非空）被按行号索引，NULL 之后整体错位并越界——
-   层 3 的 q6p 真数据暴露，已改为独立游标并加不变量检查
-4. **v2 数据页（page type 3）此前落到「跳过 index page」分支**，于是
-   delta 编码与 rle-dict 两族的文件被读成「chunk 里 0 个值」这种误导性
-   报错——层 4 的语料暴露，现在直接点名「data page v2 is not supported」
-5. `dictionary_page_offset = 0` 是部分 writer 的「未设置」写法，此前被当成
-   真实页起点，从 PAR1 magic 处开始解页头——层 4 的
-   `dict-page-offset-zero.parquet` 暴露
-6. 空字典页（0 条目）此前报「dictionary page before any dictionary page」，
-   与事实不符——层 4 的 `single_nan.parquet` 暴露，现在区分「没有字典页」
-   与「字典页为空」两种情形
+**Real bugs these gates caught** (each of layers 1/2/3 did its part; recorded
+for re-evaluation):
+1. the compact varint did not mask off the continuation bit (0x80 treated as a
+   data bit), shifting offset values by +64 — surfaced by layer 2's fixture
+   cross-check
+2. bit-packed run byte stepping was written as `count` instead of
+   `count * bit_width`, only exposed when reading across runs — pinned by layer
+   1's unit test once that shape was added
+3. a compact value array (non-null only) was indexed by row number, so after a
+   NULL everything shifted and went out of range — exposed by layer 3's q6p real
+   data; changed to an independent cursor with an invariant check
+4. **v2 data pages (page type 3) previously fell into the "skip index page"
+   branch**, so delta-encoded and rle-dict family files were read as "0 values in
+   chunk", a misleading error — exposed by layer 4's corpus; now it names
+   "data page v2 is not supported" directly
+5. `dictionary_page_offset = 0` is some writers' way of saying "unset", but was
+   treated as a real page start, parsing a page header from the PAR1 magic —
+   exposed by layer 4's `dict-page-offset-zero.parquet`
+6. an empty dictionary page (0 entries) previously reported "dictionary page
+   before any dictionary page", which is untrue — exposed by layer 4's
+   `single_nan.parquet`; now it distinguishes "no dictionary page" from
+   "dictionary page is empty"
 
-## 7. 复现命令
+## 7. Reproduction commands
 
 ```bash
-moon test                                            # 160 项（含全部性质）
-uv run --with duckdb python harness/gen_tpch.py      # SF0.01 数据+金标准
-uv run --with duckdb python harness/gen_parquet_fixtures.py  # parquet fixture + 金标准
-bash harness/check_all.sh                            # 27 goldens + parquet fixture 检查
+moon test                                            # 160 items (all properties)
+uv run --with duckdb python harness/gen_tpch.py      # SF0.01 data + goldens
+uv run --with duckdb python harness/gen_parquet_fixtures.py  # parquet fixtures + goldens
+bash harness/check_all.sh                            # 27 goldens + parquet fixture checks
 uv run --with duckdb python harness/gen_tpch.py 0.1  # SF0.1
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh
 uv run --with duckdb python harness/fuzz_pushdown.py 300 20261005

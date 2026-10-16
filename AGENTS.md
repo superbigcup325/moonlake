@@ -5,6 +5,16 @@ This is a [MoonBit](https://docs.moonbitlang.com) project.
 You can browse and install extra skills here:
 <https://github.com/moonbitlang/skills>
 
+## Repository layout
+
+- `README.mbt.md` — the file readers land on (tutorial + API tour); `README.md`
+  is a symlink kept for GitHub.
+- `docs/devlog.md` — weekly log: goals, approach and quality boundaries.
+- `docs/verification.md`, `docs/spill-survey.md`, `docs/DEMO.md` — verification
+  evidence, the memory-spill design survey, and demo notes.
+- `CHANGELOG.md` — release notes (Keep a Changelog, SemVer).
+- `harness/` — TPC-H harness, golden answers and reference tooling.
+
 ## Project Structure
 
 - MoonBit packages are organized per directory; each directory contains a
@@ -52,13 +62,50 @@ You can browse and install extra skills here:
   `moon coverage analyze > uncovered.log` to see which parts of your code are
   not covered by tests.
 
-## Known Pitfalls（实战沉淀，2026-10-02 自 agent 记忆迁入）
+## Known Pitfalls
 
-- moon fmt 曾把 README.md 替换成悬空软链吞内容；定式 = README.mbt.md 真身 + README.md 软链
-- GitHub Actions fresh runner 必须先 `moon update && moon install` 再 check/test（本地 .mooncakes 缓存会掩盖，验证法 = wipe .mooncakes 模拟 fresh clone）
-- 本地 `moon test` 走 `moon.mod` 的 preferred target（wasm-gc），不覆盖 native；CI 另跑 `test (native)`。改到 fs/CSV 这类后端有差异的路径必须 `moon test --target native` 自测（2026-10-09 实录：`scan_files` fixture 用 `fs.create_dir` 非递归建 `target/` 子目录，本地与 JS/wasm-gc 全绿、CI native 红）
-- 新 moon（0.1.20261012 起）拒收仍带旧版 `moon.mod.json` manifest 的依赖，`moon install` 会在解包尽量多的依赖后于图解析阶段中止。**2026-10-15 起本项目依赖图已干净**（`moonbitlang/x@0.5.5` + `moonbitlang/quickcheck@0.15.0`；当时的两个 offender 是 quickcheck@0.14.0 与经 mizchi/parquet 传递引入的 mizchi/duckdb@0.6.4，前者升 0.15.0 解决、后者随 parquet 自研解码移除），三个 workflow 里的「install 失败就逐目录 `moon fmt` 迁移」绕过已撤掉——再出现旧 manifest 依赖应当**失败得响亮**，不要把绕过循环加回来
-- **`moon publish` 的校验在解包后的临时目录里做全新解析**（`--dry-run` 同样解包并跑 `moon check`），CI 里对 `.mooncakes` 的任何迁移/修补都救不了它；依赖图里有一个旧 manifest 制品就发不出去。发布前用 `moon publish --dry-run` 当门：CLI 在 dry-run 成功后仍可能非 0 退出并打印 `Error: moon publish failed`，以 `Server status: 202 ... Dry run completed successfully` 那行为准
-- **发布归档的文件集只由 `.gitignore` / `.moonignore` 决定**：`.git/info/exclude` 与全局 git ignore **一律不读**（只躺在 info/exclude 里的内部件会被打进公开包），同目录有 `.moonignore` 时替换该目录的 `.gitignore`（不合并），点开头路径默认全排除，包根 `_build/` 永久排除；`moon package --list` 是唯一可信预览
-- 同版 `moon fmt` 会把源码里的 `Int` 规范改写为 `Int32`（`Int` 仍是合法别名，混合风格可编译过 `--deny-warn`），故任何 commit 触到 .mbt 文件都可能顺带带入该重写
-- cli.moonbitlang.com 安装脚本已改读 `MOONBIT_INSTALL_VERSION`/首个位置参数（CI 旧 `MOONBIT_VERSION` env 失效），且归档只服务 latest，显式 pin 任何版本（含当前版号）都 403，工具链无法回装或钉版；CI 改为装 latest 并只记录 `moon version` 不做 grep 门禁（2026-10-13 实录）
+- `moon fmt` once replaced `README.md` with a dangling symlink and swallowed its
+  content; the working setup is `README.mbt.md` as the real file with `README.md`
+  as a symlink to it.
+- On a fresh GitHub Actions runner you must run `moon update && moon install`
+  before check/test — a populated local `.mooncakes` cache masks a missing
+  install. To verify, wipe `.mooncakes` to simulate a fresh clone.
+- Local `moon test` runs the `preferred target` from `moon.mod` (wasm-gc) and does
+  not cover native; CI runs `test (native)` separately. Anything touching
+  backends that differ (fs, CSV) must be self-tested with
+  `moon test --target native`. (2026-10-09: a `scan_files` fixture built a nested
+  `target/` with non-recursive `fs.create_dir`; local, JS and wasm-gc were green
+  while CI native failed.)
+- Recent `moon` (since 0.1.20261012) rejects dependencies that still ship the old
+  `moon.mod.json` manifest: `moon install` unpacks as many dependencies as it can,
+  then aborts during graph resolution. As of 2026-10-15 this project's dependency
+  graph is clean (`moonbitlang/x@0.5.5` + `moonbitlang/quickcheck@0.15.0`; the two
+  offenders were `quickcheck@0.14.0` and `mizchi/duckdb@0.6.4` pulled in
+  transitively through `mizchi/parquet` — the former cleared by bumping to
+  0.15.0, the latter by dropping the dependency once the in-house decoder landed).
+  The "on install failure, migrate each directory with `moon fmt`" workaround in
+  the three workflows has been removed: a stale-manifest dependency should fail
+  **loudly**, so do not reintroduce that loop.
+- `moon publish` validates a freshly unpacked copy in a temp directory (the same
+  holds for `--dry-run`, which unpacks and runs `moon check`), so no migration or
+  patching of `.mooncakes` in CI can rescue it: a single stale-manifest artifact
+  anywhere in the dependency graph blocks the release. Gate releases with
+  `moon publish --dry-run`. Note that after a successful dry run the CLI may still
+  exit non-zero and print `Error: moon publish failed` — treat the
+  `Server status: 202 ... Dry run completed successfully` line as the verdict.
+- The file set in a release archive is decided **only** by `.gitignore` /
+  `.moonignore`. Git's `.git/info/exclude` and the global git ignore config are
+  never consulted (files kept out of git solely via `info/exclude` will be packed
+  into the public archive), and a `.moonignore` in a directory replaces that
+  tree's `.gitignore` (the two are not merged). Dot-prefixed paths are excluded by
+  default at every depth, and the package-root `_build/` is always excluded.
+  `moon package --list` is the only trustworthy preview.
+- The same version of `moon fmt` rewrites `Int` to `Int32` in source (bare `Int`
+  remains a valid alias and mixed styles compile even under `--deny-warn`), so any
+  commit touching an `.mbt` file may drag that rewrite along.
+- The cli.moonbitlang.com install script now reads `MOONBIT_INSTALL_VERSION` / the
+  first positional argument (the old `MOONBIT_VERSION` env no longer works in CI),
+  and the archive only serves `latest`: pinning any version, including the current
+  one, returns 403, so the toolchain cannot be reinstalled at a pinned version. CI
+  now installs `latest` and only records `moon version`, non-blocking, without a
+  grep gate (2026-10-13).

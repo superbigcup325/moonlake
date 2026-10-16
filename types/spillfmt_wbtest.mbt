@@ -20,6 +20,7 @@ test "spill wire format round-trips all dtypes with nulls" {
         Int64(42),
       ]),
       vec(Float64, [Float64(1.5), Null, Float64(-0.0), Float64(3.14159)]),
+      // Non-ASCII on purpose: a multibyte UTF-8 value must round-trip too.
       vec(Str, [Str(""), Str("你好 spill"), Null, Str("quote\"and\nnewline")]),
       vec(Date, [Date(0), Null, Date(-25567), Date(20000)]),
       vec(Bool, [Boolean(true), Boolean(false), Null, Boolean(true)]),

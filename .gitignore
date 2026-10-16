@@ -5,7 +5,3 @@ target
 .mooncakes/
 .moonagent/
 __pycache__/
-
-# agent-internal planning documents
-.trae/documents/
-.zcode/
