@@ -3,7 +3,7 @@
 
 ///|
 /// Version of the `superbigcup325/moonlake` module, kept in sync with `moon.mod`.
-pub const VERSION : String = "0.1.0"
+pub const VERSION : String = "0.2.0"
 
 ///|
 /// Short human-readable description of the module.

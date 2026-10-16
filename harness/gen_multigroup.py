@@ -3,8 +3,10 @@
 # row group at SF0.01 (60k rows < duckdb's default group size), so the
 # reader's multi-group path needs its own fixture: 4 groups x 2048 rows
 # (duckdb's minimum ROW_GROUP_SIZE), each group's `v` in a disjoint
-# range [grp*100000, grp*100000 + 2047], which is also the shape promised
-# to mizchi/parquet#4 as a pushdown test asset.
+# range [grp*100000, grp*100000 + 2047]. The shape was originally written
+# for a row-group-read test asset offered upstream (mizchi/parquet#4); that
+# dependency was replaced by the in-house reader on 2026-10-15, and this
+# fixture still covers the multi-row-group path it needed.
 #
 # Usage: uv run --with duckdb python harness/gen_multigroup.py
 

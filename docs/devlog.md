@@ -44,7 +44,7 @@ error ~4e-16. **W1 gate passed.**
   in-house parser for the aggregate-filter subset; sqlparser stays
   pinned as a dependency and an upstream visibility PR is the W2 fix,
   after which the front-end swaps with the binder untouched. This
-  follows the plan's stall line: work around a gap rather than sink a
+  follows a deliberate rule: work around a gap rather than sink a
   day into it.
 - **Eager pipeline, not Volcano yet.** CSV is materialized in memory
   anyway, so the operator trait would be ceremony without value. The
@@ -126,7 +126,7 @@ including CSV parsing. **W2 gate passed.**
   post-aggregation row (group keys, then aggregate outputs). Structural
   matching against GROUP BY exprs decides what is a key; aggregates
   dedupe by written shape.
-- **Parquet adapter stays eager.** Per the plan's §3.9 finding:
+- **Parquet adapter stays eager.** Per the dependency survey:
   mizchi/parquet decodes whole files, so per-column pruning cannot pay
   off yet; correctness first, the upstream per-column-read PR is the
   post-gate evaluation. DATE has no logical-type exposure upstream, so
@@ -218,14 +218,14 @@ records the trap next to the fix.
 - **Parquet per-column-read upstream PR: evaluated, not pursued.** The
   adapter consumes read_bytes_columnar; a column-selection read would
   only pay off after vectorization/pruning exist to exploit it. Whole-
-  file decode stays for v1; revisit post-competition (plan §11).
+  file decode stays for v1; revisit post-competition.
 
 ## W4 (acceptance package, landed early 2026-10-03): README facade,
 mooncakes 0.1.0, playground, local gates
 
 ### Goal
 
-The acceptance package per the plan: README facade with the ecosystem
+The acceptance package: README facade with the ecosystem
 section, a mooncakes release, green CI, a reproducible demo page — and
 the playground kickoff that slipped from W3.
 
@@ -263,7 +263,7 @@ a dropped 60175-row lineitem.csv answers the Q1-shaped GROUP BY in
 312 ms with totals identical to the duckdb-validated golden. node
 harness: run() in 299 ms — the wasm-gc build is faster than the native
 CLI on the same query (622 ms), matching the wasm-gc performance
-narrative from the plan.
+narrative.
 
 ### Decisions and edges
 
@@ -332,3 +332,97 @@ the playground
   the index (it re-runs `moon info`/`moon fmt` over the tree), so
   splitting one change into two commits needs `git stash push -- <paths>`
   between them — plain staged-file discipline trips the freshness gate.
+
+## Out-of-core (2026-10-04 .. 2026-10-13): sorted runs, grace
+## hash join, grace hash aggregation
+
+- **The promise is that a query larger than memory degrades honestly**, not
+  that it never spills. Milestones: a blocking `ORDER BY` becomes sorted
+  runs on disk with a streaming k-way merge feeding
+  projection/DISTINCT/OFFSET/LIMIT, so a LIMIT query holds only its output
+  window (10-04); a join whose inputs exceed the budget partitions both
+  sides by the join-key hash and replays one partition at a time, all eight
+  flavors included (10-13); a GROUP BY does the same, and because equal
+  keys land in the same partition each partition's groups are final — no
+  merge phase, so non-combinable accumulators (median, `string_agg`,
+  `count(DISTINCT)`) spill too. Over budget without a spill store is a
+  clean error, and a single low-cardinality partition that still exceeds
+  the budget falls back to an in-memory pass for that partition.
+- **The engine stays filesystem-free**: spilling happens through an
+  injected `SpillStore`, so the library never opens a file the caller did
+  not ask for (`FsStore` in the CLI is the only implementation).
+- **What the gates caught**: `OutputBuilder::build` hands out
+  capacity-sized vectors (4096) whose length exceeds `row_count`, and the
+  merge copied by vector length rather than live rows, so a spilled
+  ORDER BY over more than one chunk wrote past the destination — every
+  existing fixture stayed under a chunk and masked it; the regression
+  tests now cover a 5000-row merge with and without LIMIT. The same arc
+  added guards for silent wrong answers: `sum()` over int64 raises
+  instead of wrapping, and ORDER BY/LIMIT/OFFSET on a UNION branch is a
+  parse error instead of silently truncating that branch.
+- **Spill format was settled by a bake-off, not by taste**
+  (`docs/spill-survey.md` §4): a hand-rolled columnar format against a
+  parquet-backed one, same interface, same 60,175-row payload, same driver.
+  The hand-rolled format wins on write cost (~3x), and more importantly the
+  parquet arm cannot round-trip Double or Boolean through the upstream
+  writer at all — only Int32/Int64/String/Binary — so it needed bit-pattern
+  hacks to pass. That is a semantics argument, not a speed one, and it is
+  why the in-house format is the one that ships.
+
+## In-house Parquet decoding (2026-10-15): cutting the last
+## single-maintainer dependency
+
+- **It started as a release blocker, not a refactor itch.** `moon publish`
+  validates by extracting the package and running a *fresh* `moon check`,
+  and fresh resolution pulled `mizchi/parquet`'s transitive
+  `mizchi/duckdb@0.6.4`; the registry artifact for that version still ships
+  a legacy `moon.mod.json`, which the current toolchain refuses outright.
+  CI papers over this by alternating `moon install` with per-directory
+  `moon fmt` migrations, and that workaround has no equivalent inside
+  publish validation. The same wall greets consumers: a scratch module
+  could not `moon add superbigcup325/moonlake@0.1.0` either — it hit
+  `moonbitlang/quickcheck@0.14.0` first, the same class of stale manifest,
+  which is why the engine's own dependency had to move to 0.15.0 as well.
+- **The choice was between waiting, vendoring, and writing the subset we
+  use.** Waiting on two upstream republishes puts the release date in
+  someone else's hands. Vendoring a 10k-line reader means owning it anyway,
+  in the shape of a third-party blob in the tree. The subset we actually
+  need turned out to be small: every file we generate, and the default
+  output of DuckDB, Arrow and pandas, uses format v1 data pages with PLAIN
+  or PLAIN_DICTIONARY and Snappy compression.
+- **What it took** (~1,200 lines including tests): Thrift compact protocol
+  for the footer and page headers with generic unknown-field skipping, a
+  schema/row-group walk, definition levels through the RLE/bit-packed
+  hybrid, PLAIN layouts for the six physical types, dictionary pages plus
+  RLE-encoded indices, and a raw-Snappy decoder (the ecosystem has flate,
+  zlib, gzip and zstd packages; Snappy is not among them). The dependency
+  graph is now `moonbitlang/x` plus `moonbitlang/quickcheck`, neither with a
+  legacy manifest.
+- **Three bugs, three different gates, which is the argument for the
+  fixtures existing**: the compact-protocol varint forgot to mask the
+  continuation bit, adding 128 to every zigzag value that had one (every
+  offset it touched was 64 too high) — the DuckDB golden diff caught it;
+  the bit-packed run advanced by `count` bytes instead of
+  `count * bit_width`, which only shows up when a decode crosses a run
+  boundary — a unit test on the real index bytes pinned it; and a compacted
+  value array (non-nulls only) indexed by row number, which silently
+  shifted every value after the first NULL and then read out of bounds —
+  only the 60k-row TPC-H parquet path could have surfaced that one.
+- **The third-party corpus is part of the gate, not a one-off**: the
+  apache/parquet-testing corpus (71 files) runs in nightly — every file
+  in scope must match DuckDB's row count, every file out of scope must be
+  refused *by name*. The first run read 20 files correctly and found
+  three real defects behind the 48 documented refusals: data page v2 was
+  falling into the "skip index pages" branch and surfacing as a bogus
+  "chunk has 0 values", a `dictionary_page_offset` of 0 (the deprecated
+  "not set" spelling) was being treated as a page offset and started the
+  walk at the PAR1 magic, and an empty dictionary page reported the
+  wrong reason. All three are fixed; the corpus now reports 0 wrong
+  answers.
+- **Scope is stated where users see it** (README, `docs/verification.md`
+  §6.5): flat schemas, v1 pages, PLAIN and dictionary encodings,
+  UNCOMPRESSED and Snappy; nested fields, INT96, v2 pages, DELTA and
+  byte-stream-split encodings and the other codecs raise pointed scan
+  errors instead of guessing. The fixture matrix in `harness/data/parquet`
+  is what defines that boundary, and it runs in the same `check_all.sh`
+  gate as the TPC-H answers.

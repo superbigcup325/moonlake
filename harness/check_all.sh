@@ -82,4 +82,17 @@ moon run cmd/main -- exec --csv "$DATA/lineitem.csv" \
 moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
   "$(cat harness/queries/spillagg.sql)" > "$work/spillagg_spilled.txt"
 python3 harness/compare.py "$work/spillagg_plain.txt" "$work/spillagg_spilled.txt"
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet) + the external-sort, grace-join and grace-aggregation equivalence checks"
+# in-house parquet reader: the fixture shapes, one check per codec and
+# encoding variant, all diffed against the same duckdb golden per shape
+# (the golden directory is the shape, so variants share it)
+echo "== pqall (plain, uncompressed)"
+moon run cmd/main -- exec --parquet harness/data/parquet/all_types/plain/t.parquet --date-col d "$(cat harness/queries/pqall.sql)" > "$work/pqall.txt"
+python3 harness/compare.py harness/data/parquet/all_types/pqall_golden.txt "$work/pqall.txt"
+check_in harness/data/parquet/all_types pqall --parquet harness/data/parquet/all_types/snappy/t.parquet --date-col d
+check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/dict_types/dict_uncompressed/t.parquet
+check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/dict_types/dict/t.parquet
+check_in harness/data/parquet/dict_types pqdictagg --parquet harness/data/parquet/dict_types/dict/t.parquet
+check_in harness/data/parquet/multigroup pqgroups --parquet harness/data/parquet/multigroup/two_groups/t.parquet
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet)"
+echo "plus the external-sort / grace-join / grace-aggregation equivalence checks"
+echo "and the in-house parquet reader fixture checks"

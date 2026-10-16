@@ -15,6 +15,7 @@ Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet file
 moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) workloads:
 
 - Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool, date, string) — out-of-range values widen, never wrap.
+- Parquet decoding is in-house (`sources/parquet`) and scoped on purpose: flat schemas, v1 data pages, PLAIN and dictionary encodings, `UNCOMPRESSED` and `SNAPPY` (all default DuckDB, Arrow and pandas output). Nested fields, INT96 timestamps, v2 pages, DELTA/byte-stream-split encodings and the other codecs are refused with a pointed error rather than guessed at.
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
 
@@ -40,7 +41,7 @@ SQL correctness is validated by differential testing against DuckDB over the TPC
 
 ```bash
 uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
-bash harness/check_all.sh                         # 23 goldens: all PASS (22 + parquet variant)
+bash harness/check_all.sh                         # 27 goldens: all PASS (22 TPC-H + parquet + 3 multi-row-group)
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (regenerate first: gen_tpch.py 0.1)
 ```
 
@@ -134,7 +135,7 @@ sit next to, not on top of, its neighbours:
 | project | what it is | boundary with moonlake |
 |---|---|---|
 | [moonbit-community/sqlparser](https://github.com/moonbit-community/sqlparser) | SQL lexer/parser (AST) | parsing only, no execution; moonlake runs on its own in-house front-end (lexer, parser, AST in the in-repo `sql` package) and that is the roadmap, not a placeholder: sqlparser's select-statement AST is not destructurable cross-package, so the relationship is upstream cooperation (issues/PRs), not a planned swap-in |
-| [mizchi/parquet](https://github.com/mizchi/parquet) | Parquet reader/writer | format decoding only; moonlake adapts its columnar read into the same vectors the executor consumes |
+| [apache/parquet-format](https://github.com/apache/parquet-format) | Parquet format and encoding specs | moonlake implements the decoding itself (no dependency): the reader follows the specs and is diffed against DuckDB answers, so the format work is in-repo while the specification stays upstream |
 | [shunge/arrow](https://github.com/buildliming/MoonArrow) (MoonArrow) | Arrow IPC format read/write | memory-format interchange; a future `to_arrow` bridge is cooperation, not competition |
 | [uiwcvb/moonsql](https://github.com/uiwcvb/moonsql) | embedded OLTP database (row storage, CRUD, persistence) | different species — SQLite to moonlake's DuckDB: transactional storage vs external-file analytics |
 | [f4ah6o/duckdb](https://github.com/f4ah6o/duckdb), mizchi/duckdb | DuckDB C++ bindings | FFI route: the wasm-gc target is a stub upstream and the binding build is unstable; moonlake is pure MoonBit and runs natively in the browser |
@@ -156,10 +157,11 @@ matrices plus the TPC-H cross-validation job.
 
 ## Acknowledgements
 
-moonlake is being built on top of these open-source MoonBit packages:
+moonlake is being built on top of these open-source packages:
 
-- [mizchi/parquet](https://github.com/mizchi/parquet) (Apache-2.0) — Parquet reading
+- [moonbitlang/x](https://github.com/moonbitlang/x) (Apache-2.0) — filesystem, argument parsing and encoding utilities
 - [moonbitlang/quickcheck](https://github.com/moonbitlang/quickcheck) (Apache-2.0) — property-based testing
+- [apache/parquet-format](https://github.com/apache/parquet-format) (Apache-2.0) — the Parquet format and encoding specifications that `sources/parquet` implements; its [parquet-testing](https://github.com/apache/parquet-testing) corpus supplies the files the reader is verified against
 
 ## License
 

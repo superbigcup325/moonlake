@@ -165,12 +165,69 @@ catalog, opts)`。
   等语言层提供用户线程或 wasm 共享内存线程后再立项；列式布局下
   scan/join/agg 按分区并行是自然的切入点。
 
+## 6.5 Parquet 解码（2026-10-15）
+
+自写解码器的正确性证据分三层，逐层收紧：
+
+**1 解码器单元测试**（`sources/parquet/thrift_wbtest.mbt`、`page_wbtest.mbt`，
+15 项，手写字节缓冲所以三后端都跑）：compact 协议的 varint/zigzag 与字段
+delta、未知字段的通用跳过、PLAIN 各类型布局（含空字符串、位打包布尔值）、
+RLE/bit-packed hybrid 流（含 RLE run、任意 bit 宽度的 bit-packed run、**跨
+run 的字节步进**）、定义层级的 4 字节长度前缀、以及畸形输入必须抛 scan
+错误而不是 trap。
+
+**2 fixture × DuckDB 金标准**（`harness/gen_parquet_fixtures.py` +
+`check_all.sh`）：三种形状各生成一份——全物理类型 + NULL 列、低基数触发字典
+页、双行组；每个形状按解码器声称支持的 codec 变体各生成一份（plain/
+uncompressed、plain/snappy、dictionary/snappy、dictionary/uncompressed、
+双行组/snappy），全部与同一份 DuckDB 金标准对拍（金标准按形状一份，变体共用），
+另加分组聚合与全表聚合两条查询。**「支持范围」由这组 fixture 定义，不由文档
+承诺定义**。
+
+**3 真数据端到端**：q6p 走 60,175 行的 `lineitem.parquet`（DuckDB 写出的
+SNAPPY + PLAIN_DICTIONARY，16 列含 date/string/double），结果与 DuckDB
+金标准一致。
+
+**4 第三方语料交叉核对**（`harness/check_parquet_corpus.py`，nightly 跑）：
+拉 apache/parquet-testing 全部 71 个文件，逐个与 DuckDB 的行数对照，射程外
+的必须是**点名拒绝**而不是静默错答。结果：**20 个读对**（含
+`int32_with_null_pages` 1000 行、`overflow_i16_page_cnt` 40000 行、
+`nation.dict-malformed`、`plain-dict-uncompressed-checksum`、`sort_columns`、
+`unknown-logical-type` 等边界件）、**48 个按设计点名拒绝**——按原因分：
+嵌套 schema 13、其余压缩 codec（LZ4/LZ4_RAW/ZSTD/Brotli）8、INT96 7、
+FIXED_LEN_BYTE_ARRAY 6、GZIP 4、只声明 DELTA_* 编码 4、v2 数据页 3、
+TIMESTAMP 1、repeated 1、空字典页 1——**3 个 DuckDB 自己也读不了**（跳过）、
+**0 个错答**。
+
+**支持范围**（其余一律结构化 scan error，不猜）：扁平 schema、v1 数据页、
+PLAIN 与字典编码（含 RLE/bit-packed 索引与定义层级）、UNCOMPRESSED 与
+SNAPPY。拒绝：嵌套/repeated、INT96、v2 数据页、DELTA_*、
+BYTE_STREAM_SPLIT、GZIP/ZSTD/其余 codec、空字典页。
+
+**过程中被这组门抓到的真 bug**（层 1/2/3 各自发挥作用，记录以便复评）：
+1. compact varint 未抹掉 continuation 位（0x80 当数据位），偏移值整体
+   +64——层 2 的 fixture 对拍暴露
+2. bit-packed run 的字节步进写成 `count` 而不是 `count * bit_width`，
+   只有跨 run 读取才暴露——层 1 的单元测试补上该形态后定死
+3. 紧凑值数组（只存非空）被按行号索引，NULL 之后整体错位并越界——
+   层 3 的 q6p 真数据暴露，已改为独立游标并加不变量检查
+4. **v2 数据页（page type 3）此前落到「跳过 index page」分支**，于是
+   delta 编码与 rle-dict 两族的文件被读成「chunk 里 0 个值」这种误导性
+   报错——层 4 的语料暴露，现在直接点名「data page v2 is not supported」
+5. `dictionary_page_offset = 0` 是部分 writer 的「未设置」写法，此前被当成
+   真实页起点，从 PAR1 magic 处开始解页头——层 4 的
+   `dict-page-offset-zero.parquet` 暴露
+6. 空字典页（0 条目）此前报「dictionary page before any dictionary page」，
+   与事实不符——层 4 的 `single_nan.parquet` 暴露，现在区分「没有字典页」
+   与「字典页为空」两种情形
+
 ## 7. 复现命令
 
 ```bash
-moon test                                            # 131 项（含全部性质）
+moon test                                            # 160 项（含全部性质）
 uv run --with duckdb python harness/gen_tpch.py      # SF0.01 数据+金标准
-bash harness/check_all.sh                            # 23 goldens
+uv run --with duckdb python harness/gen_parquet_fixtures.py  # parquet fixture + 金标准
+bash harness/check_all.sh                            # 27 goldens + parquet fixture 检查
 uv run --with duckdb python harness/gen_tpch.py 0.1  # SF0.1
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh
 uv run --with duckdb python harness/fuzz_pushdown.py 300 20261005

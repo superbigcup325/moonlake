@@ -45,3 +45,27 @@ via `--date-col`. The data directory comes from `MOONLAKE_DATA`
 (default `harness/data/sf001`); point it at `harness/data/sf01` for
 the SF0.1 cross-validation. CI runs the same script after regenerating
 the data from scratch (job `tpch`).
+
+## Parquet fixtures and the corpus check
+
+Two more generators feed the in-house Parquet reader's gates:
+
+```bash
+uv run --with duckdb python harness/gen_parquet_fixtures.py   # fixtures + goldens
+python3 harness/check_parquet_corpus.py                       # nightly: third-party files
+```
+
+`gen_parquet_fixtures.py` writes `harness/data/parquet/<shape>/<variant>/t.parquet`
+plus one duckdb golden per shape. The table name the CLI registers is the file
+stem, so every fixture is `t.parquet` and the queries in `queries/pq*.sql`
+reference `t`; variants of one shape share that shape's golden (the reader is
+supposed to be codec-independent). Shapes: every physical type with NULLs, a
+low-cardinality shape that gets dictionary pages, and a two-row-group shape;
+variants cover plain/uncompressed, plain/snappy, dictionary/snappy,
+dictionary/uncompressed and two row groups. `check_all.sh` diffs all of them.
+
+`check_parquet_corpus.py` downloads apache/parquet-testing (cached in
+`~/.cache/moonlake-parquet-corpus`) and requires two things of every file: in
+scope, the row count must equal duckdb's; out of scope, the reader must refuse
+it *by name*. It runs in the nightly workflow — the corpus is third-party data,
+so it is fetched rather than committed.

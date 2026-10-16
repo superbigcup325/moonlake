@@ -31,16 +31,8 @@ jobs:
       - name: Fetch dependencies
         run: |
           moon update
-          # `moon install` aborts on dependencies still shipping the
-          # legacy moon.mod.json manifest, after extracting what it can.
-          # Alternate install attempts with `moon fmt` migrations until
-          # none remain, then gate on a final install.
-          for i in 1 2 3 4 5; do
-            moon install && break
-            for d in .mooncakes/*/*/; do
-              if [ -f "$d/moon.mod.json" ]; then (cd "$d" && moon fmt); fi
-            done
-          done
+          # the toolchain enforces moon.mod's manifest format: a dependency
+          # that still ships the legacy moon.mod.json fails here, loudly
           moon install
       - name: Build the playground wasm
         run: moon build --target wasm-gc playground

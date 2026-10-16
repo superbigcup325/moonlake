@@ -8,5 +8,5 @@ import {
 import {
   "superbigcup325/moonlake/sources/csv",
   "moonbitlang/quickcheck" @qc,
-  "moonbitlang/quickcheck/gen",
+  "moonbitlang/core/quickcheck" @gen,
 } for "test"

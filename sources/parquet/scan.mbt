@@ -1,10 +1,11 @@
-// Parquet scanning: adapt mizchi/parquet's columnar reader to moonlake
-// vectors. The upstream API decodes the whole file eagerly (no row
-// groups), so the table materializes as a single batch. Nullable
-// variants become validity slots; Float upcasts to float64; parquet DATE
-// arrives as int32 and is lifted to DATE by naming the column in
-// date_columns (registration-time semantics, per the plan). Timestamp
-// and binary columns are rejected at registration, not at execution.
+// Parquet scanning: adapt the in-house reader's decoded columns to moonlake
+// vectors.
+//
+// The reader decodes a whole file eagerly and concatenates its row groups,
+// so a table materializes as a single batch (same shape as before). Nullable
+// columns carry a validity array; FLOAT upcasts to float64; a column named
+// in `date_columns` lifts its INT32 payload to DATE at registration time,
+// which keeps DATE semantics in the catalog rather than in the decoder.
 
 ///|
 /// Scan Parquet bytes into a registered table entry.
@@ -13,15 +14,26 @@ pub fn scan_bytes(
   table_name : String,
   date_columns : Array[String],
 ) -> @catalog.TableEntry raise @types.SqlError {
-  let file = @mp.read_bytes_columnar(content) catch {
-    err => raise @types.SqlError::Scan("parquet: \{err}")
+  let (columns, rows) = read_columns(content)
+  let vectors : Array[@types.ColumnVector] = []
+  let schema_cols : Array[@catalog.Column] = []
+  for col in columns {
+    let is_date = date_columns.contains(col.name)
+    let vec = adapt(col, is_date)
+    schema_cols.push({ name: col.name, dtype: vec.dtype(), })
+    vectors.push(vec)
   }
-  build_entry(table_name, file, date_columns)
+  let schema : @catalog.TableSchema = {
+    table: table_name,
+    columns: schema_cols,
+  }
+  let batch = @types.DataBatch::new(vectors, rows)
+  { schema, batches: [batch], }
 }
 
 ///|
-/// Scan a Parquet file from disk (native target; wasm targets load the
-/// bytes via the playground bridge and call scan_bytes).
+/// Scan a Parquet file from disk (native target; wasm targets load the bytes
+/// via the playground bridge and call scan_bytes).
 pub fn scan_file(
   path : String,
   table_name : String,
@@ -34,249 +46,98 @@ pub fn scan_file(
 }
 
 ///|
-fn unsupported_error(name : String, ctype : @mp.ColumnType) -> @types.SqlError {
-  @types.SqlError::Scan(
-    "parquet column \"\{name}\": unsupported type \{ctype.to_string()} (timestamp/binary not supported in v1)",
-  )
-}
-
-///|
-fn build_entry(
-  table_name : String,
-  file : @mp.ParquetColumnarFile,
-  date_columns : Array[String],
-) -> @catalog.TableEntry raise @types.SqlError {
-  let n = file.row_count()
-  let columns : Array[@catalog.Column] = []
-  let vectors : Array[@types.ColumnVector] = []
-  for i, col in file.columns() {
-    if col.repetition() is @mp.Repeated {
-      raise @types.SqlError::Scan(
-        "parquet column \"\{col.name()}\": repeated fields are not supported",
-      )
-    }
-    let is_date = date_columns.contains(col.name())
-    let (vec, dtype) = adapt(
-      col.name(),
-      col.column_type(),
-      file.column_data()[i],
-      is_date,
-    )
-    columns.push({ name: col.name(), dtype, })
-    vectors.push(vec)
-  }
-  let schema : @catalog.TableSchema = { table: table_name, columns, }
-  let batch = @types.DataBatch::new(vectors, n)
-  { schema, batches: [batch], }
-}
-
-///|
-fn adapt(
-  name : String,
-  ctype : @mp.ColumnType,
-  data : @mp.ParquetColumnData,
-  is_date : Bool,
-) -> (@types.ColumnVector, @types.DataType) raise @types.SqlError {
-  let n = data.length()
-  match data {
-    Int32Values(vals) => {
-      let dt : @types.DataType = if is_date {
-        @types.DataType::Date
-      } else {
-        @types.DataType::Int32
-      }
-      let vec = @types.ColumnVector::make(dt, n)
-      for i in 0..<n {
-        vec.set(
-          i,
-          if is_date {
-            @types.Date(vals[i])
-          } else {
-            @types.Int32(vals[i])
-          },
-        )
-      }
-      (vec, dt)
-    }
-    NullableInt32Values(vals) => {
-      let dt : @types.DataType = if is_date {
-        @types.DataType::Date
-      } else {
-        @types.DataType::Int32
-      }
-      let vec = @types.ColumnVector::make(dt, n)
-      for i in 0..<n {
-        match vals[i] {
-          Some(v) =>
-            vec.set(i, if is_date { @types.Date(v) } else { @types.Int32(v) })
-          None => vec.set(i, @types.Null)
-        }
-      }
-      (vec, dt)
-    }
-    Int64Values(vals) => fill_i64(n, fn(i) { vals[i] })
-    NullableInt64Values(vals) => fill_i64_opt(n, fn(i) { vals[i] })
-    DoubleValues(vals) => fill_f64(n, fn(i) { vals[i] })
-    FloatValues(vals) => fill_f64(n, fn(i) { vals[i].to_double() })
-    BooleanValues(vals) => {
+fn adapt(col : DecodedColumn, is_date : Bool) -> @types.ColumnVector {
+  let n = col.rows()
+  match col.values {
+    Bools(values, valid) => {
       let vec = @types.ColumnVector::make(@types.Bool, n)
+      let mut k = 0
       for i in 0..<n {
-        vec.set(i, @types.Boolean(vals[i]))
-      }
-      (vec, @types.Bool)
-    }
-    Utf8Values(vals) => fill_str(n, fn(i) { @utf8.decode_lossy(vals[i][:]) })
-    NullableUtf8Values(vals) =>
-      fill_str_opt(n, fn(i) {
-        match vals[i] {
-          Some(v) => Some(@utf8.decode_lossy(v[:]))
-          None => None
-        }
-      })
-    Values(vals) => adapt_values(name, ctype, vals, is_date)
-    _ => raise unsupported_error(name, ctype)
-  }
-}
-
-///|
-fn adapt_values(
-  name : String,
-  ctype : @mp.ColumnType,
-  vals : Array[@mp.Value],
-  is_date : Bool,
-) -> (@types.ColumnVector, @types.DataType) raise @types.SqlError {
-  let n = vals.length()
-  let vec = match ctype {
-    Boolean => {
-      let v = @types.ColumnVector::make(@types.Bool, n)
-      for i in 0..<n {
-        match vals[i] {
-          @mp.Boolean(b) => v.set(i, @types.Boolean(b))
-          @mp.Null => v.set(i, @types.Null)
-          _ => raise unsupported_error(name, ctype)
+        if valid[i] {
+          vec.set(i, @types.Boolean(values[k]))
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
         }
       }
-      (v, @types.Bool)
+      vec
     }
-    Int32 => {
+    Int32s(values, valid) => {
       let dt : @types.DataType = if is_date {
         @types.DataType::Date
       } else {
         @types.DataType::Int32
       }
-      let v = @types.ColumnVector::make(dt, n)
+      let vec = @types.ColumnVector::make(dt, n)
+      let mut k = 0
       for i in 0..<n {
-        match vals[i] {
-          @mp.Int32(x) =>
-            v.set(i, if is_date { @types.Date(x) } else { @types.Int32(x) })
-          @mp.Null => v.set(i, @types.Null)
-          _ => raise unsupported_error(name, ctype)
+        if valid[i] {
+          vec.set(
+            i,
+            if is_date {
+              @types.Date(values[k])
+            } else {
+              @types.Int32(values[k])
+            },
+          )
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
         }
       }
-      (v, dt)
+      vec
     }
-    Int64 => {
-      let v = @types.ColumnVector::make(@types.Int64, n)
+    Int64s(values, valid) => {
+      let vec = @types.ColumnVector::make(@types.Int64, n)
+      let mut k = 0
       for i in 0..<n {
-        match vals[i] {
-          @mp.Int64(x) => v.set(i, @types.Int64(x))
-          @mp.Int32(x) => v.set(i, @types.Int64(x.to_int64()))
-          @mp.Null => v.set(i, @types.Null)
-          _ => raise unsupported_error(name, ctype)
+        if valid[i] {
+          vec.set(i, @types.Int64(values[k]))
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
         }
       }
-      (v, @types.Int64)
+      vec
     }
-    Double | Float => {
-      let v = @types.ColumnVector::make(@types.Float64, n)
+    Floats(values, valid) => {
+      let vec = @types.ColumnVector::make(@types.Float64, n)
+      let mut k = 0
       for i in 0..<n {
-        match vals[i] {
-          @mp.Double(x) => v.set(i, @types.Float64(x))
-          @mp.Float(x) => v.set(i, @types.Float64(x.to_double()))
-          @mp.Null => v.set(i, @types.Null)
-          _ => raise unsupported_error(name, ctype)
+        if valid[i] {
+          vec.set(i, @types.Float64(values[k].to_double()))
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
         }
       }
-      (v, @types.Float64)
+      vec
     }
-    String => {
-      let v = @types.ColumnVector::make(@types.Str, n)
+    Doubles(values, valid) => {
+      let vec = @types.ColumnVector::make(@types.Float64, n)
+      let mut k = 0
       for i in 0..<n {
-        match vals[i] {
-          @mp.String(s) => v.set(i, @types.Str(s))
-          @mp.Null => v.set(i, @types.Null)
-          _ => raise unsupported_error(name, ctype)
+        if valid[i] {
+          vec.set(i, @types.Float64(values[k]))
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
         }
       }
-      (v, @types.Str)
+      vec
     }
-    _ => raise unsupported_error(name, ctype)
-  }
-  vec
-}
-
-///|
-fn fill_i64(
-  n : Int32,
-  get : (Int32) -> Int64,
-) -> (@types.ColumnVector, @types.DataType) {
-  let vec = @types.ColumnVector::make(@types.Int64, n)
-  for i in 0..<n {
-    vec.set(i, @types.Int64(get(i)))
-  }
-  (vec, @types.Int64)
-}
-
-///|
-fn fill_i64_opt(
-  n : Int32,
-  get : (Int32) -> Int64?,
-) -> (@types.ColumnVector, @types.DataType) {
-  let vec = @types.ColumnVector::make(@types.Int64, n)
-  for i in 0..<n {
-    match get(i) {
-      Some(v) => vec.set(i, @types.Int64(v))
-      None => vec.set(i, @types.Null)
+    Strings(values, valid) => {
+      let vec = @types.ColumnVector::make(@types.Str, n)
+      let mut k = 0
+      for i in 0..<n {
+        if valid[i] {
+          vec.set(i, @types.Str(values[k]))
+          k += 1
+        } else {
+          vec.set(i, @types.Null)
+        }
+      }
+      vec
     }
   }
-  (vec, @types.Int64)
-}
-
-///|
-fn fill_f64(
-  n : Int32,
-  get : (Int32) -> Double,
-) -> (@types.ColumnVector, @types.DataType) {
-  let vec = @types.ColumnVector::make(@types.Float64, n)
-  for i in 0..<n {
-    vec.set(i, @types.Float64(get(i)))
-  }
-  (vec, @types.Float64)
-}
-
-///|
-fn fill_str(
-  n : Int32,
-  get : (Int32) -> String,
-) -> (@types.ColumnVector, @types.DataType) {
-  let vec = @types.ColumnVector::make(@types.Str, n)
-  for i in 0..<n {
-    vec.set(i, @types.Str(get(i)))
-  }
-  (vec, @types.Str)
-}
-
-///|
-fn fill_str_opt(
-  n : Int32,
-  get : (Int32) -> String?,
-) -> (@types.ColumnVector, @types.DataType) {
-  let vec = @types.ColumnVector::make(@types.Str, n)
-  for i in 0..<n {
-    match get(i) {
-      Some(s) => vec.set(i, @types.Str(s))
-      None => vec.set(i, @types.Null)
-    }
-  }
-  (vec, @types.Str)
 }
