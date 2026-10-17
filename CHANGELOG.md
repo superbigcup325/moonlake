@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- 2026-10-17 the Parquet reader decodes the remaining page encodings through
+  colpack: DELTA_BINARY_PACKED (INT32/INT64), DELTA_LENGTH_BYTE_ARRAY and
+  DELTA_BYTE_ARRAY (BYTE_ARRAY), BYTE_STREAM_SPLIT (FLOAT/DOUBLE) and RLE
+  boolean values. The encoding gate accepts them, decode errors surface as
+  pointed scan errors with the colpack message, and eight small embedded
+  fixtures pin each path on every target. colpack is a workspace member for
+  local development (not yet published), so the branch builds with a
+  `moon.work` that lists both modules
+
 ## [0.2.0] - 2026-10-16
 
 > Covers everything since `0.1.0` (published 2026-10-03).

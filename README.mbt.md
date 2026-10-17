@@ -15,7 +15,7 @@ Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet file
 moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) workloads:
 
 - Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool, date, string) — out-of-range values widen, never wrap.
-- Parquet decoding is in-house (`sources/parquet`) and scoped on purpose: flat schemas, v1 data pages, PLAIN and dictionary encodings, `UNCOMPRESSED` and `SNAPPY` (all default DuckDB, Arrow and pandas output). Nested fields, INT96 timestamps, v2 pages, DELTA/byte-stream-split encodings and the other codecs are refused with a pointed error rather than guessed at.
+- Parquet decoding is in-house (`sources/parquet`) and scoped on purpose: flat schemas, v1 data pages, PLAIN, dictionary, the DELTA family and BYTE_STREAM_SPLIT page encodings (the last five through colpack), RLE boolean values, `UNCOMPRESSED` and `SNAPPY`. Nested fields, INT96 timestamps, v2 pages and the other codecs are refused with a pointed error rather than guessed at.
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
 - No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
 

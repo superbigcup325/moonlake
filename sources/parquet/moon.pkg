@@ -2,5 +2,7 @@ import {
   "superbigcup325/moonlake/types",
   "superbigcup325/moonlake/catalog",
   "moonbitlang/core/encoding/utf8",
+  "superbigcup325/colpack/encoders" @colpack_encoders,
+  "superbigcup325/colpack/types" @colpack_types,
   "moonbitlang/x/fs",
 }

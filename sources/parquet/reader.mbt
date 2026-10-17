@@ -101,7 +101,14 @@ fn check_codec(cm : ColumnMeta, name : String) -> Unit raise @types.SqlError {
     let mut supported = false
     for e in cm.encodings {
       match e {
-        Plain | PlainDictionary | Rle | RleDictionaryByPage => supported = true
+        Plain
+        | PlainDictionary
+        | Rle
+        | RleDictionaryByPage
+        | DeltaBinaryPacked
+        | DeltaLengthByteArray
+        | DeltaByteArray
+        | ByteStreamSplit => supported = true
         _ => ()
       }
     }
@@ -133,6 +140,127 @@ fn decompress(
 }
 
 ///|
+/// Translate a colpack decoding error into the scan error the reader reports.
+fn colpack_scan_error(e : @colpack_types.EncodingError) -> @types.SqlError {
+  @types.SqlError::Scan(
+    "parquet: colpack: \{@colpack_types.EncodingError::message(e)}",
+  )
+}
+
+///|
+fn extended_bool(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[Bool] raise @types.SqlError {
+  match enc {
+    Rle =>
+      @colpack_encoders.decode_bool_rle(payload, n) catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to BOOLEAN",
+      )
+  }
+}
+
+///|
+fn extended_i32(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[Int32] raise @types.SqlError {
+  match enc {
+    DeltaBinaryPacked =>
+      @colpack_encoders.decode_delta_int32(payload, n).0 catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to INT32",
+      )
+  }
+}
+
+///|
+fn extended_i64(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[Int64] raise @types.SqlError {
+  match enc {
+    DeltaBinaryPacked =>
+      @colpack_encoders.decode_delta_int64(payload, n).0 catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to INT64",
+      )
+  }
+}
+
+///|
+fn extended_f32(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[Float] raise @types.SqlError {
+  match enc {
+    ByteStreamSplit =>
+      @colpack_encoders.decode_byte_stream_split_float(payload, n) catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to FLOAT",
+      )
+  }
+}
+
+///|
+fn extended_f64(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[Double] raise @types.SqlError {
+  match enc {
+    ByteStreamSplit =>
+      @colpack_encoders.decode_byte_stream_split_double(payload, n) catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to DOUBLE",
+      )
+  }
+}
+
+///|
+fn extended_strings(
+  payload : BytesView,
+  n : Int32,
+  enc : Encoding,
+) -> Array[String] raise @types.SqlError {
+  let raw = match enc {
+    DeltaLengthByteArray =>
+      @colpack_encoders.decode_delta_length_byte_array(payload, n).0 catch {
+        e => raise colpack_scan_error(e)
+      }
+    DeltaByteArray =>
+      @colpack_encoders.decode_delta_byte_array(payload, n).0 catch {
+        e => raise colpack_scan_error(e)
+      }
+    _ =>
+      raise unsupported(
+        "encoding \{encoding_name(enc)} does not apply to BYTE_ARRAY",
+      )
+  }
+  raw.map(fn(value) { @utf8.decode_lossy(value[:]) })
+}
+
+///|
 /// Decode one column chunk into a value array. The page walk is shared: each
 /// physical type supplies the two closures that turn page bytes into values
 /// (dictionary page and data page), and the walk owns the level decoding.
@@ -144,6 +272,7 @@ fn[T] decode_values(
   values : Array[T],
   name : String,
   plain : (BytesView, Int32) -> Array[T] raise @types.SqlError,
+  extended : (BytesView, Int32, Encoding) -> Array[T] raise @types.SqlError,
   dict_seen : Bool,
 ) -> Unit raise @types.SqlError {
   match enc {
@@ -166,15 +295,17 @@ fn[T] decode_values(
         values.push(dict[idx])
       }
     }
-    BitPacked
-    | Rle
+    Rle
     | DeltaBinaryPacked
     | DeltaLengthByteArray
     | DeltaByteArray
-    | ByteStreamSplit
-    | OtherEncoding(_) =>
+    | ByteStreamSplit =>
+      for v in extended(payload, n, enc) {
+        values.push(v)
+      }
+    BitPacked | OtherEncoding(_) =>
       raise unsupported(
-        "column \"\{name}\": encoding \{encoding_name(enc)} is not supported",
+        "column \"{name}\": encoding \{encoding_name(enc)} is not supported",
       )
   }
 }
@@ -209,7 +340,7 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_booleans, dict_seen,
+            payload, n, enc, dict, values, name, plain_booleans, extended_bool, dict_seen,
           )
         },
       )
@@ -233,7 +364,7 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_i32, dict_seen,
+            payload, n, enc, dict, values, name, plain_i32, extended_i32, dict_seen,
           )
         },
       )
@@ -257,7 +388,7 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_i64, dict_seen,
+            payload, n, enc, dict, values, name, plain_i64, extended_i64, dict_seen,
           )
         },
       )
@@ -281,7 +412,7 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_f32, dict_seen,
+            payload, n, enc, dict, values, name, plain_f32, extended_f32, dict_seen,
           )
         },
       )
@@ -305,7 +436,7 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_f64, dict_seen,
+            payload, n, enc, dict, values, name, plain_f64, extended_f64, dict_seen,
           )
         },
       )
@@ -329,7 +460,8 @@ fn decode_chunk(
         },
         (payload, n, enc, dict_seen) => {
           decode_values(
-            payload, n, enc, dict, values, name, plain_strings, dict_seen,
+            payload, n, enc, dict, values, name, plain_strings, extended_strings,
+            dict_seen,
           )
         },
       )

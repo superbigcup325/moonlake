@@ -235,10 +235,17 @@ encodings only 4, v2 data pages 3, TIMESTAMP 1, repeated 1, empty dictionary pag
 1 — **3 that DuckDB itself cannot read either** (skipped), and **0 wrong answers**.
 
 **Supported range** (everything else is a structured scan error, no guessing):
-flat schema, v1 data pages, PLAIN and dictionary encodings (including
-RLE/bit-packed indices and definition levels), UNCOMPRESSED and SNAPPY.
-Rejected: nested/repeated, INT96, v2 data pages, DELTA_*, BYTE_STREAM_SPLIT,
-GZIP/ZSTD and other codecs, empty dictionary pages.
+flat schema, v1 data pages, PLAIN, dictionary (including RLE/bit-packed
+indices and definition levels), DELTA_BINARY_PACKED (INT32/INT64),
+DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT
+(FLOAT/DOUBLE) — the last five decode through colpack — RLE boolean values,
+UNCOMPRESSED and SNAPPY. Rejected: nested/repeated, INT96, v2 data pages,
+GZIP/ZSTD and other codecs, BIT_PACKED, empty dictionary pages.
+
+The corpus's own DELTA* and BYTE_STREAM_SPLIT files are still refused, but for
+different reasons now: they carry v2 data pages or ZSTD/GZIP compression. The
+colpack-backed paths are covered by embedded fixture tests in
+`sources/parquet/colpack_integration_test.mbt` instead.
 
 **Real bugs these gates caught** (each of layers 1/2/3 did its part; recorded
 for re-evaluation):

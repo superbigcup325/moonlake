@@ -426,3 +426,35 @@ the playground
   errors instead of guessing. The fixture matrix in `harness/data/parquet`
   is what defines that boundary, and it runs in the same `check_all.sh`
   gate as the TPC-H answers.
+
+## colpack-backed Parquet encodings (2026-10-17): the reader fills its
+## remaining encoding gaps
+
+- **The seam was already drawn; the reader just stopped at it.** Since
+  2026-10-15 the in-house reader owns the container and page walk and refuses
+  DELTA_*, BYTE_STREAM_SPLIT and RLE values with pointed errors. colpack (the
+  columnar encoding kernel) is exactly the other side of that seam: the
+  reader keeps the container, colpack owns page-level encodings. Wiring it in
+  removes the last three refusals without touching the container code.
+- **What landed:** `sources/parquet` depends on `colpack/encoders` and the
+  codec gate now accepts the five families. `decode_values` grew an extended
+  decoder closure per physical type: int32/int64 DELTA_BINARY_PACKED, the two
+  byte-array delta encodings (decoded to strings at the adapter boundary),
+  BYTE_STREAM_SPLIT for float/double, and RLE booleans. A colpack decode
+  failure is translated into `SqlError::Scan("parquet: colpack: ...")`, so the
+  CLI keeps reporting a clean error instead of a trap.
+- **Evidence:** `moon test --target {wasm-gc,native,js}` green at 241 tests
+  (both modules) including eight new embedded fixtures (tiny files written by
+  pyarrow, bytes embedded so the tests run on every target without touching the
+  file system); `harness/check_all.sh` passes all 27 goldens; the third-party
+  corpus rerun reports 20 read, 48 refused by design, 0 failing, unchanged —
+  its DELTA/BSS files are still out of scope for v2 pages or ZSTD/GZIP, not for
+  the encoding.
+- **Local-only for now:** colpack is not on the registry yet, so this branch
+  resolves it through a `moon.work` workspace whose members are this module and
+  the colpack checkout. `moon.mod` pins `superbigcup325/colpack@0.1.0`; until
+  the kernel is published, the branch builds only inside that workspace.
+- **Not in this step:** the write path (thrift encoding plus page assembly,
+  which colpack's acceptance rig already exercises) and moving the spill
+  format onto colpack encodings. Both stay on the P5 list.
+
