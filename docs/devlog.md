@@ -479,3 +479,41 @@ the playground
   survey's measured targets (248/125 ms and 7.53 MB against a 48.6 MB
   baseline) deserve their own before/after run rather than a guess.
 
+## Spill on colpack encodings (2026-10-17): 40% smaller, slower writes
+
+- **The format was the last hand-rolled piece.** `SpillStore` keeps opaque
+  bytes, so switching the wire format to colpack is local: MLSPILL2 stores a
+  dtype, an encoding code, the payload length, one presence byte per row and a
+  dense colpack stream over the non-null values. Dictionary payloads carry the
+  entry count and dictionary length so the reader can split dictionary from
+  indices.
+- **Selection is measured, not guessed.** Each column tries PLAIN and the
+  encodings that apply to its type, and keeps the smallest payload; ties keep
+  the earlier candidate. The expensive candidates are gated by samples: a
+  4096-value sample decides whether a dictionary is plausible (at most a
+  quarter distinct) and the first 256 pairs decide whether DELTA_BYTE_ARRAY is
+  worth an extra pass (average common prefix of at least two bytes).
+- **Numbers on the bake-off workload** (SF0.01 lineitem, 60,175 rows,
+  best-of-3, release, same machine, write includes the CSV scan):
+
+  | format | write | read | file | write RSS | read RSS |
+  |---|---|---|---|---|---|
+  | MLSPILL1 | 78.7 ms | 38.8 ms | 8.08 MiB | 66.4 MiB | 32.4 MiB |
+  | MLSPILL2 | 115.0 ms | 44.9 ms | 4.86 MiB | 48.6 MiB | 28.5 MiB |
+
+  Write lands at 1.46× the old cost (the agreed ceiling was 1.5×), read at
+  1.16×, and the file is 40% smaller. Without the sampling gates the first
+  version wrote in 124.6 ms (1.58×) — trying a dictionary over 60k unique
+  strings and a DELTA_BYTE_ARRAY pass over unrelated comments was the
+  difference.
+- **What is deliberately not here:** null flags remain one byte per row
+  (963 KB of the 4.86 MiB on this workload). A bit-packed validity bitmap is
+  the obvious next lever, but it is a second format change and this one
+  already met its size/time target. Byte-stream compression stays out of scope.
+- **Evidence:** 249 tests on wasm-gc, native and js (new: compact selection for
+  repetitive/monotonic/low-cardinality columns, all-null and sparse columns);
+  all 27 golden queries and the spill equivalence checks green. The benchmark
+  driver lives in `harness/spill_bench/` (excluded from the package) and
+  `harness/spill_bench.py`; the baseline numbers were taken from a worktree at
+  `682f87a` with the same driver copied in.
+

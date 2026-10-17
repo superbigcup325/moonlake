@@ -267,6 +267,79 @@ fn encode_dictionary_payload(
 }
 
 ///|
+/// Sample the leading values to decide whether a dictionary is worth trying.
+/// The full dictionary build is a hash map over every value, so high-cardinality
+/// columns skip it on a 4096-value sample instead. Returns false for an empty
+/// column: PLAIN already wins there.
+fn sample_dict_useful(column : @colpack_types.ColBuf) -> Bool {
+  let n = column.value_count()
+  if n == 0 {
+    return false
+  }
+  let limit = if n < 4096 { n } else { 4096 }
+  match column {
+    Int32s(values) => {
+      let seen : Map[Int32, Bool] = Map([])
+      for i in 0..<limit {
+        seen.set(values[i], true)
+      }
+      seen.length() * 4 <= limit
+    }
+    Int64s(values) => {
+      let seen : Map[Int64, Bool] = Map([])
+      for i in 0..<limit {
+        seen.set(values[i], true)
+      }
+      seen.length() * 4 <= limit
+    }
+    Doubles(values) => {
+      let seen : Map[Int64, Bool] = Map([])
+      for i in 0..<limit {
+        seen.set(values[i].reinterpret_as_int64(), true)
+      }
+      seen.length() * 4 <= limit
+    }
+    ByteArrays(values) => {
+      let seen : Map[Bytes, Bool] = Map([])
+      for i in 0..<limit {
+        seen.set(values[i], true)
+      }
+      seen.length() * 4 <= limit
+    }
+    Floats(_) => false
+    Bools(_) => false
+  }
+}
+
+///|
+fn common_prefix(a : Bytes, b : Bytes) -> Int32 {
+  let limit = if a.length() < b.length() { a.length() } else { b.length() }
+  let mut i = 0
+  while i < limit && a[i] == b[i] {
+    i += 1
+  }
+  i
+}
+
+///|
+/// DELTA_BYTE_ARRAY only pays when consecutive values share a prefix; sample
+/// the first pairs so unrelated strings skip a full extra encode.
+fn sample_prefix_useful(values : Array[Bytes]) -> Bool {
+  let n = values.length()
+  if n < 2 {
+    return false
+  }
+  let steps = if n - 1 < 256 { n - 1 } else { 256 }
+  let mut total = 0
+  for i in 0..<steps {
+    total += common_prefix(values[i], values[i + 1])
+  }
+  total >= steps * 2
+}
+
+///|
+
+///|
 /// Pick the smallest of the candidate payloads for a column; ties keep the
 /// earlier candidate, so PLAIN wins when nothing is smaller.
 fn choose_payload(
@@ -282,13 +355,15 @@ fn choose_payload(
         best = candidate
         best_encoding = ENC_DELTA
       }
-      match encode_dictionary_payload(column) {
-        Some(candidate) =>
-          if candidate.length() < best.length() {
-            best = candidate
-            best_encoding = ENC_DICTIONARY
-          }
-        None => ()
+      if sample_dict_useful(column) {
+        match encode_dictionary_payload(column) {
+          Some(candidate) =>
+            if candidate.length() < best.length() {
+              best = candidate
+              best_encoding = ENC_DICTIONARY
+            }
+          None => ()
+        }
       }
     }
     Str => {
@@ -297,18 +372,26 @@ fn choose_payload(
         best = candidate
         best_encoding = ENC_DELTA_LENGTH
       }
-      let candidate = encode_with(column, @colpack_types.DeltaByteArray)
-      if candidate.length() < best.length() {
-        best = candidate
-        best_encoding = ENC_DELTA_BYTE_ARRAY
+      let prefix_sharing = match column {
+        ByteArrays(values) => sample_prefix_useful(values)
+        _ => false
       }
-      match encode_dictionary_payload(column) {
-        Some(candidate) =>
-          if candidate.length() < best.length() {
-            best = candidate
-            best_encoding = ENC_DICTIONARY
-          }
-        None => ()
+      if prefix_sharing {
+        let candidate = encode_with(column, @colpack_types.DeltaByteArray)
+        if candidate.length() < best.length() {
+          best = candidate
+          best_encoding = ENC_DELTA_BYTE_ARRAY
+        }
+      }
+      if sample_dict_useful(column) {
+        match encode_dictionary_payload(column) {
+          Some(candidate) =>
+            if candidate.length() < best.length() {
+              best = candidate
+              best_encoding = ENC_DICTIONARY
+            }
+          None => ()
+        }
       }
     }
     Float64 | Bool => ()

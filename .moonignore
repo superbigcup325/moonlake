@@ -22,3 +22,6 @@ __pycache__/
 
 # Local commit hook — dev-side tooling, not part of the shipped module.
 /hooks/
+
+# Spill benchmark driver — dev-side tooling, not part of the shipped module.
+/harness/spill_bench/

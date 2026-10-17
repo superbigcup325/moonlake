@@ -161,6 +161,26 @@ reads, zero type hacks, no envelope, and the hot path free of upstream version
 dependencies. Both branches are retained as evidence and as a future
 re-evaluation baseline.
 
+> 2026-10-17 addendum: MLSPILL1 has been replaced by MLSPILL2, which encodes
+> each column with colpack and picks the smallest of PLAIN, DELTA_BINARY_PACKED,
+> DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY and DICTIONARY. Measured on the
+> same workload (SF0.01 lineitem, 60,175 rows), best-of-3, release build, same
+> machine, with `harness/spill_bench.py` (write includes the CSV scan; RSS is
+> isolated per process):
+>
+> | format | write | read | file | write RSS | read RSS |
+> |---|---|---|---|---|---|
+> | MLSPILL1 (hand-written) | 78.7 ms | 38.8 ms | 8.08 MiB | 66.4 MiB | 32.4 MiB |
+> | MLSPILL2 (colpack encodings) | 115.0 ms | 44.9 ms | 4.86 MiB | 48.6 MiB | 28.5 MiB |
+>
+> The file shrinks 40% and both RSS peaks drop. Writes are 1.46× slower because
+> a column may be encoded two or three times while the smallest candidate is
+> chosen; a 4096-value sample decides whether the expensive candidates
+> (dictionary, DELTA_BYTE_ARRAY) are worth trying at all. This table supersedes
+> the raw-arm rows above for present-day comparisons — the older numbers came
+> from a different toolchain snapshot. Null flags are still one byte per row;
+> bit-packing them is the next size lever if it matters.
+
 > 2026-10-15 addendum: the parquet dependency has been removed from the project
 > (a stale upstream artifact manifest blocked publishing and installation; we
 > switched to an in-house decoder, see CHANGELOG 0.2.0). So if "re-evaluate

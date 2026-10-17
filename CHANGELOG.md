@@ -23,6 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   BYTE_ARRAY/BOOLEAN; NULLs are refused with a pointed error. Round-trip tests
   cover every physical type and multiple row groups; DuckDB and pyarrow read
   the output back
+- 2026-10-17 the spill format is MLSPILL2: each column is a dense colpack
+  stream (non-null values only) and the writer picks the smallest of PLAIN,
+  DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY and
+  DICTIONARY per column, with a sample deciding whether the expensive
+  candidates are tried. On SF0.01 lineitem the file drops from 8.08 to
+  4.86 MiB; write is 1.46× and read 1.16× the old cost, and both RSS peaks
+  fall. `harness/spill_bench.py` reproduces the measurement
 
 ## [0.2.0] - 2026-10-16
 
