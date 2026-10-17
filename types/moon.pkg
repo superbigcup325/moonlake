@@ -2,4 +2,6 @@ import {
   "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
   "moonbitlang/core/encoding/utf8",
+  "superbigcup325/colpack",
+  "superbigcup325/colpack/types" @colpack_types,
 }

@@ -1,22 +1,61 @@
-// Batch serialization for spill files: hand-rolled minimal columnar
-// format, pure bytes in and out (no fs here — spill STORES live behind
-// engine's SpillStore trait, this is only the wire format).
+// Batch serialization for spill files: the columnar wire format, pure bytes
+// in and out (no fs here — spill STORES live behind the engine's SpillStore
+// trait, this is only the format).
 //
 // Layout (little-endian throughout):
-//   "MLSPILL1"                       magic
+//   "MLSPILL2"                       magic
 //   batch_count : i32
 //   per batch:   row_count : i32
 //                col_count : i32
-//                per column: dtype_code : u8
-//                            null_flags : row_count bytes (1 = present)
-//                            payload    : only non-null values
-// Payloads: Int32/Date 4B, Int64/Float64 8B (IEEE bits), Bool 1B,
-// Str i32 length + UTF-8 bytes.
+//                per column: dtype_code   : u8
+//                            encoding     : u8
+//                            payload_len  : i32
+//                            null_flags   : row_count bytes (1 = present)
+//                            payload      : payload_len bytes
 //
-// Deliberately dumb: no compression, no dictionary, no alignment. The
-// spill-format bake-off (docs/spill-survey.md §3.5) picked this over a
-// parquet-backed writer: faster to write, and the 0.2.2 upstream
-// writer cannot even represent Double/Bool columns.
+// The payload is a colpack column encoding over the non-null values only, so
+// NULLs stay a side channel and the encoder sees a dense column. Encoding
+// codes and payload framing live in the helpers below; the reader rejects
+// unknown codes and short payloads with an Execute error.
+
+///|
+fn spill_write_error(msg : String) -> SqlError {
+  SqlError::Execute("spill write: " + msg)
+}
+
+///|
+fn spill_read_error(msg : String) -> SqlError {
+  SqlError::Execute("spill read: " + msg)
+}
+
+///|
+fn colpack_write_error(e : @colpack_types.EncodingError) -> SqlError {
+  SqlError::Execute(
+    "spill write: colpack: \{@colpack_types.EncodingError::message(e)}",
+  )
+}
+
+///|
+fn colpack_read_error(e : @colpack_types.EncodingError) -> SqlError {
+  SqlError::Execute(
+    "spill read: colpack: \{@colpack_types.EncodingError::message(e)}",
+  )
+}
+
+///|
+const ENC_PLAIN : Int32 = 0
+
+///|
+const ENC_DELTA : Int32 = 1
+
+///|
+const ENC_DELTA_LENGTH : Int32 = 2
+
+///|
+const ENC_DELTA_BYTE_ARRAY : Int32 = 3
+
+///|
+const ENC_DICTIONARY : Int32 = 4
 
 ///|
 fn dtype_code(dt : DataType) -> Byte {
@@ -39,7 +78,18 @@ fn code_dtype(code : Byte) -> DataType raise SqlError {
     3 => Str
     4 => Date
     5 => Bool
-    _ => raise SqlError::Execute("spill file: unknown dtype code \{code}")
+    _ => raise spill_read_error("unknown dtype code \{code}")
+  }
+}
+
+///|
+fn spill_physical(dt : DataType) -> @colpack_types.PhysicalType {
+  match dt {
+    Int32 | Date => @colpack_types.Int32
+    Int64 => @colpack_types.Int64
+    Float64 => @colpack_types.Double
+    Str => @colpack_types.ByteArray
+    Bool => @colpack_types.Bool
   }
 }
 
@@ -53,25 +103,26 @@ fn write_i32(out : @buffer.Buffer, v : Int32) -> Unit {
 }
 
 ///|
-fn write_i64(out : @buffer.Buffer, v : Int64) -> Unit {
-  let x = v.reinterpret_as_uint64()
-  for k in 0..<8 {
-    out.write_byte(((x >> (k * 8)) & 0xFF).to_byte())
-  }
-}
-
-///|
 fn read_i32_checked(
   buf : Bytes,
   pos : Int32,
   what : String,
 ) -> Int32 raise SqlError {
   if pos + 4 > buf.length() {
-    raise SqlError::Execute(
-      "spill read: truncated at \{what} (pos \{pos}, len \{buf.length()})",
+    raise spill_read_error(
+      "truncated at \{what} (pos \{pos}, len \{buf.length()})",
     )
   }
   read_i32(buf, pos)
+}
+
+///|
+fn read_i32_view(buf : BytesView, pos : Int32) -> Int32 {
+  let b0 = buf[pos].to_int()
+  let b1 = buf[pos + 1].to_int()
+  let b2 = buf[pos + 2].to_int()
+  let b3 = buf[pos + 3].to_int()
+  b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 }
 
 ///|
@@ -83,171 +134,437 @@ fn read_i32(buf : Bytes, pos : Int32) -> Int32 {
   b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) // little-endian, two's complement
 }
 
+// ------------------------------------------------------------ column values
+
 ///|
-fn read_i64(buf : Bytes, pos : Int32) -> Int64 {
-  let mut v : UInt64 = 0UL
-  for k in 0..<8 {
-    v = v | ((buf[pos + k].to_int().to_uint64() & 0xFFUL) << (k * 8))
+/// Pull one column out of a batch: a dense colpack column of the non-null
+/// values plus the presence flags, in row order.
+fn collect_column(
+  col : ColumnVector,
+  n : Int32,
+) -> (@colpack_types.ColBuf, Array[Bool]) raise SqlError {
+  let flags : Array[Bool] = []
+  match col.dtype() {
+    Int32 => {
+      let values : Array[Int32] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Int32(v) => {
+            flags.push(true)
+            values.push(v)
+          }
+          _ => raise spill_write_error("value does not match INT32")
+        }
+      }
+      (@colpack_types.ColBuf::Int32s(values), flags)
+    }
+    Date => {
+      let values : Array[Int32] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Date(v) => {
+            flags.push(true)
+            values.push(v)
+          }
+          _ => raise spill_write_error("value does not match DATE")
+        }
+      }
+      (@colpack_types.ColBuf::Int32s(values), flags)
+    }
+    Int64 => {
+      let values : Array[Int64] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Int64(v) => {
+            flags.push(true)
+            values.push(v)
+          }
+          _ => raise spill_write_error("value does not match INT64")
+        }
+      }
+      (@colpack_types.ColBuf::Int64s(values), flags)
+    }
+    Float64 => {
+      let values : Array[Double] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Float64(v) => {
+            flags.push(true)
+            values.push(v)
+          }
+          _ => raise spill_write_error("value does not match FLOAT64")
+        }
+      }
+      (@colpack_types.ColBuf::Doubles(values), flags)
+    }
+    Str => {
+      let values : Array[Bytes] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Str(v) => {
+            flags.push(true)
+            values.push(@utf8.encode(v))
+          }
+          _ => raise spill_write_error("value does not match STRING")
+        }
+      }
+      (@colpack_types.ColBuf::ByteArrays(values), flags)
+    }
+    Bool => {
+      let values : Array[Bool] = []
+      for r in 0..<n {
+        match col.get(r) {
+          Null => flags.push(false)
+          Boolean(v) => {
+            flags.push(true)
+            values.push(v)
+          }
+          _ => raise spill_write_error("value does not match BOOLEAN")
+        }
+      }
+      (@colpack_types.ColBuf::Bools(values), flags)
+    }
   }
-  v.reinterpret_as_int64()
 }
 
 ///|
-fn write_f64(out : @buffer.Buffer, v : Double) -> Unit {
-  write_i64(out, v.reinterpret_as_int64())
+fn encode_with(
+  column : @colpack_types.ColBuf,
+  encoding : @colpack_types.Encoding,
+) -> Bytes raise SqlError {
+  let out = Buffer()
+  let _ = @colpack.encode_column(column, encoding, out) catch {
+    e => raise colpack_write_error(e)
+  }
+  out.to_bytes()
 }
 
 ///|
-fn read_f64(buf : Bytes, pos : Int32) -> Double {
-  read_i64(buf, pos).reinterpret_as_double()
+/// Dictionary payload: entry count, dictionary bytes length, dictionary, then
+/// the index stream (bit width byte plus hybrid runs).
+fn encode_dictionary_payload(
+  column : @colpack_types.ColBuf,
+) -> Bytes? raise SqlError {
+  let encoding = @colpack.encode_dictionary(column) catch {
+    e => raise colpack_write_error(e)
+  }
+  match encoding {
+    None => None
+    Some(dict) => {
+      let out = Buffer()
+      write_i32(out, dict.dictionary_size)
+      write_i32(out, dict.dictionary.length())
+      out.write_bytes(dict.dictionary)
+      out.write_bytes(dict.indices)
+      Some(out.to_bytes())
+    }
+  }
 }
 
 ///|
-fn write_str(out : @buffer.Buffer, s : String) -> Unit {
-  let b = @utf8.encode(s)
-  write_i32(out, b.length())
-  out.write_bytes(b[:])
+/// Pick the smallest of the candidate payloads for a column; ties keep the
+/// earlier candidate, so PLAIN wins when nothing is smaller.
+fn choose_payload(
+  dt : DataType,
+  column : @colpack_types.ColBuf,
+) -> (Int32, Bytes) raise SqlError {
+  let mut best_encoding = ENC_PLAIN
+  let mut best = encode_with(column, @colpack_types.Plain)
+  match dt {
+    Int32 | Date | Int64 => {
+      let candidate = encode_with(column, @colpack_types.DeltaBinaryPacked)
+      if candidate.length() < best.length() {
+        best = candidate
+        best_encoding = ENC_DELTA
+      }
+      match encode_dictionary_payload(column) {
+        Some(candidate) =>
+          if candidate.length() < best.length() {
+            best = candidate
+            best_encoding = ENC_DICTIONARY
+          }
+        None => ()
+      }
+    }
+    Str => {
+      let candidate = encode_with(column, @colpack_types.DeltaLength)
+      if candidate.length() < best.length() {
+        best = candidate
+        best_encoding = ENC_DELTA_LENGTH
+      }
+      let candidate = encode_with(column, @colpack_types.DeltaByteArray)
+      if candidate.length() < best.length() {
+        best = candidate
+        best_encoding = ENC_DELTA_BYTE_ARRAY
+      }
+      match encode_dictionary_payload(column) {
+        Some(candidate) =>
+          if candidate.length() < best.length() {
+            best = candidate
+            best_encoding = ENC_DICTIONARY
+          }
+        None => ()
+      }
+    }
+    Float64 | Bool => ()
+  }
+  (best_encoding, best)
 }
+
+///|
+/// Fill `vec` from a dense column plus presence flags, in row order.
+fn fill_vector(
+  vec : ColumnVector,
+  column : @colpack_types.ColBuf,
+  flags : Array[Bool],
+  n : Int32,
+  dt : DataType,
+) -> Unit raise SqlError {
+  match column {
+    Int32s(values) => {
+      let mut k = 0
+      for r in 0..<n {
+        if flags[r] {
+          match dt {
+            Date => vec.set(r, Date(values[k]))
+            _ => vec.set(r, Int32(values[k]))
+          }
+          k += 1
+        } else {
+          vec.set(r, Null)
+        }
+      }
+    }
+    Int64s(values) => {
+      let mut k = 0
+      for r in 0..<n {
+        if flags[r] {
+          vec.set(r, Int64(values[k]))
+          k += 1
+        } else {
+          vec.set(r, Null)
+        }
+      }
+    }
+    Doubles(values) => {
+      let mut k = 0
+      for r in 0..<n {
+        if flags[r] {
+          vec.set(r, Float64(values[k]))
+          k += 1
+        } else {
+          vec.set(r, Null)
+        }
+      }
+    }
+    ByteArrays(values) => {
+      let mut k = 0
+      for r in 0..<n {
+        if flags[r] {
+          vec.set(r, Str(@utf8.decode_lossy(values[k][:])))
+          k += 1
+        } else {
+          vec.set(r, Null)
+        }
+      }
+    }
+    Floats(_) =>
+      raise spill_read_error("FLOAT columns are not supported in spill files")
+    Bools(values) => {
+      let mut k = 0
+      for r in 0..<n {
+        if flags[r] {
+          vec.set(r, Boolean(values[k]))
+          k += 1
+        } else {
+          vec.set(r, Null)
+        }
+      }
+    }
+  }
+}
+
+// --------------------------------------------------------------- public API
 
 ///|
 /// Serialize batches into the spill wire format.
-pub fn DataBatch::to_spill_bytes(batches : Array[DataBatch]) -> Bytes {
+pub fn DataBatch::to_spill_bytes(
+  batches : Array[DataBatch],
+) -> Bytes raise SqlError {
   let out : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=1 << 20)
-  out.write_bytes(b"MLSPILL1")
+  out.write_bytes(b"MLSPILL2")
   write_i32(out, batches.length())
   for batch in batches {
-    write_i32(out, batch.row_count())
+    let n = batch.row_count()
     let cols = batch.columns()
+    write_i32(out, n)
     write_i32(out, cols.length())
     for col in cols {
+      let (column, flags) = collect_column(col, n)
+      let (encoding, payload) = choose_payload(col.dtype(), column)
       out.write_byte(dtype_code(col.dtype()))
-      // row count, not the vector's allocated capacity: builders hand
-      // out capacity-sized vectors with only part of it filled
-      let n = batch.row_count()
-      let nulls : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=n)
-      let payload : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=n * 8)
+      out.write_byte(encoding.to_byte())
+      write_i32(out, payload.length())
       for r in 0..<n {
-        match col.get(r) {
-          Null => nulls.write_byte(0)
-          Int32(v) => {
-            nulls.write_byte(1)
-            write_i32(payload, v)
-          }
-          Int64(v) => {
-            nulls.write_byte(1)
-            write_i64(payload, v)
-          }
-          Float64(v) => {
-            nulls.write_byte(1)
-            write_f64(payload, v)
-          }
-          Str(v) => {
-            nulls.write_byte(1)
-            write_str(payload, v)
-          }
-          Date(v) => {
-            nulls.write_byte(1)
-            write_i32(payload, v)
-          }
-          Boolean(v) => {
-            nulls.write_byte(1)
-            payload.write_byte(if v { 1 } else { 0 })
-          }
-        }
+        out.write_byte(if flags[r] { 1 } else { 0 })
       }
-      out.write_bytes(nulls.to_bytes()[:])
-      out.write_bytes(payload.to_bytes()[:])
+      out.write_bytes(payload)
     }
   }
   out.to_bytes()
 }
 
 ///|
-fn read_col(
-  buf : Bytes,
-  start : Int32,
-  dt : DataType,
-  n : Int32,
-) -> (ColumnVector, Int32) raise SqlError {
-  let vec = ColumnVector::make(dt, n)
-  let flags = start
-  let mut pos = start + n
-  for r in 0..<n {
-    if buf[flags + r].to_int() == 0 {
-      vec.set(r, Null)
-      continue
-    }
-    match dt {
-      Int32 => {
-        vec.set(r, Int32(read_i32(buf, pos)))
-        pos += 4
-      }
-      Date => {
-        vec.set(r, Date(read_i32(buf, pos)))
-        pos += 4
-      }
-      Int64 => {
-        vec.set(r, Int64(read_i64(buf, pos)))
-        pos += 8
-      }
-      Float64 => {
-        vec.set(r, Float64(read_f64(buf, pos)))
-        pos += 8
-      }
-      Bool => {
-        vec.set(r, Boolean(buf[pos].to_int() == 1))
-        pos += 1
-      }
-      Str => {
-        if pos + 4 > buf.length() {
-          raise SqlError::Execute(
-            "spill read: truncated string header at \{pos} (len \{buf.length()})",
-          )
-        }
-        let len = read_i32(buf, pos)
-        pos += 4
-        if pos + len > buf.length() {
-          raise SqlError::Execute(
-            "spill read: truncated string body at \{pos}+\{len} (len \{buf.length()})",
-          )
-        }
-        vec.set(r, Str(@utf8.decode_lossy(buf[pos:pos + len])))
-        pos += len
-      }
-    }
+fn decode_dictionary_payload(
+  payload : BytesView,
+  physical : @colpack_types.PhysicalType,
+  non_null : Int32,
+) -> @colpack_types.ColBuf raise SqlError {
+  if payload.length() < 8 {
+    raise spill_read_error(
+      "dictionary payload is \{payload.length()} bytes, expected at least 8",
+    )
   }
-  (vec, pos)
+  let dictionary_size = read_i32_view(payload, 0)
+  let dictionary_len = read_i32_view(payload, 4)
+  if dictionary_size < 0 || dictionary_len < 0 {
+    raise spill_read_error("negative dictionary size or length")
+  }
+  if 8 + dictionary_len > payload.length() {
+    raise spill_read_error(
+      "dictionary body overruns the payload (\{dictionary_len} of \{payload.length()})",
+    )
+  }
+  let dictionary = payload.exact_view(start=8, end=8 + dictionary_len)
+  let indices = payload.exact_view(
+    start=8 + dictionary_len,
+    end=payload.length(),
+  )
+  @colpack.decode_dictionary(
+    dictionary, indices, physical, non_null, dictionary_size,
+  ) catch {
+    e => raise colpack_read_error(e)
+  }
 }
 
 ///|
-/// Deserialize batches from the spill wire format. A corrupt buffer is
-/// an Execute error.
+/// Decode one column payload back into a vector, interleaving NULLs from the
+/// presence flags.
+fn decode_column(
+  dt : DataType,
+  encoding : Int32,
+  payload : BytesView,
+  flags : Array[Bool],
+  rows : Int32,
+  non_null : Int32,
+) -> ColumnVector raise SqlError {
+  let physical = spill_physical(dt)
+  let column = match encoding {
+    ENC_PLAIN =>
+      @colpack.decode_column(payload, physical, @colpack_types.Plain, non_null) catch {
+        e => raise colpack_read_error(e)
+      }
+    ENC_DELTA =>
+      @colpack.decode_column(
+        payload,
+        physical,
+        @colpack_types.DeltaBinaryPacked,
+        non_null,
+      ) catch {
+        e => raise colpack_read_error(e)
+      }
+    ENC_DELTA_LENGTH =>
+      @colpack.decode_column(
+        payload,
+        physical,
+        @colpack_types.DeltaLength,
+        non_null,
+      ) catch {
+        e => raise colpack_read_error(e)
+      }
+    ENC_DELTA_BYTE_ARRAY =>
+      @colpack.decode_column(
+        payload,
+        physical,
+        @colpack_types.DeltaByteArray,
+        non_null,
+      ) catch {
+        e => raise colpack_read_error(e)
+      }
+    ENC_DICTIONARY => decode_dictionary_payload(payload, physical, non_null)
+    _ => raise spill_read_error("unknown encoding code \{encoding}")
+  }
+  let vec = ColumnVector::make(dt, rows)
+  fill_vector(vec, column, flags, rows, dt)
+  vec
+}
+
+///|
+/// Deserialize batches from the spill wire format. A corrupt buffer is an
+/// Execute error; spill files never outlive the process, so MLSPILL1 files are
+/// simply rejected rather than read.
 pub fn DataBatch::from_spill_bytes(
   buf : Bytes,
 ) -> Array[DataBatch] raise SqlError {
-  if buf.length() < 16 || @utf8.decode_lossy(buf[0:8]) != "MLSPILL1" {
-    raise SqlError::Execute("spill read: bad magic")
+  if buf.length() < 16 || @utf8.decode_lossy(buf[0:8]) != "MLSPILL2" {
+    raise spill_read_error("bad magic")
   }
   let batch_count = read_i32(buf, 8)
+  if batch_count < 0 {
+    raise spill_read_error("negative batch count \{batch_count}")
+  }
   let mut pos = 12
   let out : Array[DataBatch] = []
   for b in 0..<batch_count {
     let rows = read_i32_checked(buf, pos, "batch \{b} row count")
     pos += 4
+    if rows < 0 {
+      raise spill_read_error("batch \{b}: negative row count \{rows}")
+    }
     let ncols = read_i32_checked(buf, pos, "batch \{b} column count")
     pos += 4
+    if ncols < 0 {
+      raise spill_read_error("batch \{b}: negative column count \{ncols}")
+    }
     let cols : Array[ColumnVector] = []
     for c in 0..<ncols {
-      if pos + 1 > buf.length() {
-        raise SqlError::Execute(
-          "spill read: truncated at batch \{b} column \{c} (pos \{pos}, len \{buf.length()})",
+      if pos + 2 > buf.length() {
+        raise spill_read_error(
+          "truncated at batch \{b} column \{c} header (pos \{pos}, len \{buf.length()})",
         )
       }
       let dt = code_dtype(buf[pos])
       pos += 1
-      let (vec, next) = read_col(buf, pos, dt, rows)
-      cols.push(vec)
-      pos = next
+      let encoding = buf[pos].to_int()
+      pos += 1
+      let payload_len = read_i32_checked(buf, pos, "column payload length")
+      pos += 4
+      if payload_len < 0 {
+        raise spill_read_error("negative payload length \{payload_len}")
+      }
+      if pos + rows + payload_len > buf.length() {
+        raise spill_read_error(
+          "truncated at batch \{b} column \{c} body (pos \{pos}, rows \{rows}, payload \{payload_len}, len \{buf.length()})",
+        )
+      }
+      let flags : Array[Bool] = []
+      let mut non_null = 0
+      for r in 0..<rows {
+        let present = buf[pos + r].to_int() == 1
+        flags.push(present)
+        if present {
+          non_null += 1
+        }
+      }
+      pos += rows
+      let payload = buf[pos:pos + payload_len]
+      pos += payload_len
+      cols.push(decode_column(dt, encoding, payload, flags, rows, non_null))
     }
     out.push(DataBatch::new(cols, rows))
   }

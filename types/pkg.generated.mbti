@@ -104,7 +104,7 @@ pub fn DataBatch::columns(Self) -> Array[ColumnVector]
 pub fn DataBatch::from_spill_bytes(Bytes) -> Array[Self] raise SqlError
 pub fn DataBatch::new(Array[ColumnVector], Int) -> Self
 pub fn DataBatch::row_count(Self) -> Int
-pub fn DataBatch::to_spill_bytes(Array[Self]) -> Bytes
+pub fn DataBatch::to_spill_bytes(Array[Self]) -> Bytes raise SqlError
 
 pub(all) enum DataType {
   Int32
