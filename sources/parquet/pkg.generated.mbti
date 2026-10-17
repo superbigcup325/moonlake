@@ -11,6 +11,10 @@ pub fn scan_bytes(Bytes, String, Array[String]) -> @catalog.TableEntry raise @ty
 
 pub fn scan_file(String, String, Array[String]) -> @catalog.TableEntry raise @types.SqlError
 
+pub fn write_bytes(@catalog.TableEntry) -> Bytes raise @types.SqlError
+
+pub fn write_file(String, @catalog.TableEntry) -> Unit raise @types.SqlError
+
 // Errors
 
 // Types and methods

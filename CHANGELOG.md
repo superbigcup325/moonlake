@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   fixtures pin each path on every target. colpack is a workspace member for
   local development (not yet published), so the branch builds with a
   `moon.work` that lists both modules
+- 2026-10-17 a Parquet writer (`sources/parquet/write.mbt`): `write_bytes` and
+  `write_file` turn a `TableEntry` into one row group per batch with one PLAIN
+  data page per column, encoding page bodies through colpack. Scope matches the
+  reader: flat required columns, v1 pages, UNCOMPRESSED, INT32/INT64/DOUBLE/
+  BYTE_ARRAY/BOOLEAN; NULLs are refused with a pointed error. Round-trip tests
+  cover every physical type and multiple row groups; DuckDB and pyarrow read
+  the output back
 
 ## [0.2.0] - 2026-10-16
 

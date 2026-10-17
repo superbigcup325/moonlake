@@ -247,6 +247,13 @@ different reasons now: they carry v2 data pages or ZSTD/GZIP compression. The
 colpack-backed paths are covered by embedded fixture tests in
 `sources/parquet/colpack_integration_test.mbt` instead.
 
+**Write path**: `write_bytes` / `write_file` (same package) emit the scope the
+reader accepts — one row group per batch, one PLAIN data page per required
+column, UNCOMPRESSED — with page bodies produced by colpack. Round-trip tests
+cover all six engine types and two row groups; a probe file of 5 rows in one
+group and 3 rows in two groups was read back with equal values by DuckDB and
+pyarrow.
+
 **Real bugs these gates caught** (each of layers 1/2/3 did its part; recorded
 for re-evaluation):
 1. the compact varint did not mask off the continuation bit (0x80 treated as a

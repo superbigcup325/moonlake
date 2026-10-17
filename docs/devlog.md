@@ -458,3 +458,24 @@ the playground
   which colpack's acceptance rig already exercises) and moving the spill
   format onto colpack encodings. Both stay on the P5 list.
 
+## Parquet writing (2026-10-17): the engine gets a write path
+
+- **Why now:** the reader was the only half of the container story. colpack
+  supplies page bodies; the container work (thrift metadata, page headers,
+  footer, magic) is the same port the acceptance rig already proved, so the
+  writer is small and the format questions were already answered by the
+  reader's fixtures.
+- **Scope mirrors the reader on purpose:** flat required columns, v1 data
+  pages, PLAIN, UNCOMPRESSED, INT32/INT64/DOUBLE/BYTE_ARRAY/BOOLEAN, one row
+  group per batch (so multi-batch entries exercise row-group assembly). NULLs
+  are refused with a pointed error: definition levels are the next step, not
+  something to write wrong.
+- **Evidence:** 245 tests green on wasm-gc, native and js (four new writer
+  tests: all types round trip, one row group per batch, NULL refusal, empty
+  entry). A probe file (5 rows, one row group, 463 bytes) and a two-row-group
+  file (3 rows) both read back with equal values in DuckDB and pyarrow.
+- **Still open on P5:** moving the spill format onto colpack encodings. The
+  spill store is a closure over opaque bytes, so the change is local, but the
+  survey's measured targets (248/125 ms and 7.53 MB against a 48.6 MB
+  baseline) deserve their own before/after run rather than a guess.
+
