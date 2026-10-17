@@ -140,10 +140,10 @@ fn decompress(
 }
 
 ///|
-/// Translate a colpack decoding error into the scan error the reader reports.
-fn colpack_scan_error(e : @colpack_types.EncodingError) -> @types.SqlError {
+/// Translate a colenc decoding error into the scan error the reader reports.
+fn colenc_scan_error(e : @colenc_types.EncodingError) -> @types.SqlError {
   @types.SqlError::Scan(
-    "parquet: colpack: \{@colpack_types.EncodingError::message(e)}",
+    "parquet: colenc: \{@colenc_types.EncodingError::message(e)}",
   )
 }
 
@@ -155,8 +155,8 @@ fn extended_bool(
 ) -> Array[Bool] raise @types.SqlError {
   match enc {
     Rle =>
-      @colpack_encoders.decode_bool_rle(payload, n) catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_bool_rle(payload, n) catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(
@@ -173,8 +173,8 @@ fn extended_i32(
 ) -> Array[Int32] raise @types.SqlError {
   match enc {
     DeltaBinaryPacked =>
-      @colpack_encoders.decode_delta_int32(payload, n).0 catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_delta_int32(payload, n).0 catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(
@@ -191,8 +191,8 @@ fn extended_i64(
 ) -> Array[Int64] raise @types.SqlError {
   match enc {
     DeltaBinaryPacked =>
-      @colpack_encoders.decode_delta_int64(payload, n).0 catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_delta_int64(payload, n).0 catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(
@@ -209,8 +209,8 @@ fn extended_f32(
 ) -> Array[Float] raise @types.SqlError {
   match enc {
     ByteStreamSplit =>
-      @colpack_encoders.decode_byte_stream_split_float(payload, n) catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_byte_stream_split_float(payload, n) catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(
@@ -227,8 +227,8 @@ fn extended_f64(
 ) -> Array[Double] raise @types.SqlError {
   match enc {
     ByteStreamSplit =>
-      @colpack_encoders.decode_byte_stream_split_double(payload, n) catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_byte_stream_split_double(payload, n) catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(
@@ -245,12 +245,12 @@ fn extended_strings(
 ) -> Array[String] raise @types.SqlError {
   let raw = match enc {
     DeltaLengthByteArray =>
-      @colpack_encoders.decode_delta_length_byte_array(payload, n).0 catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_delta_length_byte_array(payload, n).0 catch {
+        e => raise colenc_scan_error(e)
       }
     DeltaByteArray =>
-      @colpack_encoders.decode_delta_byte_array(payload, n).0 catch {
-        e => raise colpack_scan_error(e)
+      @colenc_encoders.decode_delta_byte_array(payload, n).0 catch {
+        e => raise colenc_scan_error(e)
       }
     _ =>
       raise unsupported(

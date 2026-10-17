@@ -9,21 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - 2026-10-17 the Parquet reader decodes the remaining page encodings through
-  colpack: DELTA_BINARY_PACKED (INT32/INT64), DELTA_LENGTH_BYTE_ARRAY and
+  colenc: DELTA_BINARY_PACKED (INT32/INT64), DELTA_LENGTH_BYTE_ARRAY and
   DELTA_BYTE_ARRAY (BYTE_ARRAY), BYTE_STREAM_SPLIT (FLOAT/DOUBLE) and RLE
   boolean values. The encoding gate accepts them, decode errors surface as
-  pointed scan errors with the colpack message, and eight small embedded
-  fixtures pin each path on every target. colpack is a workspace member for
+  pointed scan errors with the colenc message, and eight small embedded
+  fixtures pin each path on every target. colenc is a workspace member for
   local development (not yet published), so the branch builds with a
   `moon.work` that lists both modules
 - 2026-10-17 a Parquet writer (`sources/parquet/write.mbt`): `write_bytes` and
   `write_file` turn a `TableEntry` into one row group per batch with one PLAIN
-  data page per column, encoding page bodies through colpack. Scope matches the
+  data page per column, encoding page bodies through colenc. Scope matches the
   reader: flat required columns, v1 pages, UNCOMPRESSED, INT32/INT64/DOUBLE/
   BYTE_ARRAY/BOOLEAN; NULLs are refused with a pointed error. Round-trip tests
   cover every physical type and multiple row groups; DuckDB and pyarrow read
   the output back
-- 2026-10-17 the spill format is MLSPILL2: each column is a dense colpack
+- 2026-10-17 the spill format is MLSPILL2: each column is a dense colenc
   stream (non-null values only) and the writer picks the smallest of PLAIN,
   DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY and
   DICTIONARY per column, with a sample deciding whether the expensive

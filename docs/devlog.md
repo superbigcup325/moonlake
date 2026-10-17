@@ -427,21 +427,21 @@ the playground
   is what defines that boundary, and it runs in the same `check_all.sh`
   gate as the TPC-H answers.
 
-## colpack-backed Parquet encodings (2026-10-17): the reader fills its
+## colenc-backed Parquet encodings (2026-10-17): the reader fills its
 ## remaining encoding gaps
 
 - **The seam was already drawn; the reader just stopped at it.** Since
   2026-10-15 the in-house reader owns the container and page walk and refuses
-  DELTA_*, BYTE_STREAM_SPLIT and RLE values with pointed errors. colpack (the
+  DELTA_*, BYTE_STREAM_SPLIT and RLE values with pointed errors. colenc (the
   columnar encoding kernel) is exactly the other side of that seam: the
-  reader keeps the container, colpack owns page-level encodings. Wiring it in
+  reader keeps the container, colenc owns page-level encodings. Wiring it in
   removes the last three refusals without touching the container code.
-- **What landed:** `sources/parquet` depends on `colpack/encoders` and the
+- **What landed:** `sources/parquet` depends on `colenc/encoders` and the
   codec gate now accepts the five families. `decode_values` grew an extended
   decoder closure per physical type: int32/int64 DELTA_BINARY_PACKED, the two
   byte-array delta encodings (decoded to strings at the adapter boundary),
-  BYTE_STREAM_SPLIT for float/double, and RLE booleans. A colpack decode
-  failure is translated into `SqlError::Scan("parquet: colpack: ...")`, so the
+  BYTE_STREAM_SPLIT for float/double, and RLE booleans. A colenc decode
+  failure is translated into `SqlError::Scan("parquet: colenc: ...")`, so the
   CLI keeps reporting a clean error instead of a trap.
 - **Evidence:** `moon test --target {wasm-gc,native,js}` green at 241 tests
   (both modules) including eight new embedded fixtures (tiny files written by
@@ -450,17 +450,17 @@ the playground
   corpus rerun reports 20 read, 48 refused by design, 0 failing, unchanged —
   its DELTA/BSS files are still out of scope for v2 pages or ZSTD/GZIP, not for
   the encoding.
-- **Local-only for now:** colpack is not on the registry yet, so this branch
+- **Local-only for now:** colenc is not on the registry yet, so this branch
   resolves it through a `moon.work` workspace whose members are this module and
-  the colpack checkout. `moon.mod` pins `superbigcup325/colpack@0.1.0`; until
+  the colenc checkout. `moon.mod` pins `superbigcup325/colenc@0.1.0`; until
   the kernel is published, the branch builds only inside that workspace.
 - **Not in this step:** the write path (thrift encoding plus page assembly,
-  which colpack's acceptance rig already exercises) and moving the spill
-  format onto colpack encodings. Both stay on the P5 list.
+  which colenc's acceptance rig already exercises) and moving the spill
+  format onto colenc encodings. Both stay on the P5 list.
 
 ## Parquet writing (2026-10-17): the engine gets a write path
 
-- **Why now:** the reader was the only half of the container story. colpack
+- **Why now:** the reader was the only half of the container story. colenc
   supplies page bodies; the container work (thrift metadata, page headers,
   footer, magic) is the same port the acceptance rig already proved, so the
   writer is small and the format questions were already answered by the
@@ -474,17 +474,17 @@ the playground
   tests: all types round trip, one row group per batch, NULL refusal, empty
   entry). A probe file (5 rows, one row group, 463 bytes) and a two-row-group
   file (3 rows) both read back with equal values in DuckDB and pyarrow.
-- **Still open on P5:** moving the spill format onto colpack encodings. The
+- **Still open on P5:** moving the spill format onto colenc encodings. The
   spill store is a closure over opaque bytes, so the change is local, but the
   survey's measured targets (248/125 ms and 7.53 MB against a 48.6 MB
   baseline) deserve their own before/after run rather than a guess.
 
-## Spill on colpack encodings (2026-10-17): 40% smaller, slower writes
+## Spill on colenc encodings (2026-10-17): 40% smaller, slower writes
 
 - **The format was the last hand-rolled piece.** `SpillStore` keeps opaque
-  bytes, so switching the wire format to colpack is local: MLSPILL2 stores a
+  bytes, so switching the wire format to colenc is local: MLSPILL2 stores a
   dtype, an encoding code, the payload length, one presence byte per row and a
-  dense colpack stream over the non-null values. Dictionary payloads carry the
+  dense colenc stream over the non-null values. Dictionary payloads carry the
   entry count and dictionary length so the reader can split dictionary from
   indices.
 - **Selection is measured, not guessed.** Each column tries PLAIN and the

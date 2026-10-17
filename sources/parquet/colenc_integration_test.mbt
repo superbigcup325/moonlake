@@ -1,6 +1,6 @@
-// Integration tests for the colpack-backed decoders: the fixtures are tiny
+// Integration tests for the colenc-backed decoders: the fixtures are tiny
 // Parquet files written by pyarrow with one required column each (format 2.6,
-// data page v1, uncompressed, no statistics), the same settings colpack's
+// data page v1, uncompressed, no statistics), the same settings colenc's
 // acceptance rig uses. The bytes are embedded so the test runs on every target
 // without touching the file system.
 
@@ -68,7 +68,7 @@ const RLE_BOOL : String = "504152311500150e150e2c15121506150615061c0000000300000
 const DICT_INT32 : String = "504152311504151815184c150615001200000500000007000000090000001500150815082c150a1510150615061c000000020384011504192c35001806736368656d611502001502250018016300160a191c191c26001c15021935000610191801631500160a16621662263c2608292c150415001502001500151015020000001662160a26081662002820706172717565742d6370702d6172726f772076657273696f6e2032362e302e30191c1c0000007c00000050415231"
 
 ///|
-test "colpack decodes DELTA_BINARY_PACKED int32 pages" {
+test "colenc decodes DELTA_BINARY_PACKED int32 pages" {
   let column = scan_fixture(DELTA_INT32, 8)
   assert_eq(column.get(0), @types.Int32(1))
   assert_eq(column.get(3), @types.Int32(9))
@@ -77,7 +77,7 @@ test "colpack decodes DELTA_BINARY_PACKED int32 pages" {
 }
 
 ///|
-test "colpack decodes DELTA_BINARY_PACKED int64 pages" {
+test "colenc decodes DELTA_BINARY_PACKED int64 pages" {
   let column = scan_fixture(DELTA_INT64, 5)
   assert_eq(column.get(0), @types.Int64(7))
   assert_eq(column.get(2), @types.Int64(13))
@@ -85,7 +85,7 @@ test "colpack decodes DELTA_BINARY_PACKED int64 pages" {
 }
 
 ///|
-test "colpack decodes DELTA_LENGTH_BYTE_ARRAY pages" {
+test "colenc decodes DELTA_LENGTH_BYTE_ARRAY pages" {
   let column = scan_fixture(DELTA_LENGTH, 4)
   assert_eq(column.get(0), @types.Str("aa"))
   assert_eq(column.get(1), @types.Str("bbb"))
@@ -94,7 +94,7 @@ test "colpack decodes DELTA_LENGTH_BYTE_ARRAY pages" {
 }
 
 ///|
-test "colpack decodes DELTA_BYTE_ARRAY pages" {
+test "colenc decodes DELTA_BYTE_ARRAY pages" {
   let column = scan_fixture(DELTA_BYTE_ARRAY, 4)
   assert_eq(column.get(0), @types.Str("shared-1"))
   assert_eq(column.get(2), @types.Str("other"))
@@ -102,7 +102,7 @@ test "colpack decodes DELTA_BYTE_ARRAY pages" {
 }
 
 ///|
-test "colpack decodes BYTE_STREAM_SPLIT float pages" {
+test "colenc decodes BYTE_STREAM_SPLIT float pages" {
   let column = scan_fixture(BSS_FLOAT, 4)
   assert_eq(column.get(0), @types.Float64(1.5))
   assert_eq(column.get(1), @types.Float64(-2.25))
@@ -110,7 +110,7 @@ test "colpack decodes BYTE_STREAM_SPLIT float pages" {
 }
 
 ///|
-test "colpack decodes BYTE_STREAM_SPLIT double pages" {
+test "colenc decodes BYTE_STREAM_SPLIT double pages" {
   let column = scan_fixture(BSS_DOUBLE, 4)
   assert_eq(column.get(0), @types.Float64(1.5))
   assert_eq(column.get(2), @types.Float64(0.0))
@@ -118,7 +118,7 @@ test "colpack decodes BYTE_STREAM_SPLIT double pages" {
 }
 
 ///|
-test "colpack decodes RLE boolean pages" {
+test "colenc decodes RLE boolean pages" {
   let column = scan_fixture(RLE_BOOL, 9)
   assert_eq(column.get(0), @types.Boolean(true))
   assert_eq(column.get(2), @types.Boolean(false))

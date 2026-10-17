@@ -1,5 +1,5 @@
 // Parquet writing: one data page per column per row group, PLAIN encoding
-// produced by colpack, UNCOMPRESSED, required columns only.
+// produced by colenc, UNCOMPRESSED, required columns only.
 //
 // This is the write half the reader never had. It deliberately covers what the
 // reader's scope covers: flat required columns, v1 data pages, PLAIN, one row
@@ -12,9 +12,9 @@ fn write_error(msg : String) -> @types.SqlError {
 }
 
 ///|
-fn colpack_write_error(e : @colpack_types.EncodingError) -> @types.SqlError {
+fn colenc_write_error(e : @colenc_types.EncodingError) -> @types.SqlError {
   @types.SqlError::Scan(
-    "parquet write: colpack: \{@colpack_types.EncodingError::message(e)}",
+    "parquet write: colenc: \{@colenc_types.EncodingError::message(e)}",
   )
 }
 
@@ -264,7 +264,7 @@ fn w_file_meta_data(
 // ----------------------------------------------------------------- page bodies
 
 ///|
-/// Pull one column out of a vector and PLAIN-encode it through colpack.
+/// Pull one column out of a vector and PLAIN-encode it through colenc.
 fn w_column_body(
   vector : @types.ColumnVector,
   name : String,
@@ -284,7 +284,7 @@ fn w_column_body(
             raise write_error("column \"\{name}\": value does not match INT32")
         }
       }
-      @colpack_types.ColBuf::Int32s(values)
+      @colenc_types.ColBuf::Int32s(values)
     }
     Int64 => {
       let values = Array::make(n, 0L)
@@ -299,7 +299,7 @@ fn w_column_body(
             raise write_error("column \"\{name}\": value does not match INT64")
         }
       }
-      @colpack_types.ColBuf::Int64s(values)
+      @colenc_types.ColBuf::Int64s(values)
     }
     Float64 => {
       let values = Array::make(n, 0.0)
@@ -316,7 +316,7 @@ fn w_column_body(
             )
         }
       }
-      @colpack_types.ColBuf::Doubles(values)
+      @colenc_types.ColBuf::Doubles(values)
     }
     Str => {
       let values : Array[Bytes] = []
@@ -331,7 +331,7 @@ fn w_column_body(
             raise write_error("column \"\{name}\": value does not match STRING")
         }
       }
-      @colpack_types.ColBuf::ByteArrays(values)
+      @colenc_types.ColBuf::ByteArrays(values)
     }
     Bool => {
       let values = Array::make(n, false)
@@ -348,12 +348,12 @@ fn w_column_body(
             )
         }
       }
-      @colpack_types.ColBuf::Bools(values)
+      @colenc_types.ColBuf::Bools(values)
     }
   }
   let out = Buffer()
-  let _ = @colpack.encode_column(column, @colpack_types.Plain, out) catch {
-    e => raise colpack_write_error(e)
+  let _ = @colenc.encode_column(column, @colenc_types.Plain, out) catch {
+    e => raise colenc_write_error(e)
   }
   out.to_bytes()
 }

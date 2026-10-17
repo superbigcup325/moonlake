@@ -13,7 +13,7 @@
 //                            null_flags   : row_count bytes (1 = present)
 //                            payload      : payload_len bytes
 //
-// The payload is a colpack column encoding over the non-null values only, so
+// The payload is a colenc column encoding over the non-null values only, so
 // NULLs stay a side channel and the encoder sees a dense column. Encoding
 // codes and payload framing live in the helpers below; the reader rejects
 // unknown codes and short payloads with an Execute error.
@@ -29,16 +29,16 @@ fn spill_read_error(msg : String) -> SqlError {
 }
 
 ///|
-fn colpack_write_error(e : @colpack_types.EncodingError) -> SqlError {
+fn colenc_write_error(e : @colenc_types.EncodingError) -> SqlError {
   SqlError::Execute(
-    "spill write: colpack: \{@colpack_types.EncodingError::message(e)}",
+    "spill write: colenc: \{@colenc_types.EncodingError::message(e)}",
   )
 }
 
 ///|
-fn colpack_read_error(e : @colpack_types.EncodingError) -> SqlError {
+fn colenc_read_error(e : @colenc_types.EncodingError) -> SqlError {
   SqlError::Execute(
-    "spill read: colpack: \{@colpack_types.EncodingError::message(e)}",
+    "spill read: colenc: \{@colenc_types.EncodingError::message(e)}",
   )
 }
 
@@ -83,13 +83,13 @@ fn code_dtype(code : Byte) -> DataType raise SqlError {
 }
 
 ///|
-fn spill_physical(dt : DataType) -> @colpack_types.PhysicalType {
+fn spill_physical(dt : DataType) -> @colenc_types.PhysicalType {
   match dt {
-    Int32 | Date => @colpack_types.Int32
-    Int64 => @colpack_types.Int64
-    Float64 => @colpack_types.Double
-    Str => @colpack_types.ByteArray
-    Bool => @colpack_types.Bool
+    Int32 | Date => @colenc_types.Int32
+    Int64 => @colenc_types.Int64
+    Float64 => @colenc_types.Double
+    Str => @colenc_types.ByteArray
+    Bool => @colenc_types.Bool
   }
 }
 
@@ -137,12 +137,12 @@ fn read_i32(buf : Bytes, pos : Int32) -> Int32 {
 // ------------------------------------------------------------ column values
 
 ///|
-/// Pull one column out of a batch: a dense colpack column of the non-null
+/// Pull one column out of a batch: a dense colenc column of the non-null
 /// values plus the presence flags, in row order.
 fn collect_column(
   col : ColumnVector,
   n : Int32,
-) -> (@colpack_types.ColBuf, Array[Bool]) raise SqlError {
+) -> (@colenc_types.ColBuf, Array[Bool]) raise SqlError {
   let flags : Array[Bool] = []
   match col.dtype() {
     Int32 => {
@@ -157,7 +157,7 @@ fn collect_column(
           _ => raise spill_write_error("value does not match INT32")
         }
       }
-      (@colpack_types.ColBuf::Int32s(values), flags)
+      (@colenc_types.ColBuf::Int32s(values), flags)
     }
     Date => {
       let values : Array[Int32] = []
@@ -171,7 +171,7 @@ fn collect_column(
           _ => raise spill_write_error("value does not match DATE")
         }
       }
-      (@colpack_types.ColBuf::Int32s(values), flags)
+      (@colenc_types.ColBuf::Int32s(values), flags)
     }
     Int64 => {
       let values : Array[Int64] = []
@@ -185,7 +185,7 @@ fn collect_column(
           _ => raise spill_write_error("value does not match INT64")
         }
       }
-      (@colpack_types.ColBuf::Int64s(values), flags)
+      (@colenc_types.ColBuf::Int64s(values), flags)
     }
     Float64 => {
       let values : Array[Double] = []
@@ -199,7 +199,7 @@ fn collect_column(
           _ => raise spill_write_error("value does not match FLOAT64")
         }
       }
-      (@colpack_types.ColBuf::Doubles(values), flags)
+      (@colenc_types.ColBuf::Doubles(values), flags)
     }
     Str => {
       let values : Array[Bytes] = []
@@ -213,7 +213,7 @@ fn collect_column(
           _ => raise spill_write_error("value does not match STRING")
         }
       }
-      (@colpack_types.ColBuf::ByteArrays(values), flags)
+      (@colenc_types.ColBuf::ByteArrays(values), flags)
     }
     Bool => {
       let values : Array[Bool] = []
@@ -227,19 +227,19 @@ fn collect_column(
           _ => raise spill_write_error("value does not match BOOLEAN")
         }
       }
-      (@colpack_types.ColBuf::Bools(values), flags)
+      (@colenc_types.ColBuf::Bools(values), flags)
     }
   }
 }
 
 ///|
 fn encode_with(
-  column : @colpack_types.ColBuf,
-  encoding : @colpack_types.Encoding,
+  column : @colenc_types.ColBuf,
+  encoding : @colenc_types.Encoding,
 ) -> Bytes raise SqlError {
   let out = Buffer()
-  let _ = @colpack.encode_column(column, encoding, out) catch {
-    e => raise colpack_write_error(e)
+  let _ = @colenc.encode_column(column, encoding, out) catch {
+    e => raise colenc_write_error(e)
   }
   out.to_bytes()
 }
@@ -248,10 +248,10 @@ fn encode_with(
 /// Dictionary payload: entry count, dictionary bytes length, dictionary, then
 /// the index stream (bit width byte plus hybrid runs).
 fn encode_dictionary_payload(
-  column : @colpack_types.ColBuf,
+  column : @colenc_types.ColBuf,
 ) -> Bytes? raise SqlError {
-  let encoding = @colpack.encode_dictionary(column) catch {
-    e => raise colpack_write_error(e)
+  let encoding = @colenc.encode_dictionary(column) catch {
+    e => raise colenc_write_error(e)
   }
   match encoding {
     None => None
@@ -271,7 +271,7 @@ fn encode_dictionary_payload(
 /// The full dictionary build is a hash map over every value, so high-cardinality
 /// columns skip it on a 4096-value sample instead. Returns false for an empty
 /// column: PLAIN already wins there.
-fn sample_dict_useful(column : @colpack_types.ColBuf) -> Bool {
+fn sample_dict_useful(column : @colenc_types.ColBuf) -> Bool {
   let n = column.value_count()
   if n == 0 {
     return false
@@ -344,13 +344,13 @@ fn sample_prefix_useful(values : Array[Bytes]) -> Bool {
 /// earlier candidate, so PLAIN wins when nothing is smaller.
 fn choose_payload(
   dt : DataType,
-  column : @colpack_types.ColBuf,
+  column : @colenc_types.ColBuf,
 ) -> (Int32, Bytes) raise SqlError {
   let mut best_encoding = ENC_PLAIN
-  let mut best = encode_with(column, @colpack_types.Plain)
+  let mut best = encode_with(column, @colenc_types.Plain)
   match dt {
     Int32 | Date | Int64 => {
-      let candidate = encode_with(column, @colpack_types.DeltaBinaryPacked)
+      let candidate = encode_with(column, @colenc_types.DeltaBinaryPacked)
       if candidate.length() < best.length() {
         best = candidate
         best_encoding = ENC_DELTA
@@ -367,7 +367,7 @@ fn choose_payload(
       }
     }
     Str => {
-      let candidate = encode_with(column, @colpack_types.DeltaLength)
+      let candidate = encode_with(column, @colenc_types.DeltaLength)
       if candidate.length() < best.length() {
         best = candidate
         best_encoding = ENC_DELTA_LENGTH
@@ -377,7 +377,7 @@ fn choose_payload(
         _ => false
       }
       if prefix_sharing {
-        let candidate = encode_with(column, @colpack_types.DeltaByteArray)
+        let candidate = encode_with(column, @colenc_types.DeltaByteArray)
         if candidate.length() < best.length() {
           best = candidate
           best_encoding = ENC_DELTA_BYTE_ARRAY
@@ -403,7 +403,7 @@ fn choose_payload(
 /// Fill `vec` from a dense column plus presence flags, in row order.
 fn fill_vector(
   vec : ColumnVector,
-  column : @colpack_types.ColBuf,
+  column : @colenc_types.ColBuf,
   flags : Array[Bool],
   n : Int32,
   dt : DataType,
@@ -505,9 +505,9 @@ pub fn DataBatch::to_spill_bytes(
 ///|
 fn decode_dictionary_payload(
   payload : BytesView,
-  physical : @colpack_types.PhysicalType,
+  physical : @colenc_types.PhysicalType,
   non_null : Int32,
-) -> @colpack_types.ColBuf raise SqlError {
+) -> @colenc_types.ColBuf raise SqlError {
   if payload.length() < 8 {
     raise spill_read_error(
       "dictionary payload is \{payload.length()} bytes, expected at least 8",
@@ -528,10 +528,10 @@ fn decode_dictionary_payload(
     start=8 + dictionary_len,
     end=payload.length(),
   )
-  @colpack.decode_dictionary(
+  @colenc.decode_dictionary(
     dictionary, indices, physical, non_null, dictionary_size,
   ) catch {
-    e => raise colpack_read_error(e)
+    e => raise colenc_read_error(e)
   }
 }
 
@@ -549,35 +549,35 @@ fn decode_column(
   let physical = spill_physical(dt)
   let column = match encoding {
     ENC_PLAIN =>
-      @colpack.decode_column(payload, physical, @colpack_types.Plain, non_null) catch {
-        e => raise colpack_read_error(e)
+      @colenc.decode_column(payload, physical, @colenc_types.Plain, non_null) catch {
+        e => raise colenc_read_error(e)
       }
     ENC_DELTA =>
-      @colpack.decode_column(
+      @colenc.decode_column(
         payload,
         physical,
-        @colpack_types.DeltaBinaryPacked,
+        @colenc_types.DeltaBinaryPacked,
         non_null,
       ) catch {
-        e => raise colpack_read_error(e)
+        e => raise colenc_read_error(e)
       }
     ENC_DELTA_LENGTH =>
-      @colpack.decode_column(
+      @colenc.decode_column(
         payload,
         physical,
-        @colpack_types.DeltaLength,
+        @colenc_types.DeltaLength,
         non_null,
       ) catch {
-        e => raise colpack_read_error(e)
+        e => raise colenc_read_error(e)
       }
     ENC_DELTA_BYTE_ARRAY =>
-      @colpack.decode_column(
+      @colenc.decode_column(
         payload,
         physical,
-        @colpack_types.DeltaByteArray,
+        @colenc_types.DeltaByteArray,
         non_null,
       ) catch {
-        e => raise colpack_read_error(e)
+        e => raise colenc_read_error(e)
       }
     ENC_DICTIONARY => decode_dictionary_payload(payload, physical, non_null)
     _ => raise spill_read_error("unknown encoding code \{encoding}")

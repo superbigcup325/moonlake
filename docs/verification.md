@@ -238,18 +238,18 @@ encodings only 4, v2 data pages 3, TIMESTAMP 1, repeated 1, empty dictionary pag
 flat schema, v1 data pages, PLAIN, dictionary (including RLE/bit-packed
 indices and definition levels), DELTA_BINARY_PACKED (INT32/INT64),
 DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT
-(FLOAT/DOUBLE) — the last five decode through colpack — RLE boolean values,
+(FLOAT/DOUBLE) — the last five decode through colenc — RLE boolean values,
 UNCOMPRESSED and SNAPPY. Rejected: nested/repeated, INT96, v2 data pages,
 GZIP/ZSTD and other codecs, BIT_PACKED, empty dictionary pages.
 
 The corpus's own DELTA* and BYTE_STREAM_SPLIT files are still refused, but for
 different reasons now: they carry v2 data pages or ZSTD/GZIP compression. The
-colpack-backed paths are covered by embedded fixture tests in
-`sources/parquet/colpack_integration_test.mbt` instead.
+colenc-backed paths are covered by embedded fixture tests in
+`sources/parquet/colenc_integration_test.mbt` instead.
 
 **Write path**: `write_bytes` / `write_file` (same package) emit the scope the
 reader accepts — one row group per batch, one PLAIN data page per required
-column, UNCOMPRESSED — with page bodies produced by colpack. Round-trip tests
+column, UNCOMPRESSED — with page bodies produced by colenc. Round-trip tests
 cover all six engine types and two row groups; a probe file of 5 rows in one
 group and 3 rows in two groups was read back with equal values by DuckDB and
 pyarrow.
