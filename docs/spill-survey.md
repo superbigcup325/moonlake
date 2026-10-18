@@ -103,7 +103,7 @@ materialization; an explicit "not a database" boundary claim.
   real implementation, wasm falls back to shape D "explicit failure") —
   DuckDB's in-memory semantics ("don't spill by default, only when a directory
   is given") are naturally isomorphic to this dual target.
-- **The milestone order already has backing**: DataFusion took years to make
+- **The planned order already has backing**: DataFusion took years to make
   sort spill mature, and hash join is still a proposal in 2025. moonlake's order
   of sort → hash join → aggregation → set operations matches it; that is not
   conservatism, it is reality.

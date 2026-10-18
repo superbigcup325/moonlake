@@ -70,6 +70,12 @@ You can browse and install extra skills here:
 - On a fresh GitHub Actions runner you must run `moon update && moon install`
   before check/test — a populated local `.mooncakes` cache masks a missing
   install. To verify, wipe `.mooncakes` to simulate a fresh clone.
+- `superbigcup325/colenc` is not on the registry yet, so this repository does not
+  build from a clean checkout: `moon check` fails with `Failed to resolve registry
+  dependency superbigcup325/colenc`. It resolves only through the workspace member
+  plus the local `moon.work` (both untracked). Publish colenc before releasing a
+  moonlake version that depends on it — `moon publish --dry-run` unpacks a clean
+  copy and fails the same way.
 - Local `moon test` runs the `preferred target` from `moon.mod` (wasm-gc) and does
   not cover native; CI runs `test (native)` separately. Anything touching
   backends that differ (fs, CSV) must be self-tested with
@@ -79,7 +85,8 @@ You can browse and install extra skills here:
 - Recent `moon` (since 0.1.20261012) rejects dependencies that still ship the old
   `moon.mod.json` manifest: `moon install` unpacks as many dependencies as it can,
   then aborts during graph resolution. As of 2026-10-15 this project's dependency
-  graph is clean (`moonbitlang/x@0.5.5` + `moonbitlang/quickcheck@0.15.0`; the two
+  graph is clean (`moonbitlang/x@0.5.5` + `moonbitlang/quickcheck@0.15.0` +
+  `superbigcup325/colenc@0.1.0`; the two
   offenders were `quickcheck@0.14.0` and `mizchi/duckdb@0.6.4` pulled in
   transitively through `mizchi/parquet` — the former cleared by bumping to
   0.15.0, the latter by dropping the dependency once the in-house decoder landed).

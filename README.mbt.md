@@ -97,6 +97,22 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
+> The registry release is still `0.1.0`; everything this README describes is
+> `main` (0.2.0), which is not published yet.
+
+**Building from source.** `main` depends on `superbigcup325/colenc`, which is not
+on the registry, so a plain checkout does not build by itself: `moon check` stops
+with `Failed to resolve registry dependency superbigcup325/colenc`. While that
+module stays unpublished, `main` is source-only for its authors — the workspace
+resolves through the sibling module plus a local `moon.work`:
+
+```bash
+printf 'members = [".", "../colenc"]\n' > moon.work
+moon check
+```
+
+If you need something that installs today, use the registry release (0.1.0).
+
 ```moonbit nocheck
 // a @catalog.Catalog with registered table entries — @csv/@parquet
 // scan into one; note the argument order: content/name, not name/content

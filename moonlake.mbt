@@ -1,5 +1,5 @@
 // moonlake - embeddable analytical query engine for MoonBit.
-// Root package: engine facade. Sub-packages arrive with the v1 milestones.
+// Root package: engine facade. Sub-packages arrive with later releases.
 
 ///|
 /// Version of the `superbigcup325/moonlake` module, kept in sync with `moon.mod`.
