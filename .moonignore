@@ -25,3 +25,10 @@ __pycache__/
 
 # Spill benchmark driver — dev-side tooling, not part of the shipped module.
 /harness/spill_bench/
+
+# Local workspace members — a maintainer editing colenc and moonlake together
+# writes these. They are untracked, but packaging reads the working tree, so a
+# release must never carry a workspace definition or a symlink to a sibling
+# checkout.
+/moon.work
+/.colenc

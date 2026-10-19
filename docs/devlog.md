@@ -517,3 +517,28 @@ the playground
   `harness/spill_bench.py`; the baseline numbers were taken from a worktree at
   `682f87a` with the same driver copied in.
 
+## colenc on the registry (2026-10-19): the dependency stops being local
+
+- **The workspace hack was a publishing problem, not a design decision.**
+  `superbigcup325/colenc@0.1.0` was pinned in `moon.mod` while the module was
+  unreleased, so only a tree that also carried an untracked `moon.work` and a
+  symlink to the colenc checkout could resolve it — and CI, which clones
+  neither, could not build the branch at all.
+- **Now it resolves from the registry.** A clean checkout runs
+  `moon update && moon install`, which downloads `superbigcup325/colenc@0.1.0`
+  into `.mooncakes`, and `moon check` goes green with no workspace file. The
+  local `moon.work` and `.colenc` symlink are gone from this tree; they stay
+  documented for the two-module editing loop (a workspace member shadows the
+  registry version, which is useful when changing colenc and misleading when
+  testing what a consumer installs).
+- **Evidence:** this is a resolution claim, so it was verified as a fresh
+  consumer would: `.mooncakes` wiped, `MOON_HOME` pointed at an empty scratch
+  directory, `moon update` re-clones the registry index, `moon install`
+  downloads colenc, then 176 tests on wasm-gc, native and js plus the 27
+  golden queries pass with no workspace and no local checkout in play. (The
+  suite is smaller than the 251 counted while colenc sat in the workspace:
+  only this module's tests run now; colenc runs its own in its repository.)
+- **What this unlocks:** the branch can go through the same gates as `main` —
+  CI check/test matrices and `moon publish --dry-run` — because nothing in the
+  dependency graph is local-only any more.
+

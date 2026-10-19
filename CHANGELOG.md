@@ -13,9 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   DELTA_BYTE_ARRAY (BYTE_ARRAY), BYTE_STREAM_SPLIT (FLOAT/DOUBLE) and RLE
   boolean values. The encoding gate accepts them, decode errors surface as
   pointed scan errors with the colenc message, and eight small embedded
-  fixtures pin each path on every target. colenc is a workspace member for
-  local development (not yet published), so the branch builds with a
-  `moon.work` that lists both modules
+  fixtures pin each path on every target. colenc is published as
+  `superbigcup325/colenc@0.1.0`, so the dependency resolves from the registry
+  and a plain checkout builds
 - 2026-10-17 a Parquet writer (`sources/parquet/write.mbt`): `write_bytes` and
   `write_file` turn a `TableEntry` into one row group per batch with one PLAIN
   data page per column, encoding page bodies through colenc. Scope matches the

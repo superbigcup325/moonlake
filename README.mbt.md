@@ -100,16 +100,23 @@ moon add superbigcup325/moonlake
 > The registry release is still `0.1.0`; everything this README describes is
 > `main` (0.2.0), which is not published yet.
 
-**Building from source.** `main` depends on `superbigcup325/colenc`, which is not
-on the registry, so a plain checkout does not build by itself: `moon check` stops
-with `Failed to resolve registry dependency superbigcup325/colenc`. While that
-module stays unpublished, `main` is source-only for its authors — the workspace
-resolves through the sibling module plus a local `moon.work`:
+**Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
+published on mooncakes, so a plain checkout builds — no workspace file needed:
 
 ```bash
-printf 'members = [".", "../colenc"]\n' > moon.work
+moon update && moon install   # fetch the registry index and dependencies
 moon check
 ```
+
+Hacking on `colenc` and `moonlake` together still works: add a `moon.work` that
+lists the sibling checkout, and the workspace version shadows the registry one:
+
+```bash
+ln -s ../colenc .colenc
+printf 'members = [".", "./.colenc"]\n' > moon.work
+```
+
+Remove both again before checking what a consumer actually installs.
 
 If you need something that installs today, use the registry release (0.1.0).
 

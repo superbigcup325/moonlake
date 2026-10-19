@@ -69,13 +69,17 @@ You can browse and install extra skills here:
   as a symlink to it.
 - On a fresh GitHub Actions runner you must run `moon update && moon install`
   before check/test — a populated local `.mooncakes` cache masks a missing
-  install. To verify, wipe `.mooncakes` to simulate a fresh clone.
-- `superbigcup325/colenc` is not on the registry yet, so this repository does not
-  build from a clean checkout: `moon check` fails with `Failed to resolve registry
-  dependency superbigcup325/colenc`. It resolves only through the workspace member
-  plus the local `moon.work` (both untracked). Publish colenc before releasing a
-  moonlake version that depends on it — `moon publish --dry-run` unpacks a clean
-  copy and fails the same way.
+  install. To verify, wipe `.mooncakes` to simulate a fresh clone. If the
+  toolchain home is not writable, `moon update` cannot refresh the registry
+  index and the build fails with `module was not found in the registry` even for
+  a published version; point `MOON_HOME` at a writable scratch directory and
+  re-run `moon update && moon install`.
+- `superbigcup325/colenc@0.1.0` is published, so a clean checkout resolves it
+  from the registry (`moon update && moon install && moon check`). Co-developing
+  the two modules still goes through an untracked `moon.work` plus a symlink to
+  the colenc checkout — and that workspace shadows the registry version, so
+  remove it (or resolve with a scratch `MOON_HOME`) before judging what a
+  consumer or `moon publish --dry-run` actually gets.
 - Local `moon test` runs the `preferred target` from `moon.mod` (wasm-gc) and does
   not cover native; CI runs `test (native)` separately. Anything touching
   backends that differ (fs, CSV) must be self-tested with
