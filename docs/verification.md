@@ -253,11 +253,15 @@ colenc-backed paths are covered by embedded fixture tests in
 `sources/parquet/colenc_integration_test.mbt` instead.
 
 **Write path**: `write_bytes` / `write_file` (same package) emit the scope the
-reader accepts — one row group per batch, one PLAIN data page per required
-column, UNCOMPRESSED — with page bodies produced by colenc. Round-trip tests
-cover all six engine types and two row groups; a probe file of 5 rows in one
-group and 3 rows in two groups was read back with equal values by DuckDB and
-pyarrow.
+reader accepts — one row group per batch, one PLAIN data page per column,
+UNCOMPRESSED — with page bodies produced by colenc. A column that holds a NULL
+anywhere is written OPTIONAL: each page gets the RLE definition-level section
+(4-byte length prefix, 1-bit hybrid levels) and a dense value section, and the
+decision is file-wide because the schema is. Round-trip tests cover all six
+engine types, NULLs in every physical type, and two row groups (including a
+column that is null-free in the first group and NULL in the second, which pins
+the file-wide rule); a probe file with NULLs in both columns was read back with
+the same values and the same NULL rows by DuckDB and pyarrow.
 
 **Real bugs these gates caught** (each of layers 1/2/3 did its part; recorded
 for re-evaluation):

@@ -27,10 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 2026-10-17 a Parquet writer (`sources/parquet/write.mbt`): `write_bytes` and
   `write_file` turn a `TableEntry` into one row group per batch with one PLAIN
   data page per column, encoding page bodies through colenc. Scope matches the
-  reader: flat required columns, v1 pages, UNCOMPRESSED, INT32/INT64/DOUBLE/
-  BYTE_ARRAY/BOOLEAN; NULLs are refused with a pointed error. Round-trip tests
-  cover every physical type and multiple row groups; DuckDB and pyarrow read
-  the output back
+  reader: flat columns, v1 pages, UNCOMPRESSED, INT32/INT64/DOUBLE/
+  BYTE_ARRAY/BOOLEAN; a column that holds a NULL anywhere is written OPTIONAL
+  with an RLE definition-level section per page, everything else REQUIRED.
+  Round-trip tests cover every physical type, NULLs, and multiple row groups;
+  DuckDB and pyarrow read the output back
 - 2026-10-17 the spill format is MLSPILL2: each column is a dense colenc
   stream (non-null values only) and the writer picks the smallest of PLAIN,
   DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY and

@@ -1,10 +1,13 @@
 // Parquet writing: one data page per column per row group, PLAIN encoding
-// produced by colenc, UNCOMPRESSED, required columns only.
+// produced by colenc, UNCOMPRESSED.
 //
 // This is the write half the reader never had. It deliberately covers what the
-// reader's scope covers: flat required columns, v1 data pages, PLAIN, one row
-// group per batch. Nulls are refused rather than written wrong; definition
-// levels are the next step, not a silent approximation.
+// reader's scope covers: flat columns, v1 data pages, PLAIN, one row group per
+// batch. A column that holds no NULLs anywhere is written REQUIRED; one that
+// does is written OPTIONAL with an RLE definition-level section per page
+// (4-byte length prefix, 1-bit hybrid levels) and a dense value section. The
+// decision is file-wide because the schema is: every row group of an optional
+// column carries levels, even if that particular group is null-free.
 
 ///|
 fn write_error(msg : String) -> @types.SqlError {
@@ -144,11 +147,11 @@ fn w_schema_root(children : Int32) -> Bytes {
 }
 
 ///|
-fn w_schema_leaf(name : String, type_id : Int32) -> Bytes {
+fn w_schema_leaf(name : String, type_id : Int32, optional : Bool) -> Bytes {
   let out = Buffer()
   let mut last = 0
   last = w_field_i32(out, last, 1, type_id)
-  last = w_field_i32(out, last, 3, 0) // REQUIRED
+  last = w_field_i32(out, last, 3, if optional { 1 } else { 0 }) // OPTIONAL | REQUIRED
   last = w_field_binary(out, last, 4, name)
   w_stop(out)
   out.to_bytes()
@@ -187,13 +190,20 @@ fn w_column_meta_data(
   num_values : Int32,
   total_size : Int32,
   data_page_offset : Int32,
+  optional : Bool,
 ) -> Bytes {
   let out = Buffer()
   let mut last = 0
   last = w_field_i32(out, last, 1, type_id)
   last = w_field(out, last, 2, W_LIST)
-  w_list(out, 1, W_I32)
-  w_zigzag(out, 0) // PLAIN
+  if optional {
+    w_list(out, 2, W_I32)
+    w_zigzag(out, 0) // PLAIN
+    w_zigzag(out, 3) // RLE, for the definition levels
+  } else {
+    w_list(out, 1, W_I32)
+    w_zigzag(out, 0) // PLAIN
+  }
   last = w_field(out, last, 3, W_LIST)
   w_list(out, 1, W_BINARY)
   w_binary(out, path)
@@ -264,22 +274,37 @@ fn w_file_meta_data(
 // ----------------------------------------------------------------- page bodies
 
 ///|
-/// Pull one column out of a vector and PLAIN-encode it through colenc.
+/// A NULL here means the optionality pre-pass and the body writer disagree;
+/// the pre-pass marks every column that holds a NULL anywhere as OPTIONAL, so
+/// reaching this is an internal bug rather than a user-facing refusal.
+fn required_null(name : String) -> @types.SqlError {
+  write_error(
+    "column \"\{name}\": NULL where the schema says REQUIRED (internal: optionality is decided before writing)",
+  )
+}
+
+///|
+/// Pull one column out of a vector and PLAIN-encode it through colenc. When
+/// `optional`, the body is prefixed with the page's definition-level section:
+/// a 4-byte length, then the hybrid RLE stream (bit width 1) over the
+/// present/absent flag of every row.
 fn w_column_body(
   vector : @types.ColumnVector,
   name : String,
+  optional : Bool,
 ) -> Bytes raise @types.SqlError {
   let n = vector.len()
+  let levels : Array[Int64] = Array::make(n, 0L)
   let column = match vector.dtype() {
     Int32 | Date => {
-      let values = Array::make(n, 0)
+      let values : Array[Int32] = []
       for i in 0..<n {
         match vector.get(i) {
-          Int32(v) | Date(v) => values[i] = v
-          Null =>
-            raise write_error(
-              "column \"\{name}\": NULL values are not supported yet",
-            )
+          Int32(v) | Date(v) => {
+            values.push(v)
+            levels[i] = 1L
+          }
+          Null => if !optional { raise required_null(name) }
           _ =>
             raise write_error("column \"\{name}\": value does not match INT32")
         }
@@ -287,14 +312,14 @@ fn w_column_body(
       @colenc_types.ColBuf::Int32s(values)
     }
     Int64 => {
-      let values = Array::make(n, 0L)
+      let values : Array[Int64] = []
       for i in 0..<n {
         match vector.get(i) {
-          Int64(v) => values[i] = v
-          Null =>
-            raise write_error(
-              "column \"\{name}\": NULL values are not supported yet",
-            )
+          Int64(v) => {
+            values.push(v)
+            levels[i] = 1L
+          }
+          Null => if !optional { raise required_null(name) }
           _ =>
             raise write_error("column \"\{name}\": value does not match INT64")
         }
@@ -302,14 +327,14 @@ fn w_column_body(
       @colenc_types.ColBuf::Int64s(values)
     }
     Float64 => {
-      let values = Array::make(n, 0.0)
+      let values : Array[Double] = []
       for i in 0..<n {
         match vector.get(i) {
-          Float64(v) => values[i] = v
-          Null =>
-            raise write_error(
-              "column \"\{name}\": NULL values are not supported yet",
-            )
+          Float64(v) => {
+            values.push(v)
+            levels[i] = 1L
+          }
+          Null => if !optional { raise required_null(name) }
           _ =>
             raise write_error(
               "column \"\{name}\": value does not match FLOAT64",
@@ -322,11 +347,11 @@ fn w_column_body(
       let values : Array[Bytes] = []
       for i in 0..<n {
         match vector.get(i) {
-          Str(v) => values.push(@utf8.encode(v))
-          Null =>
-            raise write_error(
-              "column \"\{name}\": NULL values are not supported yet",
-            )
+          Str(v) => {
+            values.push(@utf8.encode(v))
+            levels[i] = 1L
+          }
+          Null => if !optional { raise required_null(name) }
           _ =>
             raise write_error("column \"\{name}\": value does not match STRING")
         }
@@ -334,14 +359,14 @@ fn w_column_body(
       @colenc_types.ColBuf::ByteArrays(values)
     }
     Bool => {
-      let values = Array::make(n, false)
+      let values : Array[Bool] = []
       for i in 0..<n {
         match vector.get(i) {
-          Boolean(v) => values[i] = v
-          Null =>
-            raise write_error(
-              "column \"\{name}\": NULL values are not supported yet",
-            )
+          Boolean(v) => {
+            values.push(v)
+            levels[i] = 1L
+          }
+          Null => if !optional { raise required_null(name) }
           _ =>
             raise write_error(
               "column \"\{name}\": value does not match BOOLEAN",
@@ -351,21 +376,54 @@ fn w_column_body(
       @colenc_types.ColBuf::Bools(values)
     }
   }
-  let out = Buffer()
-  let _ = @colenc.encode_column(column, @colenc_types.Plain, out) catch {
+  let payload = Buffer()
+  let _ = @colenc.encode_column(column, @colenc_types.Plain, payload) catch {
     e => raise colenc_write_error(e)
   }
-  out.to_bytes()
+  if !optional {
+    return payload.to_bytes()
+  }
+  let level_bytes = Buffer()
+  @colenc_encoders.encode_rle_hybrid(levels, 1, level_bytes) catch {
+    e => raise colenc_write_error(e)
+  }
+  let body = Buffer()
+  body.write_int_le(level_bytes.length())
+  body.write_bytes(level_bytes.to_bytes())
+  body.write_bytes(payload.to_bytes())
+  body.to_bytes()
 }
 
 ///|
 /// Write a table entry as Parquet bytes: one row group per non-empty batch,
-/// one data page per column. Every column must be REQUIRED (no NULLs).
+/// one data page per column. A column that holds a NULL anywhere is written
+/// OPTIONAL (definition levels per page); otherwise REQUIRED.
 pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
   let file = Buffer()
   w_magic(file)
   let groups : Array[Bytes] = []
   let mut total_rows : Int64 = 0L
+  // The schema is file-wide, so one NULL anywhere makes the whole column
+  // optional: every row group then carries levels, even the null-free ones.
+  let optional : Array[Bool] = Array::make(entry.schema.columns.length(), false)
+  for batch in entry.batches {
+    let columns = batch.columns()
+    if columns.length() != entry.schema.columns.length() {
+      raise write_error(
+        "batch carries \{columns.length()} columns, schema has \{entry.schema.columns.length()}",
+      )
+    }
+    for index in 0..<columns.length() {
+      if !optional[index] {
+        let column = columns[index]
+        for row in 0..<batch.row_count() {
+          if column.get(row) is Null {
+            optional[index] = true
+          }
+        }
+      }
+    }
+  }
   for batch in entry.batches {
     let rows = batch.row_count()
     if rows == 0 {
@@ -381,7 +439,7 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
     let mut group_size = 0
     for index in 0..<columns.length() {
       let name = entry.schema.columns[index].name
-      let body = w_column_body(columns[index], name)
+      let body = w_column_body(columns[index], name, optional[index])
       let header = w_page_header(body.length(), rows)
       if file.length() > 2000000000 {
         raise write_error("file would exceed the 2 GiB page offset limit")
@@ -397,6 +455,7 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
         rows,
         size,
         offset,
+        optional[index],
       )
       chunks.push(w_column_chunk(offset, meta))
     }
@@ -404,8 +463,10 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
     total_rows += rows.to_int64()
   }
   let schema : Array[Bytes] = [w_schema_root(entry.schema.columns.length())]
-  for column in entry.schema.columns {
-    schema.push(w_schema_leaf(column.name, w_type_id(column.dtype)))
+  for index, column in entry.schema.columns {
+    schema.push(
+      w_schema_leaf(column.name, w_type_id(column.dtype), optional[index]),
+    )
   }
   let footer = w_file_meta_data(schema, total_rows, groups)
   file.write_bytes(footer)

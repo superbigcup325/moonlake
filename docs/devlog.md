@@ -590,3 +590,28 @@ the playground
   the spilling paths under a tiny budget and therefore round-trip MLSPILL3
   under load.
 
+
+## Parquet writes take NULLs (2026-10-19): OPTIONAL columns and definition
+## levels
+
+- **The refusal was a placeholder.** The October 17 writer said "NULLs are
+  refused rather than approximated", which was the honest move while
+  definition levels had no encoder. colenc's RLE/bit-packed hybrid
+  (`encode_rle_hybrid`) is that encoder, so the gap closed with a pre-pass, a
+  schema flag and one extra section per page.
+- **What landed:** the writer walks the entry once to decide, per column,
+  whether it is OPTIONAL (it holds a NULL anywhere) or REQUIRED — the decision
+  is file-wide because the schema is, so a column that happens to be null-free
+  in one row group still carries levels in that group. An optional page body is
+  `[u32 length][hybrid levels, bit width 1][dense values]`; the v1 page header
+  needs nothing extra (the level section is self-describing) and the chunk
+  metadata lists RLE next to PLAIN.
+- **Evidence:** 181 tests on wasm-gc, native and js, including a NULL in every
+  physical type and a two-group case that is null-free in the first group and
+  NULL in the second. Interop is judged by readers this writer does not own: a
+  three-row file with NULLs in an INT32 and a BYTE_ARRAY column reads back
+  through pyarrow as `{'a': [10, None, -3], 'b': [b'alpha', b'', None]}` and
+  through DuckDB as `(10, b'alpha'), (NULL, b''), (-3, NULL)`, both columns
+  reported nullable — an empty string stays distinct from NULL in both.
+- **Still out of scope:** encodings other than PLAIN, compression, v2 pages,
+  nested fields, INT96 — the writer's scope stays the reader's.

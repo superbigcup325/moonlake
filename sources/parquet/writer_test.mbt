@@ -32,22 +32,6 @@ fn make_entry(
 }
 
 ///|
-fn capture_write_error(
-  run : () -> Bytes raise @types.SqlError,
-) -> @types.SqlError {
-  let mut captured : @types.SqlError? = None
-  try {
-    let _ = run()
-  } catch {
-    e => captured = Some(e)
-  }
-  match captured {
-    Some(e) => e
-    None => abort("expected the write to fail")
-  }
-}
-
-///|
 test "writer round trips every physical type" {
   let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
     ("a", @types.Int32, [@types.Int32(1), @types.Int32(-2), @types.Int32(3)]),
@@ -107,15 +91,81 @@ test "writer emits one row group per batch" {
 }
 
 ///|
-test "writer refuses NULLs instead of writing them wrong" {
+/// A column with NULLs is written OPTIONAL: the file must scan back with the
+/// same values and the NULLs in the same rows, for every physical type.
+test "writer round trips NULLs through optional columns" {
+  let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
+    ("a", @types.Int32, [@types.Int32(1), @types.Null, @types.Int32(3)]),
+    ("b", @types.Int64, [@types.Null, @types.Int64(-9L), @types.Null]),
+    (
+      "c",
+      @types.Float64,
+      [@types.Float64(1.5), @types.Float64(-2.25), @types.Null],
+    ),
+    ("d", @types.Str, [@types.Str("alpha"), @types.Null, @types.Str("ccc")]),
+    (
+      "e",
+      @types.Bool,
+      [@types.Null, @types.Boolean(false), @types.Boolean(true)],
+    ),
+  ]
+  let entry = make_entry(columns, [
+    [
+      make_vector(@types.Int32, [@types.Int32(1), @types.Null, @types.Int32(3)]),
+      make_vector(@types.Int64, [@types.Null, @types.Int64(-9L), @types.Null]),
+      make_vector(@types.Float64, [
+        @types.Float64(1.5),
+        @types.Float64(-2.25),
+        @types.Null,
+      ]),
+      make_vector(@types.Str, [
+        @types.Str("alpha"),
+        @types.Null,
+        @types.Str("ccc"),
+      ]),
+      make_vector(@types.Bool, [
+        @types.Null,
+        @types.Boolean(false),
+        @types.Boolean(true),
+      ]),
+    ],
+  ])
+  let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
+  let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
+  assert_eq(back.batches.length(), 1)
+  let scanned = back.batches[0]
+  assert_eq(scanned.row_count(), 3)
+  for index in 0..<5 {
+    for row in 0..<3 {
+      assert_eq(
+        scanned.columns()[index].get(row),
+        entry.batches[0].columns()[index].get(row),
+      )
+    }
+  }
+}
+
+///|
+/// The schema is file-wide: a column that is null-free in the first row group
+/// but NULL in the second still has to carry levels in both.
+test "writer writes definition levels in every group of an optional column" {
   let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
     ("a", @types.Int32, [@types.Int32(1), @types.Null]),
   ]
   let entry = make_entry(columns, [
-    [make_vector(@types.Int32, [@types.Int32(1), @types.Null])],
+    [make_vector(@types.Int32, [@types.Int32(10), @types.Int32(11)])],
+    [make_vector(@types.Int32, [@types.Null, @types.Int32(12)])],
   ])
-  let error = capture_write_error(() => @parquet.write_bytes(entry))
-  assert_true(error.to_string().contains("NULL values are not supported"))
+  let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
+  let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
+  // the scanner concatenates row groups, so the groups show up as one batch
+  assert_eq(back.batches.length(), 1)
+  let scanned = back.batches[0]
+  assert_eq(scanned.row_count(), 4)
+  assert_eq(scanned.columns()[0].get(0), @types.Int32(10))
+  assert_eq(scanned.columns()[0].get(1), @types.Int32(11))
+  assert_eq(scanned.columns()[0].get(2), @types.Null)
+  assert_eq(scanned.columns()[0].get(3), @types.Int32(12))
 }
 
 ///|
