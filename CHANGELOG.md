@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-19
 
 ### Added
 
@@ -30,6 +30,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   candidates are tried. On SF0.01 lineitem the file drops from 8.08 to
   4.86 MiB; write is 1.46× and read 1.16× the old cost, and both RSS peaks
   fall. `harness/spill_bench.py` reproduces the measurement
+
+### Changed
+
+- 2026-10-19 `superbigcup325/colenc@0.1.0` is on mooncakes, so the module
+  resolves its encoding kernel from the registry like any other dependency: a
+  plain checkout builds with `moon update && moon install`, CI needs no
+  workspace definition, and `moon publish --dry-run` validates a clean unpack
+  again. The local-only `moon.work` + symlink setup is gone; the README keeps
+  the recipe for editing both modules side by side
 
 ## [0.2.0] - 2026-10-16
 
