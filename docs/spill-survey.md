@@ -161,6 +161,24 @@ reads, zero type hacks, no envelope, and the hot path free of upstream version
 dependencies. Both branches are retained as evidence and as a future
 re-evaluation baseline.
 
+> 2026-10-19 addendum: MLSPILL2's presence channel — one byte per row — was the
+> remaining per-row overhead (963 KB of the 4.86 MiB, every byte a 1 on
+> lineitem, which has no NULLs at all). MLSPILL3 makes it a bitmap: a column
+> with no NULLs costs a single mode byte, a nullable one ceil(rows / 8) bytes
+> with bit `r % 8` of byte `r / 8` marking presence. Same workload, best-of-3,
+> release build, baseline from a worktree at the pre-change commit:
+>
+> | format | write | read | file | write RSS | read RSS |
+> |---|---|---|---|---|---|
+> | MLSPILL2 (byte flags) | 129.5 ms | 51.4 ms | 4.86 MiB | 45.5 MiB | 25.9 MiB |
+> | MLSPILL3 (bitmap) | 125.2 ms | 52.1 ms | 3.94 MiB | 37.4 MiB | 24.8 MiB |
+>
+> 19% smaller, write and read inside noise, write RSS down 18%. The checksum
+> over every scalar is identical across the two formats
+> (`280a0917958ead3d`) — that is what says the change is framing, not values.
+> Spill files never outlive the process, so the magic bump rejects older runs
+> rather than carrying a compatibility path.
+
 > 2026-10-17 addendum: MLSPILL1 has been replaced by MLSPILL2, which encodes
 > each column with colenc and picks the smallest of PLAIN, DELTA_BINARY_PACKED,
 > DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY and DICTIONARY. Measured on the
@@ -178,8 +196,8 @@ re-evaluation baseline.
 > chosen; a 4096-value sample decides whether the expensive candidates
 > (dictionary, DELTA_BYTE_ARRAY) are worth trying at all. This table supersedes
 > the raw-arm rows above for present-day comparisons — the older numbers came
-> from a different toolchain snapshot. Null flags are still one byte per row;
-> bit-packing them is the next size lever if it matters.
+> from a different toolchain snapshot. Null flags were still one byte per row at
+> that point; the 2026-10-19 addendum above bit-packs them.
 
 > 2026-10-15 addendum: the parquet dependency has been removed from the project
 > (a stale upstream artifact manifest blocked publishing and installation; we

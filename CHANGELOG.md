@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-19 the spill format is MLSPILL3: presence is a bitmap instead of one
+  byte per row. A column with no NULLs costs a single mode byte and a nullable
+  one `ceil(rows / 8)` bytes, so the bake-off file drops from 5.10 MB to 4.13 MB
+  (-19%) with write and read inside noise (125 vs 130 ms, 52 vs 51 ms) and an
+  18% lower write RSS; the checksum over every scalar is unchanged. The
+  benchmark driver also stopped trusting a hardcoded release path — it locates
+  the newest build and refuses to measure a binary older than its sources,
+  which is how a first run reported the previous format's numbers
 - 2026-10-17 the Parquet reader decodes the remaining page encodings through
   colenc: DELTA_BINARY_PACKED (INT32/INT64), DELTA_LENGTH_BYTE_ARRAY and
   DELTA_BYTE_ARRAY (BYTE_ARRAY), BYTE_STREAM_SPLIT (FLOAT/DOUBLE) and RLE

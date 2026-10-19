@@ -151,8 +151,13 @@ memory, without LIMIT what materializes is the query result itself. All run file
 are deleted when the query ends (including on the error path, via errdefer).
 
 Verification:
-- the wire format (`types.spillfmt`, MLSPILL1) round-trips every dtype + NULL +
-  int64/double extremes; parsing has truncation defences (out-of-range is an
+- the wire format (`types.spillfmt`, MLSPILL3) round-trips every dtype + NULL +
+  int64/double extremes; presence is a bitmap — a column with no NULLs spends
+  one mode byte, a nullable one a bit per row — and the layout is pinned by
+  exact-size tests (8027 bytes for 1000 null-free doubles, 6152 for the same
+  column with every fourth row NULL), a 13-row partial trailing byte, and a
+  buffer truncated inside the bitmap; parsing has truncation defences
+  (out-of-range is an
   Execute error with a position, no longer a range panic — a bug found and fixed
   during debugging: serialization used vector capacity instead of batch row
   count, so a partially filled vector from the builder wrote a garbage tail;

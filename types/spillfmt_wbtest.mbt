@@ -116,3 +116,105 @@ test "spill round trips all-null and sparse columns" {
   assert_eq(back[0].columns()[1].get(2), Null)
   assert_eq(back[0].columns()[1].get(3), Null)
 }
+
+///|
+/// A column with no NULLs spends one mode byte and nothing else on presence.
+/// FLOAT64 always takes PLAIN at 8 bytes a value, so the total is fully
+/// determined by the layout: 12 header + 8 batch + 7 column + 8000 payload.
+test "spill spends no presence bytes on a null-free column" {
+  let n = 1000
+  let vec = ColumnVector::make(Float64, n)
+  for r in 0..<n {
+    vec.set(r, Float64(r.to_double() * 0.5))
+  }
+  let bytes = DataBatch::to_spill_bytes([DataBatch::new([vec], n)]) catch {
+    e => abort("\{e}")
+  }
+  assert_eq(bytes.length(), 8027)
+  let back = DataBatch::from_spill_bytes(bytes) catch { e => abort("\{e}") }
+  for r in 0..<n {
+    assert_eq(back[0].columns()[0].get(r), Float64(r.to_double() * 0.5))
+  }
+}
+
+///|
+/// A nullable column pays a bitmap, not a byte per row: 750 dense doubles plus
+/// ceil(1000 / 8) = 125 presence bytes.
+test "spill spends one bit per row when a column has NULLs" {
+  let n = 1000
+  let vec = ColumnVector::make(Float64, n)
+  for r in 0..<n {
+    if r % 4 == 0 {
+      vec.set(r, Null)
+    } else {
+      vec.set(r, Float64(r.to_double()))
+    }
+  }
+  let bytes = DataBatch::to_spill_bytes([DataBatch::new([vec], n)]) catch {
+    e => abort("\{e}")
+  }
+  assert_eq(bytes.length(), 6152)
+  let back = DataBatch::from_spill_bytes(bytes) catch { e => abort("\{e}") }
+  for r in 0..<n {
+    let want = if r % 4 == 0 { Null } else { Float64(r.to_double()) }
+    assert_eq(back[0].columns()[0].get(r), want)
+  }
+}
+
+///|
+/// A bitmap that ends mid-byte (13 rows) and a single NULL in the middle must
+/// not shift the values after it.
+test "spill bitmap handles a partial trailing byte" {
+  let n = 13
+  let vec = ColumnVector::make(Int64, n)
+  for r in 0..<n {
+    vec.set(r, if r == 7 { Null } else { Int64(r.to_int64() * 3L) })
+  }
+  let text = ColumnVector::make(Str, n)
+  for r in 0..<n {
+    text.set(r, if r == 12 { Null } else { Str("v\{r}") })
+  }
+  let batch = DataBatch::new([vec, text], n)
+  let back = DataBatch::from_spill_bytes(DataBatch::to_spill_bytes([batch])) catch {
+    e => abort("\{e}")
+  }
+  for r in 0..<n {
+    assert_eq(
+      back[0].columns()[0].get(r),
+      if r == 7 {
+        Null
+      } else {
+        Int64(r.to_int64() * 3L)
+      },
+    )
+    assert_eq(
+      back[0].columns()[1].get(r),
+      if r == 12 {
+        Null
+      } else {
+        Str("v\{r}")
+      },
+    )
+  }
+}
+
+///|
+/// Truncation inside the bitmap is a pointed Execute error, never a trap.
+test "spill rejects a buffer truncated inside the presence bitmap" {
+  let n = 1000
+  let vec = ColumnVector::make(Float64, n)
+  for r in 0..<n {
+    vec.set(r, if r % 4 == 0 { Null } else { Float64(r.to_double()) })
+  }
+  let bytes = DataBatch::to_spill_bytes([DataBatch::new([vec], n)]) catch {
+    e => abort("\{e}")
+  }
+  let truncated = Bytes::makei(27 + 50, fn(i) { bytes[i] })
+  let failed = try {
+    let _ = DataBatch::from_spill_bytes(truncated)
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(failed)
+}

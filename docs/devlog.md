@@ -542,3 +542,51 @@ the playground
   CI check/test matrices and `moon publish --dry-run` — because nothing in the
   dependency graph is local-only any more.
 
+## Spill presence bitmaps (2026-10-19): 19% smaller, and a benchmark that
+## measured the wrong binary
+
+- **The last per-row byte was the presence channel.** MLSPILL2 wrote one flag
+  byte per row per column: 963 KB of the 4.86 MiB, and on TPC-H lineitem every
+  one of those bytes is a 1, because the table has no NULLs at all. The payload
+  side had already been squeezed as far as the encodings go, so this was the
+  only remaining per-row overhead.
+- **MLSPILL3 makes presence a bitmap.** A column with no NULLs writes a single
+  mode byte and nothing else; a nullable column writes `ceil(rows / 8)` bytes,
+  bit `r % 8` of byte `r / 8` marking row `r`. The dense payload is untouched,
+  so the encodings keep seeing a NULL-free column. Spill files never outlive
+  the process, so the magic bump rejects older runs instead of carrying a
+  compatibility path.
+- **Numbers**, SF0.01 lineitem (60,175 rows, 16 columns), best-of-3, release
+  build, same machine; the baseline is a worktree at the pre-change commit run
+  through the same driver:
+
+  | format | write | read | file | write RSS | read RSS |
+  |---|---|---|---|---|---|
+  | MLSPILL2 (byte flags) | 129.5 ms | 51.4 ms | 4.86 MiB | 45.5 MiB | 25.9 MiB |
+  | MLSPILL3 (bitmap) | 125.2 ms | 52.1 ms | 3.94 MiB | 37.4 MiB | 24.8 MiB |
+
+  The file is 19% smaller, write and read stay inside noise (the write side
+  gets slightly faster, the read side re-runs at 48.8–52.6 ms across runs), and
+  the write peak drops 18% because 963 KB of payload never gets built. The
+  checksum over every scalar (dtype tags mixed in, FNV-1a) is identical to
+  MLSPILL2's — `280a0917958ead3d` — which is what says this is framing, not
+  values.
+- **The first measurement was of the old binary, and it looked plausible.**
+  `harness/spill_bench.py` hardcoded a release path from an older toolchain
+  layout (`build/superbigcup325/moonlake/harness/spill_bench`); the current one
+  is `build/harness/spill_bench`. The stale binary sat there since October 17,
+  so the first "after" run reported MLSPILL2's size, timing and checksum to the
+  byte while the source said MLSPILL3. A benchmark that silently measures code
+  you did not change is worse than the format bug it hides, so the driver now
+  globs the newest `spill_bench.exe` under `_build/native/release/build` and
+  refuses to run when that binary is older than the driver sources or
+  `moon.mod`. The numbers above are from the fixed driver, with the baseline
+  built in a worktree rather than trusted from a previous log.
+- **Evidence:** 180 tests on wasm-gc, native and js (four new ones pin the
+  wire layout: exact byte counts for the null-free and nullable shapes, a
+  13-row column whose bitmap ends mid-byte, and a buffer truncated inside the
+  bitmap raising a pointed error), all 27 golden queries including the
+  external-sort / grace-join / grace-aggregation equivalence checks, which run
+  the spilling paths under a tiny budget and therefore round-trip MLSPILL3
+  under load.
+

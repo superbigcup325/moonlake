@@ -3,18 +3,24 @@
 // trait, this is only the format).
 //
 // Layout (little-endian throughout):
-//   "MLSPILL2"                       magic
+//   "MLSPILL3"                       magic
 //   batch_count : i32
 //   per batch:   row_count : i32
 //                col_count : i32
 //                per column: dtype_code   : u8
 //                            encoding     : u8
 //                            payload_len  : i32
-//                            null_flags   : row_count bytes (1 = present)
+//                            null_mode    : u8 (0 = every row present,
+//                                               1 = a bitmap follows)
+//                            [bitmap]     : ceil(row_count / 8) bytes when
+//                                           null_mode = 1; bit r % 8 of byte
+//                                           r / 8 is 1 when row r is present
 //                            payload      : payload_len bytes
 //
-// The payload is a colenc column encoding over the non-null values only, so
-// NULLs stay a side channel and the encoder sees a dense column. Encoding
+// The presence channel is a bitmap, not one byte per row: a column without
+// NULLs costs a single mode byte, and a nullable one an eighth of the old
+// size. The payload is a colenc column encoding over the non-null values only,
+// so NULLs stay a side channel and the encoder sees a dense column. Encoding
 // codes and payload framing live in the helpers below; the reader rejects
 // unknown codes and short payloads with an Execute error.
 
@@ -480,7 +486,7 @@ pub fn DataBatch::to_spill_bytes(
   batches : Array[DataBatch],
 ) -> Bytes raise SqlError {
   let out : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=1 << 20)
-  out.write_bytes(b"MLSPILL2")
+  out.write_bytes(b"MLSPILL3")
   write_i32(out, batches.length())
   for batch in batches {
     let n = batch.row_count()
@@ -493,8 +499,29 @@ pub fn DataBatch::to_spill_bytes(
       out.write_byte(dtype_code(col.dtype()))
       out.write_byte(encoding.to_byte())
       write_i32(out, payload.length())
+      let mut has_null = false
       for r in 0..<n {
-        out.write_byte(if flags[r] { 1 } else { 0 })
+        if !flags[r] {
+          has_null = true
+        }
+      }
+      if has_null {
+        out.write_byte(1)
+        let mut bits = 0
+        for r in 0..<n {
+          if flags[r] {
+            bits = bits | (1 << (r % 8))
+          }
+          if r % 8 == 7 {
+            out.write_byte(bits.to_byte())
+            bits = 0
+          }
+        }
+        if n % 8 != 0 {
+          out.write_byte(bits.to_byte())
+        }
+      } else {
+        out.write_byte(0)
       }
       out.write_bytes(payload)
     }
@@ -589,12 +616,12 @@ fn decode_column(
 
 ///|
 /// Deserialize batches from the spill wire format. A corrupt buffer is an
-/// Execute error; spill files never outlive the process, so MLSPILL1 files are
-/// simply rejected rather than read.
+/// Execute error; spill files never outlive the process, so earlier versions
+/// (MLSPILL1, MLSPILL2) are rejected by the magic rather than read.
 pub fn DataBatch::from_spill_bytes(
   buf : Bytes,
 ) -> Array[DataBatch] raise SqlError {
-  if buf.length() < 16 || @utf8.decode_lossy(buf[0:8]) != "MLSPILL2" {
+  if buf.length() < 16 || @utf8.decode_lossy(buf[0:8]) != "MLSPILL3" {
     raise spill_read_error("bad magic")
   }
   let batch_count = read_i32(buf, 8)
@@ -630,21 +657,44 @@ pub fn DataBatch::from_spill_bytes(
       if payload_len < 0 {
         raise spill_read_error("negative payload length \{payload_len}")
       }
-      if pos + rows + payload_len > buf.length() {
+      if pos >= buf.length() {
         raise spill_read_error(
-          "truncated at batch \{b} column \{c} body (pos \{pos}, rows \{rows}, payload \{payload_len}, len \{buf.length()})",
+          "truncated at batch \{b} column \{c} null mode (pos \{pos}, len \{buf.length()})",
+        )
+      }
+      let null_mode = buf[pos].to_int()
+      pos += 1
+      let presence_bytes : Int32 = match null_mode {
+        0 => 0
+        1 => (rows + 7) >> 3
+        _ =>
+          raise spill_read_error(
+            "batch \{b} column \{c}: unknown null mode \{null_mode}",
+          )
+      }
+      if pos + presence_bytes + payload_len > buf.length() {
+        raise spill_read_error(
+          "truncated at batch \{b} column \{c} body (pos \{pos}, presence \{presence_bytes}, payload \{payload_len}, len \{buf.length()})",
         )
       }
       let flags : Array[Bool] = []
       let mut non_null = 0
-      for r in 0..<rows {
-        let present = buf[pos + r].to_int() == 1
-        flags.push(present)
-        if present {
-          non_null += 1
+      if null_mode == 0 {
+        non_null = rows
+        for _r in 0..<rows {
+          flags.push(true)
+        }
+      } else {
+        for r in 0..<rows {
+          let byte = buf[pos + (r >> 3)].to_int()
+          let present = ((byte >> (r % 8)) & 1) == 1
+          flags.push(present)
+          if present {
+            non_null += 1
+          }
         }
       }
-      pos += rows
+      pos += presence_bytes
       let payload = buf[pos:pos + payload_len]
       pos += payload_len
       cols.push(decode_column(dt, encoding, payload, flags, rows, non_null))
