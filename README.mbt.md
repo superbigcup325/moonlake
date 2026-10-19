@@ -97,8 +97,9 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-> The registry release is still `0.1.0`; everything this README describes is
-> `main` (0.2.0), which is not published yet.
+> The registry release lags `main`: everything this README describes is on
+> `main`, whose version is not published yet. `moon add` gives you the last
+> published release.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
