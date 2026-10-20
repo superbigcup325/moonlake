@@ -106,17 +106,27 @@ def machine() -> dict:
     except OSError:
         pass
     governor = ""
+    mhz = None
     try:
         governor = pathlib.Path(
             "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
         ).read_text().strip()
-    except OSError:
+        mhz = round(
+            int(
+                pathlib.Path(
+                    "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+                ).read_text()
+            )
+            / 1000
+        )
+    except (OSError, ValueError):
         pass
     return {
         "cpu": cpu_model,
         "cores": cpu_count,
         "mem_gb": round(mem_kb / (1024 * 1024), 1) if mem_kb else None,
         "governor": governor or None,
+        "cpu_mhz_at_start": mhz,
         "kernel": platform.release(),
         "os": platform.platform(),
         "loadavg": list(os.getloadavg()) if hasattr(os, "getloadavg") else None,
@@ -545,7 +555,7 @@ def main() -> int:
     print(f"release {record['release']['version']} @ {record['release']['git_commit'][:12]}"
           f"{' (dirty tree)' if record['release']['git_dirty'] else ''}")
     print(f"machine {metrics['cpu']} x{metrics['cores']}, {metrics['mem_gb']} GB, "
-          f"governor {metrics['governor']}")
+          f"governor {metrics['governor']}, {metrics['cpu_mhz_at_start']} MHz at start")
     print(f"data    {record['method']['data']}\n")
 
     with tempfile.TemporaryDirectory(prefix="moonlake-bench-") as tmp:

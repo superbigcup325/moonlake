@@ -37,9 +37,20 @@ def newest_binary() -> Path:
 
 
 def newest_source() -> float:
-    """Mtime of the most recently touched input the driver is built from."""
-    stamps = [(REPO / "moon.mod").stat().st_mtime]
-    for root in (REPO / "harness/spill_bench", REPO / "types"):
+    """Mtime of the most recently touched input the driver is built from.
+
+    `moon.mod` is deliberately not consulted: a version bump does not change
+    the driver's code, but `moon build` has nothing to rebuild for it, so
+    including its mtime would report a fresh binary as stale (0.3.1 hit this).
+    The packages the driver actually links are checked instead.
+    """
+    stamps = []
+    for root in (
+        REPO / "harness/spill_bench",
+        REPO / "types",
+        REPO / "catalog",
+        REPO / "sources/csv",
+    ):
         stamps += [p.stat().st_mtime for p in root.rglob("*.mbt")]
     return max(stamps)
 
