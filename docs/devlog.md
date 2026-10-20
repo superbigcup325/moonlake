@@ -663,3 +663,62 @@ the playground
   16 columns (152→142 ms, +3 MB); CSV has no statistics to skip with; a
   file-backed table is read twice per query because the fs API has no range
   reads.
+
+
+## Release acceptance for 0.3.0 (2026-10-20): the package, the page, the
+## baseline
+
+- **Three artifacts were accepted, not the repository.** A fresh consumer
+  module resolved `superbigcup325/moonlake@0.3.0` (plus x 0.5.6, quickcheck
+  0.15.0, colenc 0.1.0) against a freshly cloned registry index; the installed
+  tree diffs clean against `git archive v0.3.0` except the dev-only paths the
+  archive excludes and `README.md` materialized from the symlink; the README
+  library example runs on native, wasm-gc and js. That is the consumer's
+  evidence, and it is now written down rather than re-derived by hand.
+- **The browser page was broken, and had been for the whole release.**
+  `playground.wasm` imported the wasm host's filesystem module, so the page
+  threw at `WebAssembly.instantiate` and Run never enabled; the deployed site
+  only still worked because it was a 0.1.0 build from before the refactor. The
+  lazy `CsvInput`/`ParquetInput` enums did it: `scan_string` and `scan_bytes`
+  went through the same `read_input` as `scan_file`, so `@fs` stayed reachable
+  from the in-memory path. Function-field readers fixed the link graph (12
+  host imports → 0, matching the pre-lazy-scan build, which is the comparison
+  that should have been run when the scan layer landed). CI now fails when the
+  playground wasm imports anything beyond the js-string builtins — a build
+  gate, because this class of bug is invisible to every test that does not
+  instantiate the module the way a browser does.
+- **DATE was never valid JSON.** One match arm in `to_json` printed all
+  scalars through `to_string`; a DATE came out as a bare `1992-01-04`. The
+  page's `JSON.parse` threw, `--json` was invalid for any DATE column, and the
+  page's error path left the previous status on screen because it returned
+  without setting one. Quoted dates plus a `failed` status on both catch paths;
+  the acceptance suite now asserts DATE min/max render as calendar dates and
+  that the CSV and Parquet paths agree cell for cell.
+- **The deploy trigger was the release trigger nobody checked.** `pages.yml`
+  watched `playground/**`, so engine releases never redeployed the site: the
+  public demo said `engine 0.1.0` while main carried 0.3.0. The engine
+  directories now trigger it too, and the live version is part of the
+  acceptance (it is the artifact candidates click first).
+- **One file per upload is a limitation, not a bug.** Cross-file JOINs cannot
+  be expressed in the page (the bridge registers one table per run); the
+  acceptance pins the honest failure — a bind error naming the missing table —
+  and the README now says so instead of implying a general SQL console. Joins
+  over the uploaded table were verified in the same run, so the limit is the
+  bridge, not the engine.
+- **A baseline is a machine, a build and a hash, not a table of numbers.**
+  `harness/bench_release.py` records scan/join/gather/spill with the toolchain,
+  CPU, governor, kernel, commit, binary hash and load average, times the fastest
+  of seven runs after two warm-ups, and hashes each case's stdout so a
+  comparison can tell "same work, faster" from "different work". The first
+  record is committed under `harness/baseline/`. Two decisions came out of
+  measuring it twice: SF0.01 is unusable for this (its 20–40 ms cases swing
+  ±30% on a busy laptop), so the record lives at SF0.1, where the same binary
+  compared against itself stays inside ±6%; and wall time alone is noisier than
+  `user+sys`, so both are recorded. `docs/bench-baseline.md` states the ±7%
+  noise floor and why gather is measured end to end (the kernel is
+  package-private) instead of pretending it is a microbenchmark.
+- **What the acceptance did not do:** it did not re-run the full TPC-H chain on
+  the fixed tree (the 27-golden check covers it) and it did not deploy — the
+  live page still serves 0.1.0 until the next push to main. The 0.3.0 tag was
+  not moved; the fixes are unreleased on main and a patch version is a release
+  decision.

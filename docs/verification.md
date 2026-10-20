@@ -100,6 +100,11 @@ The `engine/e2e_test.mbt` overflow battery plus `types/types_test.mbt`:
 
 ## 5. Performance and memory
 
+> These are the before/after numbers each optimization was accepted with. The
+> release-level record — one machine, one build, scan/join/gather/spill, kept
+> as JSON so two releases can be compared — lives in
+> [`docs/bench-baseline.md`](bench-baseline.md).
+
 `harness/measure.py` (measures the native binary directly, not `moon run`;
 isolated child process, maxRSS via `getrusage(RUSAGE_CHILDREN)`; best-of-3).
 These numbers are re-measured after the 2026-10-06 CSV-ingest boxing elimination
@@ -396,7 +401,7 @@ because `moonbitlang/x/fs` offers no range reads.
 ## 7. Reproduction commands
 
 ```bash
-moon test                                            # 160 items (all properties)
+moon test                                            # 201 items (all properties)
 uv run --with duckdb python harness/gen_tpch.py      # SF0.01 data + goldens
 uv run --with duckdb python harness/gen_parquet_fixtures.py  # parquet fixtures + goldens
 bash harness/check_all.sh                            # 27 goldens + parquet fixture checks
@@ -407,4 +412,86 @@ moon build cmd/main --target native
 python3 harness/measure.py sf001 sf01
 python3 harness/bench_scan.py --base <binary of the previous commit> --big
   # --big needs pyarrow: uv run --with pyarrow python harness/bench_scan.py
+python3 harness/bench_release.py --compare harness/baseline/2026-10-20.json
+  # release baseline: scan/join/gather/spill, see docs/bench-baseline.md
+node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
+  # browser acceptance; serve playground/index.html + playground.wasm first
 ```
+
+## 8. Registry package acceptance (0.3.0, 2026-10-20)
+
+The release question is not "does the repository build" but "does what
+mooncakes hands a stranger resolve, match what was tagged, and work when
+imported". Measured on a scratch module (`moon new`, empty `.mooncakes`, a
+fresh `MOON_HOME` so the registry index itself was cloned) with
+`moon add superbigcup325/moonlake`.
+
+- **Resolution.** The add resolved `superbigcup325/moonlake@0.3.0` and pulled
+  `moonbitlang/x@0.5.6`, `moonbitlang/quickcheck@0.15.0` and
+  `superbigcup325/colenc@0.1.0`; `moon tree` shows exactly that graph, every
+  package carrying a `moon.mod` (no legacy `moon.mod.json` anywhere). The
+  registry index lists 0.3.0 and 0.1.0 (`moon view --versions`), 0.3.0 with
+  checksum `ef68f460…`, published 2026-10-20T14:01:31Z.
+- **Content.** The installed tree diffs clean against `git archive v0.3.0`
+  except for the dev-only paths the package excludes (`.github`, `.githooks`,
+  `.gitignore`, `.moonignore`, `hooks/`, `harness/data/`,
+  `harness/spill_bench/`) and `README.md`, which arrives as a regular file
+  because the archive dereferences the repository's symlink. The installed
+  library reports itself as `0.3.0` (`@moonlake.version()`).
+- **Usage.** The README's "As a library" example — verbatim apart from the
+  consumer's `moon.pkg` imports — compiles and prints `north|1` on native,
+  wasm-gc and js, and `moon check` on the consumer is clean.
+
+One note for the archive, not a defect: it also ships `AGENTS.md`, `docs/` and
+the harness scripts (~1.3 MB). `.moonignore` deliberately keeps out only the
+test data, the local hook directory and the spill driver.
+
+## 9. Browser playground acceptance (2026-10-20)
+
+The playground is the release's only "try it without installing" surface, and
+its file-upload path had never been checked except by hand. Method: build
+`playground.wasm`, serve `index.html` + the wasm from a static server, and
+drive a real headless Chromium with real file-input uploads of the SF0.01
+fixtures (`harness/playground_accept.cjs`). Result: 13/13 checks pass on the
+fixed tree; the deployed page was tested too.
+
+| check | result |
+|---|---|
+| page loads, engine version reported | `engine 0.3.0 loaded (wasm-gc)` |
+| CSV upload enables Run, grouped aggregate | 3 rows, groups A/N/R |
+| Parquet upload with `l_shipdate,…` DATE columns | 3 rows, groups A/N/R |
+| CSV and Parquet agree on the same query | identical cells, including `532348211.6499983` |
+| DATE min/max render as calendar dates | `1992-01-04 … 1998-11-29` |
+| unknown column / syntax error | message shown, status `failed`, no table |
+| cross-file JOIN (`lineitem JOIN orders`) | refused by name: `unknown table "orders"` |
+| same-file self-join | 12 900 rows, so the engine is not the limit |
+| CSV reload after Parquet | 60 175 rows |
+| uncaught JS errors | none |
+
+The acceptance found three release bugs that unit tests could not see, all
+fixed on this branch:
+
+1. **The wasm did not instantiate at all.** `playground.wasm` imported 12
+   functions from the wasm host's `__moonbit_fs_unstable` module; the page
+   passes no imports, so the browser threw at `WebAssembly.instantiate` and
+   Run never enabled. The lazy-scan refactor made `@fs` reachable from
+   `scan_string`/`scan_bytes` through a shared `read_input`; a build of
+   `8b23c7d` (pre-lazy-scan) has zero such imports. Fixed by carrying the
+   reader as a function field (`3f6bbe6`), and CI now builds the wasm and
+   fails on any import beyond the js-string builtins.
+2. **DATE was not valid JSON.** `to_json` print scalar values through
+   `to_string`, so a DATE came out as a bare token (`{"lo":1992-01-04}`):
+   `--json` was invalid for any DATE column, and the page's `JSON.parse` threw
+   and left the previous status on screen. Now quoted (`8c38978`, with a test
+   covering the quoted value and `null` inside a DATE column).
+3. **The deployed page was not the release.** It reported `engine 0.1.0`, the
+   last playground-triggered build; the pages workflow only watched
+   `playground/**`, so none of the 0.2/0.3 engine ever redeployed. The trigger
+   now covers the engine directories (`6001da4`); the live site updates on the
+   next push to main.
+
+One limitation is by design and is now documented rather than implied: the
+page holds one uploaded table, so a cross-file JOIN cannot be expressed in
+it. The failing path is a pointed bind error, and joins over the uploaded
+table work — verified in the same run. The README no longer claims the page
+shows a physical plan (that is `--explain` on the CLI).

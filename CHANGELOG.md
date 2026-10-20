@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- 2026-10-20 the browser playground's wasm did not instantiate at all:
+  `playground.wasm` imported the wasm host's `__moonbit_fs_unstable` module
+  (12 functions) because the lazy-scan refactor routed `scan_string` and
+  `scan_bytes` through the same `read_input` as their `scan_file`
+  siblings, keeping `@fs` reachable. The page passes no imports, so it threw
+  at `WebAssembly.instantiate` and never enabled Run. Scan inputs now carry
+  their reader as a function field: a build that only scans in-memory content
+  links no filesystem module (imports 12 → 0). CI builds the wasm and fails on
+  any import beyond the js-string builtins
+- 2026-10-20 `--json` emitted invalid JSON for DATE columns (a bare
+  `1992-01-04` token); `SelectResult::to_json` now quotes a DATE as a calendar
+  date, matching DuckDB's own JSON output, with a test for the quoted value
+  and for `null` inside a DATE column
+- 2026-10-20 the playground left the previous result's status on screen when a
+  query threw or its result failed to parse; both paths now report `failed`
+- 2026-10-20 the pages workflow only rebuilt on `playground/**` changes, so the
+  deployed page still served `engine 0.1.0` while main carried 0.3.0. Engine,
+  sources, types, sql, catalog, spill and the module manifests now trigger it
+
+### Added
+
+- 2026-10-20 `harness/bench_release.py`: one release performance record covering
+  scan, join, gather and spill, with the toolchain, machine, git commit and
+  binary hash alongside the numbers, stdout hashes to prove the work did not
+  change, and `--compare` for release-to-release deltas. The first record is
+  [`harness/baseline/2026-10-20.json`](harness/baseline/2026-10-20.json), read
+  in [`docs/bench-baseline.md`](docs/bench-baseline.md)
+- 2026-10-20 `harness/playground_accept.cjs`: drives the playground in headless
+  Chromium — CSV and Parquet uploads with DATE columns, two error paths, a
+  cross-file JOIN (refused by name) and a same-file self-join
+
 ## [0.3.0] - 2026-10-20
 
 > First release since `0.1.0` (published 2026-10-03). The `0.2.0` entries

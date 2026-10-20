@@ -155,6 +155,7 @@ fn main raise {
 - **Playground** ([open](https://superbigcup325.github.io/moonlake/)): drag in one CSV/Parquet file, write SQL, and see the result table — the whole engine as wasm-gc, all client-side. (One uploaded table at a time, so cross-file joins are a CLI/library feature; the physical plan is `--explain` on the CLI.)
 - **[docs/DEMO.md](docs/DEMO.md)**: the reproducible demo, from running the engine to the DuckDB cross-check and the benchmark.
 - **[docs/verification.md](docs/verification.md)**: the correctness and performance report (differential and property testing, pushdown fuzzing, memory and spill numbers).
+- **[docs/bench-baseline.md](docs/bench-baseline.md)**: the release performance baseline (scan/join/gather/spill) and the machine it belongs to, with a committed JSON record and a `--compare` mode.
 - **[docs/spill-survey.md](docs/spill-survey.md)**: how six systems handle larger-than-memory queries, and where moonlake's design lands.
 - **[docs/devlog.md](docs/devlog.md)**: the build log, week by week.
 - **[CHANGELOG.md](CHANGELOG.md)**: release notes.
