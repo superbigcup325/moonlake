@@ -101,7 +101,7 @@ You can browse and install extra skills here:
   `moon.mod.json` manifest: graph resolution (now run by
   `moon check`/`moon build`/`moon test`, since a bare `moon install` no longer
   fetches) downloads what it can and then aborts when it reaches one. As of
-  2026-10-20 this project's dependency graph is clean (`moonbitlang/x@0.5.5` +
+  2026-10-20 this project's dependency graph is clean (`moonbitlang/x@0.5.6` +
   `moonbitlang/quickcheck@0.15.0` +
   `superbigcup325/colenc@0.1.0`; the two
   offenders were `quickcheck@0.14.0` and `mizchi/duckdb@0.6.4` pulled in

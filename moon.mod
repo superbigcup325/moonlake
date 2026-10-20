@@ -24,7 +24,7 @@ keywords = [ "sql", "olap", "query-engine", "csv", "parquet", "columnar" ]
 description = "Embeddable analytical query engine for MoonBit: run SQL over CSV/Parquet files, native and WebAssembly from one codebase."
 
 import {
-  "moonbitlang/x@0.5.5",
+  "moonbitlang/x@0.5.6",
   "moonbitlang/quickcheck@0.15.0",
   "superbigcup325/colenc@0.1.0",
 }

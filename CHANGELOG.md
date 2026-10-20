@@ -62,6 +62,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 2026-10-20 `write_bytes`/`write_file` materialize a lazy entry before
   writing it, so a CSV or Parquet table can be written out without a separate
   copy step
+- 2026-10-20 `moonbitlang/x` 0.5.5 → 0.5.6 (the latest `quickcheck`, 0.15.0,
+  and `colenc` 0.1.0 are unchanged). Nothing in this tree changes behavior: it
+  already uses `moonbitlang/core/encoding/utf8` rather than the now-deprecated
+  `@unicode` helpers, and the new `@time` zone loading is unused here. The one
+  upstream behavior change that reaches us is
+  `@fs.read_file_to_string`, which the CLI uses for `--file <f>`: malformed
+  UTF-8 now decodes to U+FFFD instead of dropping the trailing bytes. 200 tests
+  on wasm-gc/native/js and the 27-query golden chain are unchanged
 
 ## [0.3.0] - 2026-10-19
 
