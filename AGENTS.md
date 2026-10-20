@@ -36,6 +36,12 @@ You can browse and install extra skills here:
 
 ## Tooling
 
+- Verified against `moon 0.1.20261016` (moonc `v0.10.16`, 2026-10-16). CI
+  installs `latest` and prints `moon version --all` per job: toolchain behavior
+  does change between releases (0.1.20261016 repurposed `moon install`), so when
+  a step that used to pass starts failing, read that version line before
+  blaming the code.
+
 - `moon fmt` is used to format your code properly.
 
 - `moon ide` provides project navigation helpers like `peek-def`, `outline`, and
@@ -67,15 +73,20 @@ You can browse and install extra skills here:
 - `moon fmt` once replaced `README.md` with a dangling symlink and swallowed its
   content; the working setup is `README.mbt.md` as the real file with `README.md`
   as a symlink to it.
-- On a fresh GitHub Actions runner you must run `moon update && moon install`
-  before check/test — a populated local `.mooncakes` cache masks a missing
-  install. To verify, wipe `.mooncakes` to simulate a fresh clone. If the
+- A fresh clone needs `moon update` (registry index) before check/test; the
+  dependency graph itself resolves and downloads during the first
+  `moon check`/`moon build`/`moon test`. Since `moon 0.1.20261016` a bare
+  `moon install` is **not** a dependency fetch: it installs a binary package and
+  now *requires* a `SOURCE` argument, so the old `moon update && moon install`
+  recipe found in tutorials exits 2 (the four workflows here run `moon update`
+  only and let the next step resolve). A populated local `.mooncakes` cache
+  masks a missing dependency, so wipe it to simulate a fresh clone. If the
   toolchain home is not writable, `moon update` cannot refresh the registry
   index and the build fails with `module was not found in the registry` even for
   a published version; point `MOON_HOME` at a writable scratch directory and
-  re-run `moon update && moon install`.
+  re-run `moon update` (the following check downloads the graph).
 - `superbigcup325/colenc@0.1.0` is published, so a clean checkout resolves it
-  from the registry (`moon update && moon install && moon check`). Co-developing
+  from the registry (`moon update && moon check`). Co-developing
   the two modules still goes through an untracked `moon.work` plus a symlink to
   the colenc checkout — and that workspace shadows the registry version, so
   remove it (or resolve with a scratch `MOON_HOME`) before judging what a
@@ -87,9 +98,11 @@ You can browse and install extra skills here:
   `target/` with non-recursive `fs.create_dir`; local, JS and wasm-gc were green
   while CI native failed.)
 - Recent `moon` (since 0.1.20261012) rejects dependencies that still ship the old
-  `moon.mod.json` manifest: `moon install` unpacks as many dependencies as it can,
-  then aborts during graph resolution. As of 2026-10-15 this project's dependency
-  graph is clean (`moonbitlang/x@0.5.5` + `moonbitlang/quickcheck@0.15.0` +
+  `moon.mod.json` manifest: graph resolution (now run by
+  `moon check`/`moon build`/`moon test`, since a bare `moon install` no longer
+  fetches) downloads what it can and then aborts when it reaches one. As of
+  2026-10-20 this project's dependency graph is clean (`moonbitlang/x@0.5.5` +
+  `moonbitlang/quickcheck@0.15.0` +
   `superbigcup325/colenc@0.1.0`; the two
   offenders were `quickcheck@0.14.0` and `mizchi/duckdb@0.6.4` pulled in
   transitively through `mizchi/parquet` — the former cleared by bumping to

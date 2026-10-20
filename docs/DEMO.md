@@ -1,9 +1,9 @@
 # Reproducible demo
 
 Everything below runs from a fresh clone on Linux/macOS with
-[MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20260920 pinned in
-CI), Python 3, and either `uv` or `pip` for the DuckDB dependency.
-Nothing else — no FFI, no database processes.
+[MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20261016 or newer — CI
+installs `latest`), Python 3, and either `uv` or `pip` for the DuckDB
+dependency. Nothing else — no FFI, no database processes.
 
 ## 1. Run the engine
 

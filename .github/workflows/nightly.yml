@@ -19,12 +19,14 @@ jobs:
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
       - name: Toolchain version
         run: moon version --all
-      - name: Fetch dependencies
+      - name: Update registry index
         run: |
           moon update
-          # the toolchain enforces moon.mod's manifest format: a dependency
-          # that still ships the legacy moon.mod.json fails here, loudly
-          moon install
+          # Dependencies resolve and download on the next check/build/test: as
+          # of 0.1.20261016 `moon install` installs a binary package and needs
+          # a SOURCE, so it is no longer a dependency fetch. A dependency that
+          # still ships the legacy moon.mod.json fails loudly during the graph
+          # resolution there.
       - name: Install duckdb
         run: python3 -m pip install --quiet duckdb
       - name: Build the native CLI
