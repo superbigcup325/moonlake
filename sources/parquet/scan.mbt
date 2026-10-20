@@ -18,10 +18,13 @@
 const BATCH_SIZE : Int32 = @catalog.SCAN_BATCH_ROWS
 
 ///|
-/// Where the file's bytes live: in hand (playground, tests) or on disk.
-priv enum ParquetInput {
-  Memory(Bytes)
-  File(String)
+/// Where the file's bytes live: in hand (playground, tests) or on disk. The
+/// reader is a function field, not an enum with a `File` arm: an enum arm
+/// would keep the filesystem call reachable from `scan_bytes`, and a wasm-gc
+/// build that only scans in-memory content (the browser playground) must not
+/// import the host's fs module at all.
+priv struct ParquetInput {
+  read : () -> Bytes raise @types.SqlError
 }
 
 ///|
@@ -32,14 +35,28 @@ priv struct ParquetSource {
 }
 
 ///|
-fn read_input(input : ParquetInput) -> Bytes raise @types.SqlError {
-  match input {
-    Memory(content) => content
-    File(path) =>
+/// In-memory input: the bytes are already in hand, no filesystem involved.
+fn memory_input(content : Bytes) -> ParquetInput {
+  { read: fn() { content }, }
+}
+
+///|
+/// File-backed input: reads the bytes back on every open. Defined next to
+/// the only caller that needs it so a program holding just `scan_bytes`
+/// never links `@fs`.
+fn file_input(path : String) -> ParquetInput {
+  {
+    read: fn() raise @types.SqlError {
       @fs.read_file_to_bytes(path) catch {
         _ => raise @types.SqlError::Scan("cannot read file at \{path}")
       }
+    },
   }
+}
+
+///|
+fn read_input(input : ParquetInput) -> Bytes raise @types.SqlError {
+  (input.read)()
 }
 
 ///|
@@ -88,7 +105,7 @@ pub fn scan_bytes(
   table_name : String,
   date_columns : Array[String],
 ) -> @catalog.TableEntry raise @types.SqlError {
-  scan_input(ParquetInput::Memory(content), table_name, date_columns)
+  scan_input(memory_input(content), table_name, date_columns)
 }
 
 ///|
@@ -100,7 +117,7 @@ pub fn scan_file(
   table_name : String,
   date_columns : Array[String],
 ) -> @catalog.TableEntry raise @types.SqlError {
-  scan_input(ParquetInput::File(path), table_name, date_columns)
+  scan_input(file_input(path), table_name, date_columns)
 }
 
 ///|

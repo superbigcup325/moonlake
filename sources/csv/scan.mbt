@@ -17,10 +17,14 @@ const INFER_SAMPLE : Int32 = 100
 
 ///|
 /// Where a source's bytes come from: content the caller already holds
-/// (playground, tests) or a file to re-read on demand.
-priv enum CsvInput {
-  Memory(Bytes)
-  File(String)
+/// (playground, tests) or a file to re-read on demand. The reader is a
+/// function field, not an enum with a `File` arm: an enum arm would keep
+/// the filesystem call reachable from `scan_string`, and a wasm-gc build
+/// that only scans in-memory content (the browser playground) must not
+/// import the host's fs module at all.
+priv struct CsvInput {
+  label : String // empty for in-memory content: the table name is used
+  read : () -> Bytes raise @types.SqlError
 }
 
 ///|
@@ -40,7 +44,7 @@ pub fn scan_string(
   content : String,
   table_name : String,
 ) -> @catalog.TableEntry raise @types.SqlError {
-  scan_inputs([CsvInput::Memory(@utf8.encode(content))], table_name)
+  scan_inputs([memory_input(@utf8.encode(content))], table_name)
 }
 
 ///|
@@ -51,7 +55,7 @@ pub fn scan_file(
   path : String,
   table_name : String,
 ) -> @catalog.TableEntry raise @types.SqlError {
-  scan_inputs([CsvInput::File(path)], table_name)
+  scan_inputs([file_input(path)], table_name)
 }
 
 ///|
@@ -68,30 +72,47 @@ pub fn scan_files(
   }
   let inputs : Array[CsvInput] = []
   for p in paths {
-    inputs.push(CsvInput::File(p))
+    inputs.push(file_input(p))
   }
   scan_inputs(inputs, table_name)
 }
 
 ///|
-/// Open the source's bytes. `Memory` inputs are already in hand; `File`
-/// inputs are read here, so nothing is held between registration and scan.
-fn read_input(input : CsvInput) -> Bytes raise @types.SqlError {
-  match input {
-    Memory(content) => content
-    File(path) =>
+/// In-memory input: the bytes are already in hand, no filesystem involved.
+fn memory_input(content : Bytes) -> CsvInput {
+  { label: "", read: fn() { content }, }
+}
+
+///|
+/// File-backed input: reads the bytes back on every open. Defined next to
+/// the only callers that need it so a program holding just `scan_string`
+/// never links `@fs`.
+fn file_input(path : String) -> CsvInput {
+  {
+    label: path,
+    read: fn() raise @types.SqlError {
       @fs.read_file_to_bytes(path) catch {
         _ => raise @types.SqlError::Scan("cannot read file at \{path}")
       }
+    },
   }
+}
+
+///|
+/// Open the source's bytes. In-memory inputs are already in hand;
+/// file-backed ones are read here, so nothing is held between registration
+/// and scan.
+fn read_input(input : CsvInput) -> Bytes raise @types.SqlError {
+  (input.read)()
 }
 
 ///|
 /// A file's name for error messages; in-memory content reports the table.
 fn input_label(input : CsvInput, table_name : String) -> String {
-  match input {
-    Memory(_) => table_name
-    File(path) => path
+  if input.label == "" {
+    table_name
+  } else {
+    input.label
   }
 }
 

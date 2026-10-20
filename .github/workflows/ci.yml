@@ -40,6 +40,25 @@ jobs:
         run: |
           moon info
           git diff --exit-code -- '*.mbti'
+      - name: Playground wasm is host-free
+        # The browser page instantiates with no imports beyond the JS string
+        # builtins, so any other Wasm import (e.g. the wasm host's filesystem
+        # module, reachable whenever `scan_file` is linked) makes the page fail
+        # to load. 0.3.0 shipped exactly that, and the page stayed broken until
+        # a manual browser check caught it.
+        run: |
+          moon build --target wasm-gc playground
+          node -e '
+            const fs = require("fs");
+            const path = "_build/wasm-gc/debug/build/playground/playground.wasm";
+            const imports = WebAssembly.Module.imports(new WebAssembly.Module(fs.readFileSync(path)));
+            const host = imports.filter(i => i.module !== "wasm:js-string" && i.module !== "_");
+            if (host.length) {
+              console.error("playground.wasm imports a host module:", host);
+              process.exit(1);
+            }
+            console.log("playground.wasm imports only the js-string builtins");
+          '
 
   test:
     strategy:
