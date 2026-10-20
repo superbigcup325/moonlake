@@ -123,8 +123,8 @@ pub(all) struct Select {
   items : Array[SelectItem]
   windows : Array[WindowSpec]
   order_by : Array[OrderItem]
-  limit : Int?
-  offset : Int?
+  limit : Int32?
+  offset : Int32?
   distinct : Bool
   setop : (SetOpKind, Bool, Select)?
 } derive(Eq, @debug.Debug)

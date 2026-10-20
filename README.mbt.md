@@ -70,6 +70,16 @@ direct-to-vector CSV materialization) lands at 122–183 ms, down
 3.4–6x from the original row-at-a-time build on the same machine
 (539–995 ms on the four queries benchmarked then).
 
+**Scan pushdown (2026-10-20).** Registering a table now stores its schema and
+where the bytes live, not the rows; a scan produces 4096-row batches, decodes
+only the columns the query projects, and skips Parquet row groups whose
+statistics cannot match the pushed predicate. On the same machine and SF0.01
+data, `python3 harness/bench_scan.py --base <build of the previous commit>`,
+best of 5 native debug runs: q1 130→94 ms, q6 111→67 ms, q3 130→73 ms, a bare
+`count(*)` over lineitem 105→48 ms, peak RSS −13…−26%. On a generated 1Mi-row
+Parquet table with 8 row groups, a selective predicate drops from ~430 ms to
+~50 ms and peak RSS from 130 MB to 32–39 MB.
+
 ## Quickstart
 
 ```bash
@@ -123,7 +133,9 @@ If you need something that installs today, use the registry release (0.1.0).
 
 ```moonbit nocheck
 // a @catalog.Catalog with registered table entries — @csv/@parquet
-// scan into one; note the argument order: content/name, not name/content
+// scan into one; note the argument order: content/name, not name/content.
+// registration is lazy: the schema is available at once, and a query decodes
+// only the columns it projects, in 4096-row batches
 
 ///|
 fn main raise {

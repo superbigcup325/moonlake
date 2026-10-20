@@ -615,3 +615,51 @@ the playground
   reported nullable — an empty string stays distinct from NULL in both.
 - **Still out of scope:** encodings other than PLAIN, compression, v2 pages,
   nested fields, INT96 — the writer's scope stays the reader's.
+
+
+## Lazy scans (2026-10-20): the catalog stops holding tables
+
+- **The catalog was the last place that required the whole table.** Registration
+  read and parsed everything and handed back `batches`; every query paid for
+  all columns whether it read one or sixteen, and Parquet's row groups were an
+  on-disk detail nobody could exploit. A `ScanSource` with a `BatchStream`
+  cursor turns the table into schema + where the bytes live, and the four
+  pushdowns fall out of that interface rather than sitting on top of a
+  materialized table.
+- **What landed:** `TableEntry` holds `batches` *or* a `source`; `@csv` and
+  `@parquet` registration return sources (`scan_file` keeps the path and
+  re-reads on open, `scan_string`/`scan_bytes` keep the caller's bytes); scans
+  yield 4096-row batches (`SCAN_BATCH_ROWS`); the engine passes the pruned
+  column list it already computed as `ScanRequest.projection`, so a
+  `count(*)` decodes no columns at all; Parquet decodes one column chunk of one
+  row group at a time and skips row groups whose `min_value`/`max_value` and
+  `null_count` rule out the predicate. Hints come only from the table's build
+  filter, the expression the engine already applies to that table's rows
+  before joining it, and the engine still filters — a hint can cost work, never
+  a row. A lazy table's build filter is also run per incoming batch, so a
+  selective scan no longer accumulates the table it filters.
+- **Evidence:** 200 tests in the module's packages on wasm-gc, native and js
+  (19 new); all 27 golden queries still
+  match DuckDB (including the multi-row-group Parquet fixture, whose selective
+  query now reads 2 of 4 groups); six mutation tests show the new tests have
+  teeth (disabling `Lt` pruning, trusting inexact bounds, dropping the strict
+  UTF-8 check, ignoring row-group skipping, ignoring the projection, and letting
+  float bounds prune equality each fail the test that is supposed to catch
+  it); `harness/bench_scan.py` A/Bs against a
+  binary built from the previous commit. CSV SF0.01: q1 130→94 ms, q6
+  111→67 ms, q3 130→73 ms, `count(*)` 105→48 ms, peak RSS −13…−26%. Parquet,
+  1Mi generated rows in 8 row groups: `count(*)` 446→57 ms, a filter keeping
+  6 groups 438→51 ms, one keeping a single group 424→47 ms, peak RSS
+  130→32–39 MB.
+- **A semantic trap found while testing:** this engine's `Scalar::compare`
+  treats NaN as equal to every value, while Parquet writers leave NaN out of
+  their min/max — so trusting float bounds for `=`, `<=`, `>=` or `<>` would
+  drop a group whose NaN row does match. Float pruning is limited to the strict
+  comparisons, and a fixture with the group `[NaN, 5.0]` (statistics say
+  `[5, 5]`) pins it: `f = 7.0` must return the NaN row.
+- **Edges kept visible:** no constant folding, so `date '1994-01-01' +
+  interval '1' year` produces no hint although the plain literal does;
+  predicates do not cross a derived table, so q6p's subquery still decodes all
+  16 columns (152→142 ms, +3 MB); CSV has no statistics to skip with; a
+  file-backed table is read twice per query because the fs API has no range
+  reads.

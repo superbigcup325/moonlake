@@ -119,7 +119,20 @@ fn RawCsv::is_empty_cell(self : RawCsv, i : Int32) -> Bool {
 }
 
 ///|
+/// Scan the whole buffer.
 fn scan_csv(buf : Bytes) -> RawCsv {
+  scan_rows(buf, None)
+}
+
+///|
+/// Scan only the first `max_rows` rows (header included). Used to read the
+/// header and the type-inference sample without walking a large file.
+fn scan_csv_prefix(buf : Bytes, max_rows : Int32) -> RawCsv {
+  scan_rows(buf, Some(max_rows))
+}
+
+///|
+fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
   let n = buf.length()
   let starts = GrowI::new()
   let ends = GrowI::new()
@@ -203,6 +216,11 @@ fn scan_csv(buf : Bytes) -> RawCsv {
       quoted.truncate(row_cells_start)
     } else {
       rows.push(starts.len)
+      // `limit` counts the header row plus data rows: once it is reached the
+      // rest of the buffer can stay unread
+      if limit is Some(k) && rows.len > k {
+        break
+      }
     }
   }
   starts.trim()

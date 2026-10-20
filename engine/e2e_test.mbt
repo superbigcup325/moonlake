@@ -1963,6 +1963,29 @@ test "string_agg concatenates with a literal separator" {
 }
 
 ///|
+/// Projection pruning reaches the scan: a column the query never reads is
+/// never parsed, so a value that would fail its inferred type cannot fail the
+/// query. Asking for the column still surfaces the error.
+test "projection pruning keeps unreadable columns out of the scan" {
+  let sb = StringBuilder()
+  sb.write_string("id,bad\n")
+  for i in 0..<200 {
+    sb.write_string("\{i},\{i}\n")
+  }
+  sb.write_string("200,oops\n") // past the inference sample: bad is int32
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r = run("SELECT count(*) AS c FROM t WHERE id >= 10", cat)
+  assert_eq(r.get(0, 0), @types.Int64(191L))
+  let err = run_err("SELECT bad FROM t", cat)
+  assert_true(err.to_string().contains("cannot parse"))
+}
+
+///|
 test "explain_analyze reports actual rows per stage" {
   let cat = join_catalog()
   let text = @engine.explain_analyze(

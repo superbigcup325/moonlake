@@ -1,8 +1,5 @@
-// Column assembly: walk a file's row groups and column chunks, decode every
-// page, and concatenate the result into one value array per column.
-//
-// The engine's scan API takes a whole file and produces one batch, which is
-// what the previous adapter did too; row groups are an on-disk detail here.
+// Column assembly: decode one column chunk of one row group at a time, so a
+// scan can leave unused columns and pruned row groups untouched.
 
 ///|
 fn leaf_elements(
@@ -602,7 +599,7 @@ fn walk_chunk(
       _ => () // index page: nothing to decode
     }
   }
-  match cm.null_count {
+  match cm.null_count() {
     Some(n) =>
       if n >= 0L {
         let mut valid_count = 0
@@ -623,139 +620,5 @@ fn walk_chunk(
     raise unsupported(
       "column chunk has \{values_seen} values, metadata says \{cm.num_values}",
     )
-  }
-}
-
-///|
-fn read_columns(
-  data : Bytes,
-) -> (Array[DecodedColumn], Int32) raise @types.SqlError {
-  let meta = parse_footer(data)
-  if meta.version != 1 && meta.version != 2 {
-    raise unsupported(
-      "file version \{meta.version} is not supported (readers accept 1 and 2)",
-    )
-  }
-  let leaves = leaf_elements(meta)
-  let out : Array[DecodedColumn] = []
-  let mut rows = 0
-  for i, (el, max_def) in leaves {
-    let parts : Array[ColumnValues] = []
-    for rg in meta.row_groups {
-      if i >= rg.columns.length() {
-        raise unsupported(
-          "row group has \{rg.columns.length()} column chunks but the schema has \{leaves.length()} columns",
-        )
-      }
-      parts.push(decode_chunk(data, rg.columns[i], max_def, el))
-    }
-    let decoded = { name: el.name, values: concat_values(parts), }
-    decoded.check()
-    out.push(decoded)
-  }
-  for rg in meta.row_groups {
-    rows += rg.num_rows.to_int()
-  }
-  if rows.to_int64() != meta.num_rows {
-    raise unsupported(
-      "row groups hold \{rows} rows, the file metadata says \{meta.num_rows}",
-    )
-  }
-  (out, rows)
-}
-
-///|
-fn concat_values(
-  parts : Array[ColumnValues],
-) -> ColumnValues raise @types.SqlError {
-  if parts.length() == 0 {
-    return Bools([], [])
-  }
-  let first = parts[0]
-  match first {
-    Bools(_, _) => {
-      let values : Array[Bool] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Bools(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Bools(values, valid)
-    }
-    Int32s(_, _) => {
-      let values : Array[Int32] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Int32s(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Int32s(values, valid)
-    }
-    Int64s(_, _) => {
-      let values : Array[Int64] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Int64s(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Int64s(values, valid)
-    }
-    Floats(_, _) => {
-      let values : Array[Float] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Floats(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Floats(values, valid)
-    }
-    Doubles(_, _) => {
-      let values : Array[Double] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Doubles(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Doubles(values, valid)
-    }
-    Strings(_, _) => {
-      let values : Array[String] = []
-      let valid : Array[Bool] = []
-      for p in parts {
-        match p {
-          Strings(v, val) => {
-            values.append(v)
-            valid.append(val)
-          }
-          _ => raise unsupported("column chunk type mismatch")
-        }
-      }
-      Strings(values, valid)
-    }
   }
 }

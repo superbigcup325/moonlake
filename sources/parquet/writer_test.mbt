@@ -28,7 +28,15 @@ fn make_entry(
     let rows = if vectors.length() > 0 { vectors[0].len() } else { 0 }
     built.push(@types.DataBatch::new(vectors, rows))
   }
-  { schema: { table: "t", columns: schema_columns, }, batches: built, }
+  @catalog.TableEntry::new({ table: "t", columns: schema_columns, }, built)
+}
+
+///|
+/// Read a written file back through the lazy scan: every column, no hints.
+fn read_all(entry : @catalog.TableEntry) -> Array[@types.DataBatch] {
+  entry.scan(@catalog.ScanRequest::all(entry.schema.columns.length())) catch {
+    e => abort("\{e}")
+  }
 }
 
 ///|
@@ -60,8 +68,8 @@ test "writer round trips every physical type" {
   let entry = make_entry(columns, [batch])
   let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
   let back = @parquet.scan_bytes(bytes, "t", ["f"]) catch { e => abort("\{e}") }
-  assert_eq(back.batches.length(), 1)
-  let scanned = back.batches[0]
+  assert_eq(read_all(back).length(), 1)
+  let scanned = read_all(back)[0]
   assert_eq(scanned.row_count(), 3)
   for column in 0..<6 {
     let vec = scanned.columns()[column]
@@ -81,13 +89,15 @@ test "writer emits one row group per batch" {
   let entry = make_entry(columns, [first, second])
   let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
   let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
-  assert_eq(back.batches.length(), 1)
-  let scanned = back.batches[0]
-  assert_eq(scanned.row_count(), 3)
-  let values = scanned.columns()[0]
-  assert_eq(values.get(0), @types.Int32(1))
-  assert_eq(values.get(1), @types.Int32(2))
-  assert_eq(values.get(2), @types.Int32(3))
+  // the scan emits one batch per row group (each sliced to 4096 rows), so the
+  // two groups written above come back as two batches, not one
+  let groups = read_all(back)
+  assert_eq(groups.length(), 2)
+  assert_eq(groups[0].row_count(), 2)
+  assert_eq(groups[1].row_count(), 1)
+  assert_eq(groups[0].columns()[0].get(0), @types.Int32(1))
+  assert_eq(groups[0].columns()[0].get(1), @types.Int32(2))
+  assert_eq(groups[1].columns()[0].get(0), @types.Int32(3))
 }
 
 ///|
@@ -132,14 +142,14 @@ test "writer round trips NULLs through optional columns" {
   ])
   let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
   let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
-  assert_eq(back.batches.length(), 1)
-  let scanned = back.batches[0]
+  assert_eq(read_all(back).length(), 1)
+  let scanned = read_all(back)[0]
   assert_eq(scanned.row_count(), 3)
   for index in 0..<5 {
     for row in 0..<3 {
       assert_eq(
         scanned.columns()[index].get(row),
-        entry.batches[0].columns()[index].get(row),
+        read_all(entry)[0].columns()[index].get(row),
       )
     }
   }
@@ -158,14 +168,16 @@ test "writer writes definition levels in every group of an optional column" {
   ])
   let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
   let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
-  // the scanner concatenates row groups, so the groups show up as one batch
-  assert_eq(back.batches.length(), 1)
-  let scanned = back.batches[0]
-  assert_eq(scanned.row_count(), 4)
-  assert_eq(scanned.columns()[0].get(0), @types.Int32(10))
-  assert_eq(scanned.columns()[0].get(1), @types.Int32(11))
-  assert_eq(scanned.columns()[0].get(2), @types.Null)
-  assert_eq(scanned.columns()[0].get(3), @types.Int32(12))
+  // each row group carries its own definition levels and comes back as its
+  // own batch: the groups are not concatenated
+  let groups = read_all(back)
+  assert_eq(groups.length(), 2)
+  assert_eq(groups[0].row_count(), 2)
+  assert_eq(groups[1].row_count(), 2)
+  assert_eq(groups[0].columns()[0].get(0), @types.Int32(10))
+  assert_eq(groups[0].columns()[0].get(1), @types.Int32(11))
+  assert_eq(groups[1].columns()[0].get(0), @types.Null)
+  assert_eq(groups[1].columns()[0].get(1), @types.Int32(12))
 }
 
 ///|
@@ -176,5 +188,25 @@ test "writer emits a file with no row groups for an empty entry" {
   let entry = make_entry(columns, [[make_vector(@types.Int64, [])]])
   let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
   let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
-  assert_eq(back.batches[0].row_count(), 0)
+  assert_eq(read_all(back)[0].row_count(), 0)
+}
+
+///|
+/// The writer takes any table entry, including a lazy one: a CSV scan is
+/// materialized inside `write_bytes` and lands as Parquet with the same rows.
+test "a lazily scanned CSV table can be written as parquet" {
+  let src = @csv.scan_string("k,v,s\n1,10,a\n2,20,b\n", "src") catch {
+    e => abort("\{e}")
+  }
+  assert_true(src.is_lazy())
+  let bytes = @parquet.write_bytes(src) catch { e => abort("\{e}") }
+  let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
+  let batches = read_all(back)
+  let mut rows = 0
+  for b in batches {
+    rows += b.row_count()
+  }
+  assert_eq(rows, 2)
+  assert_eq(batches[0].columns()[0].get(1), @types.Int32(2))
+  assert_eq(batches[0].columns()[2].get(0), @types.Str("a"))
 }

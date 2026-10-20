@@ -73,6 +73,9 @@ fn run_parsed(
   let (sel, extra_schemas, extra_batches) = decorrelate(sel, catalog, opts)
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
+  // base tables keep their entry so the scan can go through its source;
+  // derived, synthetic and dummy tables are materialized already
+  let sources : Array[@catalog.TableEntry?] = []
   match sel.setop {
     Some((kind, all, right_sel)) =>
       return run_setop(sel, kind, all, right_sel, catalog, opts)
@@ -96,6 +99,7 @@ fn run_parsed(
           schemas.push({ table: name, columns: [], })
           let cols : Array[@types.ColumnVector] = []
           tables.push([@types.DataBatch::new(cols, 1)])
+          sources.push(None)
           continue
         }
         // synthetic semi/anti tables live here, not in the catalog
@@ -104,6 +108,7 @@ fn run_parsed(
           if extra_schemas[i].table == name {
             schemas.push(extra_schemas[i])
             tables.push(extra_batches[i])
+            sources.push(None)
             hit = true
           }
         }
@@ -112,6 +117,7 @@ fn run_parsed(
             Some(entry) => {
               schemas.push(entry.schema)
               tables.push(entry.batches)
+              sources.push(Some(entry))
             }
             None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
           }
@@ -150,25 +156,51 @@ fn run_parsed(
         }
         schemas.push({ table: tname, columns, })
         tables.push([r.batch()])
+        sources.push(None)
       }
     }
   }
   let runner : SubqueryRunner = { catalog, opts, }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
   let bq = plan.bq
-  // drop unreferenced columns up front; the kept vectors are shared
+  // Materialize each FROM item with only the columns the query reads. A base
+  // table with a source scans through it (projection + predicate hints), and
+  // applies its build filter per batch so unmatched rows never accumulate;
+  // prescanned marks those tables so exec_joins does not filter them twice.
   let narrowed : Array[Array[@types.DataBatch]] = []
+  let prescanned : Array[Bool] = []
   for k in 0..<tables.length() {
-    narrowed.push(narrow_batches(tables[k], plan.table_cols[k]))
-    if stats.length() > 0 || true {
-      let mut rows = 0
-      for bt in tables[k] {
-        rows += bt.row_count()
+    let cols = plan.table_cols[k]
+    let request = scan_request_of(bq, cols, k)
+    let batches = match sources[k] {
+      Some(entry) =>
+        if entry.is_lazy() {
+          prescanned.push(true)
+          materialize_scan(entry, request, scan_filter_of(bq, k))
+        } else {
+          prescanned.push(false)
+          @catalog.project_batches(tables[k], cols)
+        }
+      None => {
+        prescanned.push(false)
+        @catalog.project_batches(tables[k], cols)
       }
-      stats.push(("scan \{schemas[k].table}", rows))
     }
+    narrowed.push(batches)
+    let mut rows = 0
+    for bt in batches {
+      rows += bt.row_count()
+    }
+    stats.push(("scan \{schemas[k].table}", rows))
   }
-  let joined = exec_joins(narrowed, bq.steps, bq.deferred, opts, stats)
+  let joined = exec_joins(
+    narrowed,
+    bq.steps,
+    bq.deferred,
+    opts,
+    stats,
+    prescanned,
+  )
   if bq.steps.length() > 1 {
     let mut joined_rows = 0
     for bt in joined {
@@ -532,7 +564,8 @@ pub fn explain(
   for t in extra_schemas {
     schemas.push(t)
   }
-  let bq = prune_bound(bind_select(sel, schemas, runner), schemas).bq
+  let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
+  let bq = plan.bq
   let sb = StringBuilder()
   for i, step in bq.steps {
     if i == 0 {
@@ -548,6 +581,9 @@ pub fn explain(
         }
         None => ()
       }
+      sb.write_string(
+        scan_pushdown_text(catalog, schemas, plan, bq, step.table),
+      )
     } else {
       sb.write_string("\nhash join ")
       sb.write_string(
@@ -591,6 +627,9 @@ pub fn explain(
         }
         None => ()
       }
+      sb.write_string(
+        scan_pushdown_text(catalog, schemas, plan, bq, step.table),
+      )
     }
   }
   match bq.deferred {

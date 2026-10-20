@@ -9,7 +9,7 @@ import {
 }
 
 // Values
-pub fn eval_scalar(PhysExpr, @types.DataBatch, Int) -> @types.Scalar raise @types.SqlError
+pub fn eval_scalar(PhysExpr, @types.DataBatch, Int32) -> @types.Scalar raise @types.SqlError
 
 pub fn eval_vec(PhysExpr, @types.DataBatch) -> @types.ColumnVector raise @types.SqlError
 
@@ -30,13 +30,13 @@ pub struct BoundQuery {
 pub fn BoundQuery::to_repr(Self) -> @debug.Repr
 
 pub(all) struct ExecOptions {
-  budget : Int
+  budget : Int32
   spill : SpillStore?
 }
 pub fn ExecOptions::in_memory() -> Self
 
 pub(all) enum PhysExpr {
-  ColRef(Int, @types.DataType)
+  ColRef(Int32, @types.DataType)
   Const(@types.Scalar)
   Promote(PhysExpr, @types.DataType)
   ArithE(@types.ArithOp, PhysExpr, PhysExpr, @types.DataType)
@@ -52,7 +52,7 @@ pub(all) enum PhysExpr {
   FuncE(String, Array[PhysExpr], @types.DataType)
   CastE(PhysExpr, @types.DataType)
   DateArithE(PhysExpr, Int64, @sql.IntervalUnit)
-  WinRef(Int, @types.DataType)
+  WinRef(Int32, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
 
@@ -60,16 +60,16 @@ pub struct SelectResult {
   // private fields
 }
 pub fn SelectResult::batch(Self) -> @types.DataBatch
-pub fn SelectResult::get(Self, Int, Int) -> @types.Scalar
+pub fn SelectResult::get(Self, Int32, Int32) -> @types.Scalar
 pub fn SelectResult::names(Self) -> Array[String]
-pub fn SelectResult::row_count(Self) -> Int
+pub fn SelectResult::row_count(Self) -> Int32
 pub fn SelectResult::to_json(Self) -> String
 pub fn SelectResult::types(Self) -> Array[@types.DataType]
 
 pub(all) struct SpillStore {
-  write : (Bytes) -> Int raise @types.SqlError
-  read : (Int) -> Bytes raise @types.SqlError
-  remove : (Int) -> Unit raise @types.SqlError
+  write : (Bytes) -> Int32 raise @types.SqlError
+  read : (Int32) -> Bytes raise @types.SqlError
+  remove : (Int32) -> Unit raise @types.SqlError
 }
 
 // Type aliases

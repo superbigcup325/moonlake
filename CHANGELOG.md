@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- 2026-10-20 the scan layer is lazy and pushdown-aware. A table entry now
+  carries either materialized batches or a `ScanSource`, so the catalog needs
+  the table's schema and nothing else. `@csv`/`@parquet` registration returns a
+  source: `scan_file` keeps the path and re-reads it when a query opens the
+  scan, `scan_string`/`scan_bytes` keep the caller's bytes, and typed columns
+  exist only while a batch is live. `TableEntry::scan(ScanRequest)` is the new
+  read path; `TableEntry::new(schema, batches)` builds a materialized entry as
+  before
+- 2026-10-20 scanners yield batches instead of a whole table: `BatchStream`
+  produces `SCAN_BATCH_ROWS` (4096) row batches, CSV chunked by data rows and
+  Parquet one batch per row group (sliced at 4096). An empty table still emits
+  one zero-row batch so the engine sees the column layout
+- 2026-10-20 column pruning reaches the sources. The engine passes the pruned
+  column list it already computed (`table_cols`) as
+  `ScanRequest.projection`; CSV parses and Parquet decodes only those columns,
+  in projection order, and a zero-column projection (a bare `count(*)`) decodes
+  nothing. A column outside the projection can no longer fail a query: a value
+  that does not parse is only an error when the query reads that column
+- 2026-10-20 Parquet row-group skipping from column-chunk statistics:
+  `min_value`/`max_value` and `null_count` decide whether a group can be ruled
+  out before a page is read. Bounds are used only when provably usable
+  (explicitly inexact bounds, the deprecated signed-order pair on BYTE_ARRAY
+  and non-UTF-8 string bounds are all refused), an all-NULL chunk satisfies no
+  comparison, and the operator is taken into account (a group whose column is
+  constant `c` is skipped for `col <> c`, one whose range is below the constant
+  for `col >= c`, and so on). Float columns only prune on the strict
+  comparisons: this engine's `Scalar::compare` treats NaN as equal to every
+  value, while writers leave NaN out of their statistics, so `=`, `<=`, `>=`
+  and `<>` could otherwise drop a group that holds a matching NaN. Hints come
+  only from the table's build filter —
+  the expression the engine already applies to that table's rows before
+  joining it — and the engine still applies its own filter, so a hint can cost
+  work but never a row
+- 2026-10-20 scan-time filtering: a lazy table's build filter runs on each
+  incoming batch while it is drained, so a selective scan never accumulates
+  the table's rows (`EXPLAIN` prints the pushed predicates and
+  `row groups: N of M read (K skipped by statistics)`). On TPC-H SF0.01, best
+  of 5 native debug runs against the previous commit: q1 130→94 ms, q6
+  111→67 ms, q3 130→73 ms, `count(*)` over lineitem 105→48 ms, peak RSS
+  42→36 MB (q3 46→34 MB). On a generated 1Mi-row, 8-row-group Parquet table:
+  `count(*)` 446→57 ms, a filter keeping 6 groups 438→51 ms, one keeping a
+  single group 424→47 ms, peak RSS 130→32-39 MB; `harness/bench_scan.py`
+  reproduces the comparison
+
+### Changed
+
+- 2026-10-20 the Parquet scan no longer concatenates row groups into one
+  batch; the reader decodes one chunk of one row group at a time, which is
+  what makes streaming and skipping possible. A full 16-column read (the shape
+  of q6p's derived table) is 152→142 ms but needs ~3 MB more, because the
+  scan's batches are what the engine then materializes
+- 2026-10-20 `write_bytes`/`write_file` materialize a lazy entry before
+  writing it, so a CSV or Parquet table can be written out without a separate
+  copy step
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

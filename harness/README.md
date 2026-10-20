@@ -76,3 +76,22 @@ dictionary/uncompressed and two row groups. `check_all.sh` diffs all of them.
 scope, the row count must equal duckdb's; out of scope, the reader must refuse
 it *by name*. It runs in the nightly workflow — the corpus is third-party data,
 so it is fetched rather than committed.
+
+## Scan benchmark (lazy scan / pushdown A/B)
+
+```bash
+moon build cmd/main --target native
+python3 harness/bench_scan.py                                   # current build
+python3 harness/bench_scan.py --base <old-binary>                    # A/B
+uv run --with pyarrow python harness/bench_scan.py --big --base <old-binary>
+```
+
+`bench_scan.py` times the queries that exercise the scan layer (CSV column
+pruning on q1/q6/q3 and `count(*)`, Parquet on q6p and a one-column aggregate)
+against a binary of your choice, reporting the fastest wall time of `--runs`
+after one warm-up and the peak RSS from `/proc/<pid>/status` (`VmHWM`). `--big`
+first generates a 1Mi-row, 8-row-group Parquet table with statistics, which is
+what makes the row-group skipping measurable. `gen_parquet_stats.py` writes the
+small fixtures (`harness/data/parquet/stats/`) that the lazy-scan unit tests
+embed as hex; it needs pyarrow rather than duckdb because duckdb floors
+`ROW_GROUP_SIZE` at 2048 rows.

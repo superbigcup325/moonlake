@@ -19,65 +19,6 @@ priv enum ColumnValues {
 }
 
 ///|
-priv struct DecodedColumn {
-  name : String
-  values : ColumnValues
-}
-
-///|
-/// Number of rows this column decoded, i.e. the length of the validity
-/// array. The value arrays hold only the non-null entries, so they are
-/// shorter whenever the column carries NULLs.
-fn DecodedColumn::rows(self : DecodedColumn) -> Int32 {
-  match self.values {
-    Bools(_, valid) => valid.length()
-    Int32s(_, valid) => valid.length()
-    Int64s(_, valid) => valid.length()
-    Floats(_, valid) => valid.length()
-    Doubles(_, valid) => valid.length()
-    Strings(_, valid) => valid.length()
-  }
-}
-
-///|
-/// Number of non-null entries, for the invariant check below.
-fn DecodedColumn::non_null(self : DecodedColumn) -> Int32 {
-  match self.values {
-    Bools(v, _) => v.length()
-    Int32s(v, _) => v.length()
-    Int64s(v, _) => v.length()
-    Floats(v, _) => v.length()
-    Doubles(v, _) => v.length()
-    Strings(v, _) => v.length()
-  }
-}
-
-///|
-/// A decoder bug must surface as a scan error, not as a trap while the
-/// engine walks a malformed vector.
-fn DecodedColumn::check(self : DecodedColumn) -> Unit raise @types.SqlError {
-  let valid = match self.values {
-    Bools(_, v) => v
-    Int32s(_, v) => v
-    Int64s(_, v) => v
-    Floats(_, v) => v
-    Doubles(_, v) => v
-    Strings(_, v) => v
-  }
-  let mut set = 0
-  for v in valid {
-    if v {
-      set += 1
-    }
-  }
-  if set != self.non_null() {
-    raise unsupported(
-      "column \"\{self.name}\": \{self.non_null()} values against \{set} valid slots",
-    )
-  }
-}
-
-///|
 fn unsupported(msg : String) -> @types.SqlError {
   @types.SqlError::Scan("parquet: " + msg)
 }

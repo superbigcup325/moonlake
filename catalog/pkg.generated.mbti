@@ -7,6 +7,11 @@ import {
 }
 
 // Values
+pub const SCAN_BATCH_ROWS : Int32 = 4096
+
+pub fn drain_stream(&BatchStream) -> Array[@types.DataBatch] raise @types.SqlError
+
+pub fn project_batches(Array[@types.DataBatch], Array[Int32]) -> Array[@types.DataBatch]
 
 // Errors
 
@@ -26,20 +31,55 @@ pub fn Column::equal(Self, Self) -> Bool
 pub fn Column::not_equal(Self, Self) -> Bool
 pub fn Column::to_repr(Self) -> @debug.Repr
 
+pub(all) struct ScanPlan {
+  files : Int32
+  row_groups : Int32
+  row_groups_skipped : Int32
+  rows : Int64?
+}
+pub fn ScanPlan::none() -> Self
+
+pub(all) struct ScanPredicate {
+  column : Int32
+  op : @types.CmpOp
+  value : @types.Scalar
+}
+
+pub(all) struct ScanRequest {
+  projection : Array[Int32]
+  predicates : Array[ScanPredicate]
+}
+pub fn ScanRequest::all(Int32) -> Self
+pub fn ScanRequest::new(Array[Int32], Array[ScanPredicate]) -> Self
+
 pub(all) struct TableEntry {
   schema : TableSchema
   batches : Array[@types.DataBatch]
+  source : &ScanSource?
 }
+pub fn TableEntry::from_source(TableSchema, &ScanSource) -> Self
+pub fn TableEntry::is_lazy(Self) -> Bool
+pub fn TableEntry::new(TableSchema, Array[@types.DataBatch]) -> Self
+pub fn TableEntry::plan(Self, ScanRequest) -> ScanPlan raise @types.SqlError
+pub fn TableEntry::scan(Self, ScanRequest) -> Array[@types.DataBatch] raise @types.SqlError
 
 pub(all) struct TableSchema {
   table : String
   columns : Array[Column]
 } derive(Eq, @debug.Debug)
 pub fn TableSchema::equal(Self, Self) -> Bool
-pub fn TableSchema::index_of(Self, String) -> Int?
+pub fn TableSchema::index_of(Self, String) -> Int32?
 pub fn TableSchema::not_equal(Self, Self) -> Bool
 pub fn TableSchema::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 
 // Traits
+pub(open) trait BatchStream {
+  fn next(Self) -> @types.DataBatch? raise @types.SqlError
+}
+
+pub(open) trait ScanSource {
+  fn open(Self, ScanRequest) -> &BatchStream raise @types.SqlError
+  fn plan(Self, ScanRequest) -> ScanPlan raise @types.SqlError
+}

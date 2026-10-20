@@ -7,3 +7,8 @@ import {
   "superbigcup325/colenc/types" @colenc_types,
   "moonbitlang/x/fs",
 }
+
+import {
+  "superbigcup325/moonlake/engine",
+  "superbigcup325/moonlake/sources/csv",
+} for "test"

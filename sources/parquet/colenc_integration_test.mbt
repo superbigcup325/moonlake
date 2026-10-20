@@ -37,8 +37,11 @@ fn scan_fixture(text : String, rows : Int32) -> @types.ColumnVector raise {
   let entry = @parquet.scan_bytes(hex_bytes(text), "t", []) catch {
     e => abort("\{e}")
   }
-  assert_eq(entry.batches.length(), 1)
-  let batch = entry.batches[0]
+  let batches = entry.scan(@catalog.ScanRequest::all(1)) catch {
+    e => abort("\{e}")
+  }
+  assert_eq(batches.length(), 1)
+  let batch = batches[0]
   assert_eq(batch.row_count(), rows)
   batch.columns()[0]
 }

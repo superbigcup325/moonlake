@@ -6,39 +6,39 @@ import {
 }
 
 // Values
-pub fn add_months(Int, Int) -> Int
+pub fn add_months(Int32, Int32) -> Int32
 
-pub fn civil_from_days(Int) -> (Int, Int, Int)
+pub fn civil_from_days(Int32) -> (Int32, Int32, Int32)
 
-pub fn days_from_civil(Int, Int, Int) -> Int
+pub fn days_from_civil(Int32, Int32, Int32) -> Int32
 
-pub fn epoch_day(Int) -> Int
+pub fn epoch_day(Int32) -> Int32
 
-pub fn epoch_month(Int) -> Int
+pub fn epoch_month(Int32) -> Int32
 
-pub fn epoch_to_string(Int) -> String
+pub fn epoch_to_string(Int32) -> String
 
-pub fn epoch_year(Int) -> Int
+pub fn epoch_year(Int32) -> Int32
 
 pub fn parse_bool(String) -> Bool?
 
-pub fn parse_bool_bytes(Bytes, Int, Int) -> Bool?
+pub fn parse_bool_bytes(Bytes, Int32, Int32) -> Bool?
 
-pub fn parse_date(String) -> Int?
+pub fn parse_date(String) -> Int32?
 
-pub fn parse_date_bytes(Bytes, Int, Int) -> Int?
+pub fn parse_date_bytes(Bytes, Int32, Int32) -> Int32?
 
 pub fn parse_f64(String) -> Double?
 
-pub fn parse_f64_bytes(Bytes, Int, Int) -> Double?
+pub fn parse_f64_bytes(Bytes, Int32, Int32) -> Double?
 
-pub fn parse_i32(String) -> Int?
+pub fn parse_i32(String) -> Int32?
 
-pub fn parse_i32_bytes(Bytes, Int, Int) -> Int?
+pub fn parse_i32_bytes(Bytes, Int32, Int32) -> Int32?
 
 pub fn parse_i64(String) -> Int64?
 
-pub fn parse_i64_bytes(Bytes, Int, Int) -> Int64?
+pub fn parse_i64_bytes(Bytes, Int32, Int32) -> Int64?
 
 // Errors
 pub(all) suberror SqlError {
@@ -76,34 +76,34 @@ pub(all) enum CmpOp {
   Gt
   Ge
 } derive(Eq, @debug.Debug)
-pub fn CmpOp::apply(Self, Int?) -> Scalar
+pub fn CmpOp::apply(Self, Int32?) -> Scalar
 pub fn CmpOp::equal(Self, Self) -> Bool
 pub fn CmpOp::flip(Self) -> Self
 pub fn CmpOp::not_equal(Self, Self) -> Bool
 pub fn CmpOp::to_repr(Self) -> @debug.Repr
 
 pub(all) enum ColumnVector {
-  I32(FixedArray[Int], FixedArray[Bool])
+  I32(FixedArray[Int32], FixedArray[Bool])
   I64(FixedArray[Int64], FixedArray[Bool])
   F64(FixedArray[Double], FixedArray[Bool])
   BoolV(FixedArray[Bool], FixedArray[Bool])
   StrV(FixedArray[String], FixedArray[Bool])
-  DateV(FixedArray[Int], FixedArray[Bool])
+  DateV(FixedArray[Int32], FixedArray[Bool])
 }
 pub fn ColumnVector::dtype(Self) -> DataType
-pub fn ColumnVector::get(Self, Int) -> Scalar
-pub fn ColumnVector::len(Self) -> Int
-pub fn ColumnVector::make(DataType, Int) -> Self
-pub fn ColumnVector::set(Self, Int, Scalar) -> Unit
+pub fn ColumnVector::get(Self, Int32) -> Scalar
+pub fn ColumnVector::len(Self) -> Int32
+pub fn ColumnVector::make(DataType, Int32) -> Self
+pub fn ColumnVector::set(Self, Int32, Scalar) -> Unit
 
 pub struct DataBatch {
   columns : Array[ColumnVector]
-  row_count : Int
+  row_count : Int32
 }
 pub fn DataBatch::columns(Self) -> Array[ColumnVector]
 pub fn DataBatch::from_spill_bytes(Bytes) -> Array[Self] raise SqlError
-pub fn DataBatch::new(Array[ColumnVector], Int) -> Self
-pub fn DataBatch::row_count(Self) -> Int
+pub fn DataBatch::new(Array[ColumnVector], Int32) -> Self
+pub fn DataBatch::row_count(Self) -> Int32
 pub fn DataBatch::to_spill_bytes(Array[Self]) -> Bytes raise SqlError
 
 pub(all) enum DataType {
@@ -122,15 +122,15 @@ pub fn DataType::to_string(Self) -> String
 pub(all) enum Scalar {
   Null
   Boolean(Bool)
-  Int32(Int)
+  Int32(Int32)
   Int64(Int64)
   Float64(Double)
   Str(String)
-  Date(Int)
+  Date(Int32)
 } derive(Eq, @debug.Debug)
 pub fn Scalar::arith(ArithOp, Self, Self) -> Self
-pub fn Scalar::compare(Self, Self) -> Int?
-pub fn Scalar::compare_nn(Self, Self) -> Int
+pub fn Scalar::compare(Self, Self) -> Int32?
+pub fn Scalar::compare_nn(Self, Self) -> Int32
 pub fn Scalar::equal(Self, Self) -> Bool
 pub fn Scalar::logic_and(Self, Self) -> Self
 pub fn Scalar::logic_not(Self) -> Self

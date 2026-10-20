@@ -110,11 +110,16 @@ fn main raise {
   let mut read_sum = 0UL
   if mode == "write" || mode == "both" {
     let entry = @csv.scan_file(csv, "lineitem")
-    let bytes = @types.DataBatch::to_spill_bytes(entry.batches)
+    let batches = entry.scan(
+      @catalog.ScanRequest::all(entry.schema.columns.length()),
+    ) catch {
+      e => abort("\{e}")
+    }
+    let bytes = @types.DataBatch::to_spill_bytes(batches)
     @fs.write_bytes_to_file(out, bytes)
-    write_sum = checksum(entry.batches)
+    write_sum = checksum(batches)
     println(
-      "write bytes=\{bytes.length()} rows=\{rows(entry.batches)} checksum=\{write_sum.to_string(radix=16)}",
+      "write bytes=\{bytes.length()} rows=\{rows(batches)} checksum=\{write_sum.to_string(radix=16)}",
     )
   }
   let source = if input != "" { input } else { out }

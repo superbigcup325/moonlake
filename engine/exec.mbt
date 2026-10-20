@@ -1018,29 +1018,16 @@ fn window(
 }
 
 ///|
-/// Drop unreferenced columns from every batch of a table. The kept
-/// ColumnVectors are shared with the source batch, not copied.
-fn narrow_batches(
-  batches : Array[@types.DataBatch],
-  cols : Array[Int32],
-) -> Array[@types.DataBatch] {
-  batches.map(fn(b) {
-    let columns : Array[@types.ColumnVector] = []
-    for c in cols {
-      columns.push(b.columns()[c])
-    }
-    @types.DataBatch::new(columns, b.row_count())
-  })
-}
-
-///|
 /// Execute the planned join chain left-deep over the FROM tables.
+/// `prescanned[t]` says table t's build filter already ran during the scan,
+/// so the rows reaching here satisfy it and filtering again would be waste.
 fn exec_joins(
   tables : Array[Array[@types.DataBatch]],
   steps : Array[JoinStep],
   deferred : PhysExpr?,
   opts : ExecOptions,
   stats : Array[(String, Int32)],
+  prescanned : Array[Bool],
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   if steps.length() == 0 {
     let cols : Array[@types.ColumnVector] = []
@@ -1049,10 +1036,16 @@ fn exec_joins(
   let mut acc = tables[steps[0].table]
   for i, step in steps {
     if i == 0 {
-      acc = filter_batches(acc, step.build_filter)
+      if !prescanned[step.table] {
+        acc = filter_batches(acc, step.build_filter)
+      }
     } else {
       acc = filter_batches(acc, step.probe_filter)
-      let right = filter_batches(tables[step.table], step.build_filter)
+      let right = if prescanned[step.table] {
+        tables[step.table]
+      } else {
+        filter_batches(tables[step.table], step.build_filter)
+      }
       acc = [join_or_spill(acc, right, step, opts, stats)]
     }
   }

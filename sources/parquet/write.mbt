@@ -403,10 +403,15 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
   w_magic(file)
   let groups : Array[Bytes] = []
   let mut total_rows : Int64 = 0L
+  // a lazy entry (CSV, another Parquet file) is read whole here: the writer
+  // needs every row of every column to decide REQUIRED vs OPTIONAL
+  let batches = entry.scan(
+    @catalog.ScanRequest::all(entry.schema.columns.length()),
+  )
   // The schema is file-wide, so one NULL anywhere makes the whole column
   // optional: every row group then carries levels, even the null-free ones.
   let optional : Array[Bool] = Array::make(entry.schema.columns.length(), false)
-  for batch in entry.batches {
+  for batch in batches {
     let columns = batch.columns()
     if columns.length() != entry.schema.columns.length() {
       raise write_error(
@@ -424,7 +429,7 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
       }
     }
   }
-  for batch in entry.batches {
+  for batch in batches {
     let rows = batch.row_count()
     if rows == 0 {
       continue

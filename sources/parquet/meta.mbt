@@ -108,7 +108,30 @@ priv struct ColumnMeta {
   total_compressed_size : Int64
   data_page_offset : Int64
   dictionary_page_offset : Int64?
+  stats : Statistics?
+}
+
+///|
+/// Column-chunk statistics. `min_value`/`max_value` are the current fields;
+/// the deprecated `min`/`max` pair is kept as a fallback for writers that
+/// predate them (it is only usable for numeric physical types — for
+/// BYTE_ARRAY the deprecated pair uses signed byte order).
+priv struct Statistics {
   null_count : Int64?
+  min_value : Bytes?
+  max_value : Bytes?
+  min_deprecated : Bytes?
+  max_deprecated : Bytes?
+  is_min_exact : Bool?
+  is_max_exact : Bool?
+}
+
+///|
+fn ColumnMeta::null_count(self : ColumnMeta) -> Int64? {
+  match self.stats {
+    Some(s) => s.null_count
+    None => None
+  }
 }
 
 ///|
@@ -342,7 +365,7 @@ fn parse_column_metadata(tr : Tr) -> ColumnMeta raise @types.SqlError {
   let mut total_compressed_size : Int64 = 0L
   let mut data_page_offset : Int64 = 0L
   let mut dictionary_page_offset : Int64? = None
-  let mut null_count : Int64? = None
+  let mut stats : Statistics? = None
   let mut last : Int32 = 0
   while true {
     let (id, t) = tr.field_header(last)
@@ -391,7 +414,7 @@ fn parse_column_metadata(tr : Tr) -> ColumnMeta raise @types.SqlError {
         }
       12 =>
         if t is StructT {
-          null_count = parse_statistics(tr)
+          stats = Some(parse_statistics(tr))
         } else {
           tr.skip(t)
         }
@@ -405,13 +428,19 @@ fn parse_column_metadata(tr : Tr) -> ColumnMeta raise @types.SqlError {
     total_compressed_size,
     data_page_offset,
     dictionary_page_offset,
-    null_count,
+    stats,
   }
 }
 
 ///|
-fn parse_statistics(tr : Tr) -> Int64? raise @types.SqlError {
+fn parse_statistics(tr : Tr) -> Statistics raise @types.SqlError {
   let mut null_count : Int64? = None
+  let mut min_value : Bytes? = None
+  let mut max_value : Bytes? = None
+  let mut min_deprecated : Bytes? = None
+  let mut max_deprecated : Bytes? = None
+  let mut is_min_exact : Bool? = None
+  let mut is_max_exact : Bool? = None
   let mut last : Int32 = 0
   while true {
     let (id, t) = tr.field_header(last)
@@ -420,16 +449,60 @@ fn parse_statistics(tr : Tr) -> Int64? raise @types.SqlError {
       break
     }
     match id {
+      1 =>
+        if t is BinaryT {
+          max_deprecated = Some(tr.binary().to_owned())
+        } else {
+          tr.skip(t)
+        }
+      2 =>
+        if t is BinaryT {
+          min_deprecated = Some(tr.binary().to_owned())
+        } else {
+          tr.skip(t)
+        }
       3 =>
         if t is I64T {
           null_count = Some(tr.zigzag_i64())
         } else {
           tr.skip(t)
         }
+      5 =>
+        if t is BinaryT {
+          max_value = Some(tr.binary().to_owned())
+        } else {
+          tr.skip(t)
+        }
+      6 =>
+        if t is BinaryT {
+          min_value = Some(tr.binary().to_owned())
+        } else {
+          tr.skip(t)
+        }
+      7 =>
+        match t {
+          BoolTrue => is_max_exact = Some(true)
+          BoolFalse => is_max_exact = Some(false)
+          _ => tr.skip(t)
+        }
+      8 =>
+        match t {
+          BoolTrue => is_min_exact = Some(true)
+          BoolFalse => is_min_exact = Some(false)
+          _ => tr.skip(t)
+        }
       _ => tr.skip(t)
     }
   }
-  null_count
+  {
+    null_count,
+    min_value,
+    max_value,
+    min_deprecated,
+    max_deprecated,
+    is_min_exact,
+    is_max_exact,
+  }
 }
 
 ///|
