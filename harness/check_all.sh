@@ -9,6 +9,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The diff tool below judges every golden, so pin its own edges first
+# (NULL vs empty string, whitespace, integer width, NaN/inf, blank rows).
+python3 harness/check_compare.py
+
 DATA=${MOONLAKE_DATA:-harness/data/sf001}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

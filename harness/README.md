@@ -29,8 +29,15 @@ Outputs land in `harness/data/sf<sf>/`:
 ## Compare
 
 `compare.py` skips the header (engines label columns differently) and
-compares cells in order: floats with a 1e-9 relative tolerance,
-everything else exact; empty and "null" both count as SQL NULL.
+compares cells in order: identical text is equal; integers exact (so
+`001` differs from `1` and 64-bit ids keep their digits); numbers carrying
+a decimal point or exponent within a 1e-9 relative tolerance, with NaN
+equal to NaN and infinities equal to themselves; everything else exact,
+whitespace included. SQL NULL is the cell `null` — both engines print
+that marker and it never equals an empty string. Blank lines are rows with
+a single `""` cell, so only the terminating newline of the last row is
+dropped. `check_compare.py` self-tests those rules; `check_all.sh` runs it
+before diffing any golden.
 
 ```bash
 moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \

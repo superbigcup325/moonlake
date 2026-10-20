@@ -49,6 +49,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   again. The local-only `moon.work` + symlink setup is gone; the README keeps
   the recipe for editing both modules side by side
 
+### Fixed
+
+- 2026-10-20 `harness/compare.py` judged the goldens too loosely in five ways,
+  each able to pass a real divergence: an empty cell counted as SQL NULL (so
+  `""` and `null` were interchangeable), every line was `strip()`ed (and TPC-H
+  comments really do end in spaces, so whitespace at a row's edges was never
+  compared), any numeric-looking cell was re-parsed as a double (`"001"`
+  matched `"1"`, and 64-bit ids past 2^53 collapsed onto their neighbours),
+  non-finite values fell through the tolerance and matched nothing — not even
+  themselves — and *all* trailing blank lines were dropped although a
+  single-column `""` row is a blank line. Cells now compare exact text first,
+  integers exactly, decimals/exponents within 1e-9 with NaN and infinities
+  handled as values, and only the terminating newline of the last row is
+  dropped. `harness/check_compare.py` pins 27 cases (12 of which fail on the
+  old comparator) and `check_all.sh` runs it before diffing a golden; the
+  full sweep still passes
+
 ## [0.2.0] - 2026-10-16
 
 > Covers everything since `0.1.0` (published 2026-10-03).
