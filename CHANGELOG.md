@@ -71,6 +71,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   UTF-8 now decodes to U+FFFD instead of dropping the trailing bytes. 200 tests
   on wasm-gc/native/js and the 27-query golden chain are unchanged
 
+### Fixed
+
+- 2026-10-20 a Parquet file that is both out of scope and internally
+  inconsistent now reports the scope refusal: registering a table ran the
+  footer row-count check before the schema gate, so a file with an unsupported
+  schema *and* a wrong `num_rows` (apache/parquet-testing's
+  `repeated_no_annotation.parquet` carries `num_rows = 0` over a 6-row group)
+  failed with "row groups hold 6 rows, the file metadata says 0" instead of
+  "nested schemas are not supported". The schema gate runs first again, so
+  `harness/check_parquet_corpus.py` is back to 39 read / 29 refused by design /
+  0 failing
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

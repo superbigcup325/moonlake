@@ -112,6 +112,13 @@ fn scan_input(
   let content = read_input(input)
   let meta = parse_footer(content)
   check_version(meta)
+  // The schema gate runs first: it answers "can this reader represent the
+  // file at all", and a file that is both out of scope and internally
+  // inconsistent deserves the pointed refusal rather than a corruption
+  // message (apache/parquet-testing's repeated_no_annotation.parquet is
+  // repeated-scope *and* carries num_rows = 0 in its footer).
+  // validates the schema shape (flat leaves, no repeated/nested/timestamp)
+  let leaves = leaf_elements(meta)
   // a footer whose groups do not add up would silently truncate every scan
   let mut total : Int64 = 0L
   for rg in meta.row_groups {
@@ -122,8 +129,6 @@ fn scan_input(
       "row groups hold \{total} rows, the file metadata says \{meta.num_rows}",
     )
   }
-  // validates the schema shape (flat leaves, no repeated/nested/timestamp)
-  let leaves = leaf_elements(meta)
   let columns : Array[@catalog.Column] = []
   let dtypes : Array[@types.DataType] = []
   for leaf in leaves {

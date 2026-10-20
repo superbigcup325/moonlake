@@ -361,6 +361,17 @@ unused row groups are never read. The one regression is the full 16-column read
 that q6p's derived table performs: 152 → 142 ms but +3 MB, because the scan
 still decodes everything and the engine then materializes its batches.
 
+**5. Third-party corpus** (`harness/check_parquet_corpus.py`, nightly): the
+apache/parquet-testing files must either read with DuckDB's row count or be
+refused with one of the documented scope messages — 39 read, 29 refused by
+design, 0 failing. This is what caught an ordering regression the per-push jobs
+missed: the lazy rewrite moved the footer row-count check ahead of the schema
+gate, so `repeated_no_annotation.parquet` (repeated scope *and* `num_rows = 0`
+over a 6-row group) reported "row groups hold 6 rows, the file metadata says 0"
+— a corruption message for a file this reader simply cannot represent. The
+schema gate runs first again, which is the order the refactor's predecessor
+used (`read_columns` validated `leaf_elements` before summing row groups).
+
 **Safety argument.** A hint can only come from the table's *build filter* — the
 expression `exec_joins` already applies to that table's rows before joining it
 — and the engine still evaluates it (the scan's per-batch filter is an early

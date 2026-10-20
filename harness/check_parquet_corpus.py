@@ -7,12 +7,13 @@
 # third-party data, and the point is to be able to re-run against whatever
 # the upstream repository carries today.
 #
-# Usage: python3 harness/check_parquet_corpus.py [--keep]
+# Usage: python3 harness/check_parquet_corpus.py
 #   MOONLAKE_BIN: path to a prebuilt native CLI (defaults to `moon run cmd/main`)
 
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import re
 import subprocess
@@ -97,6 +98,10 @@ def main() -> int:
     files = fetch(corpus_files())
     print(f"corpus: {len(files)} files cached in {CACHE}")
 
+    # MOONLAKE_BIN skips `moon run`'s build-and-launch cost per file
+    bin_env = os.environ.get("MOONLAKE_BIN")
+    runner = [bin_env] if bin_env else ["moon", "run", "cmd/main", "--"]
+
     ok = refused = failed = 0
     for name in sorted(files):
         path = files[name]
@@ -105,7 +110,7 @@ def main() -> int:
             stem = f'"{stem}"'
         query = f"select count(*) from {stem}"
         proc = subprocess.run(
-            ["moon", "run", "cmd/main", "--", "exec", "--parquet", str(path), query],
+            [*runner, "exec", "--parquet", str(path), query],
             capture_output=True,
             text=True,
         )
