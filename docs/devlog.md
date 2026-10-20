@@ -722,3 +722,18 @@ the playground
   live page still serves 0.1.0 until the next push to main. The 0.3.0 tag was
   not moved; the fixes are unreleased on main and a patch version is a release
   decision.
+- **Follow-up: 0.3.1 shipped the same evening.** `moon publish` returned
+  `Server status: 200 OK`, `moon view` reports `Latest: 0.3.1` (three versions),
+  and the annotated tag `v0.3.1` plus a GitHub release point at the published
+  tree. The registry check was re-run from an empty module and a fresh
+  `MOON_HOME`: 0.3.1 resolves the same four-package graph, its tree equals
+  `git archive v0.3.1` apart from the package's documented exclusions, the
+  README example prints `north|1` on all three backends, and a DATE column now
+  comes back as `[{"first_day":"2024-03-01"}]` — valid JSON — which is the 0.3.0
+  bug seen from a consumer's side.
+- **The baseline's second lesson.** Re-measuring at 0.3.1 produced numbers
+  10–25% faster than the 0.3.0 record for identical engine code, because the
+  laptop was in a different thermal/load state (load 2.7 → 1.9, CPU ~1.5 →
+  1.7 GHz). Both records are kept side by side and `bench_release.py` now
+  records the CPU frequency, because otherwise the next reader would mistake
+  machine state for an optimization.

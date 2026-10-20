@@ -418,7 +418,7 @@ node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
   # browser acceptance; serve playground/index.html + playground.wasm first
 ```
 
-## 8. Registry package acceptance (0.3.0, 2026-10-20)
+## 8. Registry package acceptance (0.3.0 and 0.3.1, 2026-10-20)
 
 The release question is not "does the repository build" but "does what
 mooncakes hands a stranger resolve, match what was tagged, and work when
@@ -426,21 +426,39 @@ imported". Measured on a scratch module (`moon new`, empty `.mooncakes`, a
 fresh `MOON_HOME` so the registry index itself was cloned) with
 `moon add superbigcup325/moonlake`.
 
+**0.3.1** (the patch that fixes the browser build and DATE JSON; the check was
+re-run after `moon publish` reported `Server status: 200 OK`):
+
+- **Resolution.** `moon add` on an empty module resolved
+  `superbigcup325/moonlake@0.3.1` and pulled the same graph as 0.3.0 —
+  `moonbitlang/x@0.5.6`, `moonbitlang/quickcheck@0.15.0`,
+  `superbigcup325/colenc@0.1.0`. `moon view superbigcup325/moonlake` reports
+  `Latest: 0.3.1`, `Versions: 3`, published 2026-10-20T15:46:49Z.
+- **Content.** The installed tree diffs clean against `git archive v0.3.1`
+  except the same dev-only exclusions and the materialized `README.md`
+  symlink; `@moonlake.version()` prints `0.3.1`.
+- **Usage and the fix itself.** The README example prints `north|1` on native,
+  wasm-gc and js, and `SELECT min(day)` over a DATE column now returns
+  `[{"first_day":"2024-03-01"}]` — valid JSON with the date quoted — on all
+  three backends. That last check is the 0.3.0 bug seen from a consumer's
+  side.
+
+**0.3.0** (first release since 0.1.0):
+
 - **Resolution.** The add resolved `superbigcup325/moonlake@0.3.0` and pulled
-  `moonbitlang/x@0.5.6`, `moonbitlang/quickcheck@0.15.0` and
-  `superbigcup325/colenc@0.1.0`; `moon tree` shows exactly that graph, every
-  package carrying a `moon.mod` (no legacy `moon.mod.json` anywhere). The
-  registry index lists 0.3.0 and 0.1.0 (`moon view --versions`), 0.3.0 with
-  checksum `ef68f460…`, published 2026-10-20T14:01:31Z.
+  the same four packages, every one carrying a `moon.mod` (no legacy
+  `moon.mod.json` anywhere). The registry index listed 0.3.0 and 0.1.0
+  (`moon view --versions`), 0.3.0 with checksum `ef68f460…`, published
+  2026-10-20T14:01:31Z.
 - **Content.** The installed tree diffs clean against `git archive v0.3.0`
   except for the dev-only paths the package excludes (`.github`, `.githooks`,
   `.gitignore`, `.moonignore`, `hooks/`, `harness/data/`,
   `harness/spill_bench/`) and `README.md`, which arrives as a regular file
   because the archive dereferences the repository's symlink. The installed
-  library reports itself as `0.3.0` (`@moonlake.version()`).
+  library reported itself as `0.3.0` (`@moonlake.version()`).
 - **Usage.** The README's "As a library" example — verbatim apart from the
-  consumer's `moon.pkg` imports — compiles and prints `north|1` on native,
-  wasm-gc and js, and `moon check` on the consumer is clean.
+  consumer's `moon.pkg` imports — compiled and printed `north|1` on native,
+  wasm-gc and js.
 
 One note for the archive, not a defect: it also ships `AGENTS.md`, `docs/` and
 the harness scripts (~1.3 MB). `.moonignore` deliberately keeps out only the
