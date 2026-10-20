@@ -107,7 +107,7 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-> `moon add` gives you the latest release from mooncakes (0.3.0). Everything
+> `moon add` gives you the latest release from mooncakes (0.3.1). Everything
 > this README describes is in it.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
