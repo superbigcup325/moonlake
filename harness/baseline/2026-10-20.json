@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "kind": "moonlake-release-baseline",
+  "created_at": "2026-10-20T23:12:15+0800",
+  "release": {
+    "version": "0.3.0",
+    "git_commit": "90f8f059b156607333d5f89ace3053dc177e3e2f",
+    "git_branch": "main",
+    "git_subject": "test(harness): drive the playground in a real browser",
+    "git_dirty": true,
+    "binary": "_build/native/release/build/cmd/main/main.exe",
+    "binary_sha256": "047e36e342927d4e427c663b0f1de232b3a80ef25568eec46f87c8b6ede4abb2"
+  },
+  "environment": {
+    "toolchain": {
+      "raw": [
+        "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon",
+        "moonc v0.10.16+b1a0e846e (2026-10-16) ~/.moon/bin/moonc",
+        "moonrun 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moonrun",
+        "",
+        "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+      ],
+      "moon": "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon"
+    },
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "kernel": "7.2.11-1-cachyos",
+    "os": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      2.65869140625,
+      2.92919921875,
+      3.029296875
+    ],
+    "python": "3.14.8"
+  },
+  "method": {
+    "runs": 7,
+    "warmups": 2,
+    "statistic": "fastest wall time after the warm-ups",
+    "stdout": "drained to a temp file and hashed (SHA-256), not stored",
+    "data": "harness/data/sf01",
+    "data_note": "TPC-H SF0.1, tracked in the repository; regenerate with `python harness/gen_tpch.py 0.1`",
+    "build": "native release (`moon build cmd/main --target native --release`)"
+  },
+  "cases": [
+    {
+      "id": "scan/count_csv",
+      "family": "scan",
+      "what": "count(*) over lineitem.csv: schema only, no column decoded",
+      "wall_ms": 245.8,
+      "median_ms": 253.3,
+      "cpu_ms": 242.1,
+      "rss_mb": 339.1,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/filtered_count_csv",
+      "family": "scan",
+      "what": "count(*) with a one-column predicate: decode + filter",
+      "wall_ms": 266.9,
+      "median_ms": 274.2,
+      "cpu_ms": 264.0,
+      "rss_mb": 339.1,
+      "output_sha256": "9f4edf695e6314ddc5f3ea07ae2497a86ea9bec7bdce26080c38e169f231d5c3",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/parquet_count",
+      "family": "scan",
+      "what": "count(*) over lineitem.parquet: footer only, no column chunk read",
+      "wall_ms": 11.7,
+      "median_ms": 12.6,
+      "cpu_ms": 11.4,
+      "rss_mb": 24.9,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/parquet_sum",
+      "family": "scan",
+      "what": "sum(l_quantity) over lineitem.parquet: one column chunk per group",
+      "wall_ms": 20.2,
+      "median_ms": 21.0,
+      "cpu_ms": 19.8,
+      "rss_mb": 39.0,
+      "output_sha256": "62ad427c9c47764ae7071d38f5d061d48d0a52bf2c7637d47947770b5e90a842",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "join/two_table_count",
+      "family": "join",
+      "what": "lineitem x orders hash join, count(*) only",
+      "wall_ms": 315.8,
+      "median_ms": 327.8,
+      "cpu_ms": 309.8,
+      "rss_mb": 298.0,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "join/q3",
+      "family": "join",
+      "what": "TPC-H Q3 official text over three CSV tables (build+probe+group+top-N)",
+      "wall_ms": 336.7,
+      "median_ms": 344.0,
+      "cpu_ms": 333.4,
+      "rss_mb": 286.9,
+      "output_sha256": "78b510ebf57948a1ebf6a89b6c1a337dbed494ef941102b798b1e52804c9a3b0",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "gather/wide_projection",
+      "family": "gather",
+      "what": "filter then wide projection inside a derived table: the 16 materialized columns are assembled by per-column gathers, and only one output row is printed",
+      "wall_ms": 613.9,
+      "median_ms": 626.9,
+      "cpu_ms": 601.4,
+      "rss_mb": 370.4,
+      "output_sha256": "25ad7303da3136745ece964d42bb4c45a574bb02300ff32f0633472c2d5749a3",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "gather/self_join_fanout",
+      "family": "gather",
+      "what": "self-join emitting 600k wide rows, counted: join-output assembly gathers 16 columns per output row",
+      "wall_ms": 559.0,
+      "median_ms": 576.0,
+      "cpu_ms": 545.9,
+      "rss_mb": 338.6,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "spill/order_by_wide",
+      "family": "spill",
+      "what": "two-column external sort over 600k rows under a 2 MB budget (must actually spill)",
+      "wall_ms": 532.2,
+      "median_ms": 545.5,
+      "cpu_ms": 526.8,
+      "rss_mb": 339.0,
+      "output_sha256": "003b819440e02d0d6adc6fbfcf61199c2c0a3605d79364388e6b7e29cd650f3e",
+      "output_stable": true,
+      "extra": {
+        "budget": "2M",
+        "require_spill_files": 1,
+        "spill_files": 7
+      }
+    },
+    {
+      "id": "spill/format_write",
+      "family": "spill",
+      "what": "MLSPILL3 encode+write of every lineitem batch (release driver)",
+      "wall_ms": 1323.8,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 392.7,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    },
+    {
+      "id": "spill/format_read",
+      "family": "spill",
+      "what": "MLSPILL3 read+decode of the same file (release driver)",
+      "wall_ms": 477.5,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 227.3,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    }
+  ]
+}

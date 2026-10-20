@@ -96,6 +96,26 @@ small fixtures (`harness/data/parquet/stats/`) that the lazy-scan unit tests
 embed as hex; it needs pyarrow rather than duckdb because duckdb floors
 `ROW_GROUP_SIZE` at 2048 rows.
 
+## Release baseline (`bench_release.py`)
+
+```bash
+python3 harness/bench_release.py                     # measure, print a table
+python3 harness/bench_release.py --json-out harness/baseline/2026-10-20.json
+python3 harness/bench_release.py --compare harness/baseline/2026-10-20.json
+```
+
+One record, one machine: scan (CSV/Parquet), join (2-table and Q3), gather
+(the filter/join output-assembly paths), and spill (in-query external sort
+plus the MLSPILL3 write/read). It builds the native release binary, records
+the toolchain, CPU/governor/kernel, git commit, binary hash and load average,
+times the fastest of `--runs` (default 7) after two warm-ups with both wall
+and CPU time, and hashes each case's stdout so `--compare` can tell "same
+work, different speed" from "the result changed". `harness/baseline/` holds
+the committed records; `docs/bench-baseline.md` is the human-readable one,
+including the measured noise floor (±7% on the same binary). Numbers are only
+comparable on the same machine and data (TPC-H SF0.1, tracked in
+`harness/data/sf01`; SF0.01 was too short to survive host noise).
+
 ## Playground acceptance (`playground_accept.cjs`)
 
 ```bash
