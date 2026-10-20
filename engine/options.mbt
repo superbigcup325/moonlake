@@ -29,3 +29,54 @@ pub(all) struct ExecOptions {
 pub fn ExecOptions::in_memory() -> ExecOptions {
   { budget: 0, spill: None, }
 }
+
+///|
+/// What a query actually pushed through its spill store. Counted at the
+/// store boundary (one wrapper around the caller's `SpillStore`) rather
+/// than inside each operator, so a new spilling operator cannot forget
+/// to report itself, and so the numbers are what the filesystem saw.
+priv struct SpillMeter {
+  mut files : Int32
+  mut written : Int64
+  mut read : Int64
+}
+
+///|
+fn SpillMeter::new() -> SpillMeter {
+  { files: 0, written: 0L, read: 0L, }
+}
+
+///|
+/// Wrap a store so every byte that crosses it is counted. Ids pass
+/// through unchanged, so the wrapped store is a drop-in replacement.
+fn SpillMeter::wrap(self : SpillMeter, base : SpillStore) -> SpillStore {
+  {
+    write: fn(bytes : Bytes) -> Int32 raise @types.SqlError {
+      let id = (base.write)(bytes)
+      self.files += 1
+      self.written += bytes.length().to_int64()
+      id
+    },
+    read: fn(id : Int32) -> Bytes raise @types.SqlError {
+      let bytes = (base.read)(id)
+      self.read += bytes.length().to_int64()
+      bytes
+    },
+    remove: fn(id : Int32) -> Unit raise @types.SqlError { (base.remove)(id) },
+  }
+}
+
+///|
+/// The meter's lines for `explain_analyze`: only when something was
+/// actually spilled, so an in-memory plan stays as short as before.
+fn SpillMeter::report(
+  self : SpillMeter,
+  stats : Array[(String, Int64)],
+) -> Unit {
+  if self.files == 0 {
+    return
+  }
+  stats.push(("spill files", self.files.to_int64()))
+  stats.push(("spill bytes written", self.written))
+  stats.push(("spill bytes read", self.read))
+}

@@ -211,7 +211,7 @@ fn external_sort_project(
   limit : Int32?,
   budget : Int32,
   store : SpillStore,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
   let writer : RunWriter = { store, budget, acc: [], acc_bytes: 0, ids: [], }
   for batch in kept {
@@ -260,7 +260,7 @@ fn external_sort_project(
   }
   writer.flush()
   if stats.length() > 0 {
-    stats.push(("spill runs", writer.ids.length()))
+    stats.push(("spill runs", writer.ids.length().to_int64()))
   }
   errdefer (for id in writer.ids {
     let _ = (store.remove)(id)
@@ -284,7 +284,10 @@ fn external_sort_project(
 ///|
 /// Pairwise-merge runs down to FANIN, then run the final streaming
 /// merge. Removes every intermediate file it creates, successfully or
-/// not.
+/// not: the merge inputs are consumed whole by `merge_runs` (which
+/// deletes its two sources) and by `final_merge` (which reads every run
+/// into memory before producing a row), so the intermediates this
+/// function wrote are dead as soon as `go` returns.
 fn reduce_and_merge(
   runs0 : Array[Int32],
   keys : Array[(PhysExpr, Bool, Bool?)],
@@ -319,7 +322,15 @@ fn reduce_and_merge(
     final_merge(cur, keys, out_exprs, out_types, distinct, offset, limit, store)
   }
 
-  go(runs0)
+  let out = go(runs0)
+  // `go` returned: every intermediate it wrote has been fully consumed,
+  // so drop them on the success path too (the errdefer above only fires
+  // when `go` raises). Leaving them behind leaked one directory per
+  // spilled sort into TMPDIR.
+  for id in created {
+    let _ = (store.remove)(id)
+  }
+  out
 }
 
 ///|

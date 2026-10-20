@@ -737,3 +737,19 @@ the playground
   1.7 GHz). Both records are kept side by side and `bench_release.py` now
   records the CPU frequency, because otherwise the next reader would mistake
   machine state for an optimization.
+
+2026-10-21 — **The out-of-core path leaked, and nothing was watching it.**
+Goal: make `--memory` trustworthy before touching its performance — a budget
+that silently leaves files behind is worse than no budget, because the failure
+arrives later and somewhere else. What the audit turned up was one real leak
+(intermediate run files, success path only, seven files per spilled sort), one
+unreachable counter set (`explain_analyze` hard-coded `in_memory()`), and two
+structural limits (a 64-partition cap reported as "hash skew"; a partition
+materialized before aggregation). Fixed the first two outright, replaced the
+cap with two extra partitioning levels, and made aggregation pull a partition
+one file at a time. Quality boundary: the split still refuses one key holding a
+side, and its error now says that is the reason; the byte counters are measured
+at the store boundary so an operator cannot forget to report. Honest limit
+recorded in `verification.md` §10: the aggregation change removes a term from
+the memory equation but is not separately measurable on the current workloads,
+which is a workload gap rather than an optimization.

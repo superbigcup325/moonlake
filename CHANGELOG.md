@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Ongoing 0.4.0 work. Only what is on `main`; a release note is written when
+> the version is cut.
+
+### Fixed
+
+- 2026-10-21 a spilled sort leaked its intermediate run files on the success
+  path: `reduce_and_merge` recorded the files it produced while merging and
+  then only removed them through `errdefer`, so every successful spilled
+  `ORDER BY` left them behind. The CLI's `remove_dir` is not recursive, so the
+  directory survived too — one temp tree per spilled query, until a query
+  failed mid-spill on a full disk. The intermediates are now removed after the
+  merge returns, and the CLI purges a spill directory of `run<n>.bin` files
+  (its own names only — `--spill-dir` may point at a caller's directory) and
+  reports a directory it cannot remove instead of swallowing the error
+- 2026-10-21 `ANALYZE` could not report a spill: `explain_analyze` ran with
+  `ExecOptions::in_memory()` hard-coded, so the spill counters it collected
+  were never reachable. `explain_analyze_with` takes the caller's options, the
+  CLI passes `--memory`, and the engine counts files and bytes at the store
+  boundary (`spill files` / `spill bytes written` / `spill bytes read`)
+
+### Added
+
+- 2026-10-21 a grace hash join partition that still exceeds the budget is
+  partitioned again (up to two extra levels, 256 partitions each) instead of
+  failing at the first level: a small budget against a large input used to be
+  reported as "hash skew" even when no key dominated. What no re-partitioning
+  can split is one key holding most of a side, and that error now says so
+- 2026-10-21 grace aggregation pulls a partition one spill file at a time
+  instead of materializing it (`BatchSeq`), so a hot group key no longer puts
+  a whole partition in memory on top of the budget
+- 2026-10-21 `harness/spill_accept.sh`: five checks over the spill lifecycle —
+  no directory after a successful sort, none after a failed query, `--spill-dir`
+  keeps files moonlake did not write, `ANALYZE` reports the counters, and an
+  in-memory `ANALYZE` stays silent
+
 ## [0.3.1] - 2026-10-20
 
 > Patch release. 0.3.0's wasm did not instantiate in a browser (so the

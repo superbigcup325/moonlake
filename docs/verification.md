@@ -513,3 +513,61 @@ page holds one uploaded table, so a cross-file JOIN cannot be expressed in
 it. The failing path is a pointed bind error, and joins over the uploaded
 table work — verified in the same run. The README no longer claims the page
 shows a physical plan (that is `--explain` on the CLI).
+
+## 10. Spill lifecycle (2026-10-21)
+
+The out-of-core path is the engine's best claim and its least observable one:
+`--memory` decides whether a query lands on it, and until now nothing checked
+what the query left behind on disk, or reported what it spilled.
+
+**The leak.** `reduce_and_merge` (`engine/extsort.mbt`) recorded each
+intermediate run it wrote while merging into `created`, and only removed them
+through `errdefer`, which fires when the function raises. On the success path
+they stayed. The CLI then called the non-recursive `fs.remove_dir`, whose
+failure was swallowed, so a directory survived as well. Measured on
+`harness/data/sf001/lineitem.csv` with `--memory 200K` and an
+`ORDER BY … LIMIT 3`: exit 0, correct rows, seven files (`run15.bin` …
+`run21.bin`, 560 KB) left in the spill directory. Repeat that a few hundred
+times and the next spilled query fails halfway through with a full disk.
+
+Now the intermediates are removed once the merge returns, and the CLI purges
+only the names its store writes (`run<n>.bin`) before removing the directory —
+`--spill-dir` may point at a caller's own directory, so a blanket purge would
+be wrong — and prints a warning when a directory cannot be removed.
+
+**Multi-level grace join.** A partition that still exceeds the budget after the
+first level is partitioned again (two extra levels, 256 partitions each). The
+first level used to cap the partition count at 64, so a small budget against a
+large input was reported as "hash skew" even when no key dominated. A/B on the
+new unit test (`engine/e2e_test.mbt`, 200k rows over 200k distinct keys, 4 KiB
+budget): with `JOIN_MAX_DEPTH = 0` the test aborts with the budget error; with
+the shipped value it returns the expected 100 rows in 5.9 s including the
+build. What re-partitioning cannot fix — one key holding most of a side — is
+still refused, and the message now says why instead of blaming the budget.
+
+**Streamed aggregation.** Grace aggregation used to read a whole partition into
+memory before aggregating it, which for a hot group key meant materializing an
+arbitrarily large partition on top of the budget. It now pulls one spill file at
+a time (`BatchSeq`, `engine/exec.mbt`). Honest result: peak RSS on
+`SELECT l_returnflag, count(*) … GROUP BY 1` at SF0.1 with `--memory 200K`
+moved 305.0 → 303.7 MB, i.e. nothing measurable, because the scan's live set
+dominates and the projected input is one column wide (~3 MB), so the partition
+being materialized was never the peak. What changed is the bound: the
+aggregation no longer has a term proportional to partition size. A fixture where
+it would show needs a wide aggregation input, which the current workloads do not
+have; that is a gap in the workloads, not a claim about the change.
+
+**Acceptance.** `bash harness/spill_accept.sh` (five checks, deterministic,
+~3 s):
+
+1. a spilled `ORDER BY` leaves no directory behind;
+2. a query that fails on hash skew leaves none either;
+3. `--spill-dir` keeps a caller's `notes.txt` and a `runx.bin` that is not a
+   run file — only `run<n>.bin` is removed;
+4. `--analyze --memory 200K` prints `spill runs:`, `spill files:`,
+   `spill bytes written:` and `spill bytes read:`;
+5. the same `ANALYZE` without a budget prints no spill line at all.
+
+Counters are taken at the store boundary (one wrapper around the caller's
+`SpillStore`, `engine/options.mbt`), not inside each operator, so a future
+spilling operator cannot forget to report itself.

@@ -19,7 +19,7 @@ fn aggregate_within_budget(
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
   opts : ExecOptions,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
   if opts.budget <= 0 || group_exprs.length() == 0 {
     return aggregate(joined, group_exprs, group_types, aggs)
@@ -61,7 +61,7 @@ fn grace_agg(
   aggs : Array[AggSpec],
   budget : Int32,
   store : SpillStore,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
   let total = batches_bytes(joined)
   let mut p = total * 4 / budget + 1
@@ -82,7 +82,7 @@ fn grace_agg(
     writers[k].flush()
   }
   if stats.length() > 0 {
-    stats.push(("spill partitions", p))
+    stats.push(("spill partitions", p.to_int64()))
   }
   errdefer (for w in writers {
     for id in w.ids {
@@ -92,15 +92,18 @@ fn grace_agg(
   let out : Array[@types.DataBatch] = []
   let dtypes : Array[@types.DataType] = []
   for k in 0..<p {
-    let part = read_partition(store, writers[k].ids)
-    let mut rows = 0
-    for b in part {
-      rows += b.row_count()
-    }
-    if rows == 0 {
+    if writers[k].ids.length() == 0 {
       continue // more partitions than distinct keys: nothing to aggregate
     }
-    let grouped = aggregate(part, group_exprs, group_types, aggs)
+    // pull the partition one run at a time: a hot group key can make a
+    // partition far larger than the budget, and materializing it first
+    // would defeat the budget entirely
+    let grouped = aggregate_seq(
+      BatchSeq::of_runs(store, writers[k].ids),
+      group_exprs,
+      group_types,
+      aggs,
+    )
     if dtypes.is_empty() {
       for col in grouped.columns() {
         dtypes.push(col.dtype())

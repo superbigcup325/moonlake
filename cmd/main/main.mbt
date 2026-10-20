@@ -152,7 +152,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   }
   if explain || analyze {
     let rendered = if analyze {
-      @engine.explain_analyze(sql, cat) catch {
+      analyze_query(sql, cat, memory, spill_dir) catch {
         err => raise cli_fail(err.to_string())
       }
     } else {
@@ -190,9 +190,40 @@ fn cli_fail(msg : String) -> @types.SqlError {
 }
 
 ///|
+/// ANALYZE under the same memory options a real run would use: it
+/// executes the query, so the spill counters it reports must come from
+/// the budget the caller asked for (an in-memory analyze can never show
+/// a spill).
+fn analyze_query(
+  sql : String,
+  cat : @catalog.Catalog,
+  memory : Int32,
+  spill_dir : String?,
+) -> String raise @types.SqlError {
+  if memory <= 0 {
+    return @engine.explain_analyze(sql, cat)
+  }
+  let dir = match spill_dir {
+    Some(d) => d
+    None => pick_spill_dir()
+  }
+  let fs = @spill.FsStore::new(dir) catch {
+    err => raise cli_fail(err.to_string())
+  }
+  errdefer purge_spill_dir(dir)
+  let out = @engine.explain_analyze_with(sql, cat, {
+    budget: memory,
+    spill: Some(fs.store()),
+  })
+  purge_spill_dir(dir)
+  out
+}
+
+///|
 /// Run the query under the memory options: a positive budget spills the
 /// blocking ORDER BY to a per-run directory (default under TMPDIR).
-/// The directory is removed best-effort once the query ends.
+/// The directory is purged once the query ends, on both the success and
+/// the error path.
 fn run_query(
   sql : String,
   cat : @catalog.Catalog,
@@ -209,15 +240,61 @@ fn run_query(
   let fs = @spill.FsStore::new(dir) catch {
     err => raise cli_fail(err.to_string())
   }
-  errdefer {
-    let _ = @fs.remove_dir(dir) catch { _ => () }
-  }
+  errdefer purge_spill_dir(dir)
   let result = @moonlake.execute_with(sql, cat, {
     budget: memory,
     spill: Some(fs.store()),
   })
-  let _ = @fs.remove_dir(dir) catch { _ => () }
+  purge_spill_dir(dir)
   result
+}
+
+///|
+
+///|
+/// Remove the run files of a spill directory, then the directory itself.
+///
+/// Only files this store names (`run<n>.bin`) are deleted: `--spill-dir`
+/// accepts a caller's directory, and a purge that wiped everything in it
+/// would be a nasty surprise. The engine drops every run file it wrote,
+/// so in the normal case there is nothing to delete; this still clears
+/// what an earlier crash left behind. A directory that survives is
+/// reported rather than silently ignored — ignoring it is how one leaked
+/// temp tree per spilled query turns into a disk-full failure mid-query.
+fn purge_spill_dir(dir : String) -> Unit {
+  let entries = @fs.read_dir(dir) catch {
+    @fs.IOError(_) => return // already gone: nothing to purge
+  }
+  for name in entries {
+    if is_run_file(name) {
+      @fs.remove_file("\{dir}/\{name}") catch {
+        @fs.IOError(_) => ()
+      }
+    }
+  }
+  @fs.remove_dir(dir) catch {
+    @fs.IOError(msg) =>
+      eprintln("moonlake: warning: kept spill directory \{dir}: \{msg}")
+  }
+}
+
+///|
+/// `run<n>.bin`: the only file names this store writes.
+fn is_run_file(name : String) -> Bool {
+  if !(name.has_prefix("run") && name.has_suffix(".bin")) {
+    return false
+  }
+  let n = name.length()
+  if n <= 7 {
+    return false // "run" + at least one digit + ".bin"
+  }
+  let mut ok = true
+  for i, ch in name {
+    if i >= 3 && i < n - 4 && (ch < '0' || ch > '9') {
+      ok = false
+    }
+  }
+  ok
 }
 
 ///|

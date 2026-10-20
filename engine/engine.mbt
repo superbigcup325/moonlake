@@ -65,7 +65,7 @@ pub fn run_select_opts(
 fn run_parsed(
   sel : @sql.Select,
   catalog : @catalog.Catalog,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
@@ -191,7 +191,7 @@ fn run_parsed(
     for bt in batches {
       rows += bt.row_count()
     }
-    stats.push(("scan \{schemas[k].table}", rows))
+    stats.push(("scan \{schemas[k].table}", rows.to_int64()))
   }
   let joined = exec_joins(
     narrowed,
@@ -206,7 +206,7 @@ fn run_parsed(
     for bt in joined {
       joined_rows += bt.row_count()
     }
-    stats.push(("joins", joined_rows))
+    stats.push(("joins", joined_rows.to_int64()))
   }
   let kept : Array[@types.DataBatch] = if bq.aggregate {
     let grouped = aggregate_within_budget(
@@ -221,7 +221,7 @@ fn run_parsed(
       Some(h) => compact(grouped, eval_mask(h, grouped))
       None => grouped
     }
-    stats.push(("aggregate", grouped.row_count()))
+    stats.push(("aggregate", grouped.row_count().to_int64()))
     [grouped]
   } else {
     joined
@@ -254,7 +254,7 @@ fn run_parsed(
           stats,
         )
         if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
-          stats.push(("result", batch.row_count()))
+          stats.push(("result", batch.row_count().to_int64()))
         }
         return { names: bq.names, types: bq.out_types, batch, }
       }
@@ -272,7 +272,7 @@ fn run_parsed(
     let (pre2, resolved) = exec_windows(pre, bq.windows, out_exprs)
     out_exprs = resolved
     if stats.length() > 0 {
-      stats.push(("windows", pre2.row_count()))
+      stats.push(("windows", pre2.row_count().to_int64()))
     }
     pre2
   } else {
@@ -302,7 +302,7 @@ fn run_parsed(
     order_limit(projected, [], bq.limit, bq.offset)
   }
   if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
-    stats.push(("result", batch.row_count()))
+    stats.push(("result", batch.row_count().to_int64()))
   }
   { names: bq.names, types: bq.out_types, batch, }
 }
@@ -310,19 +310,34 @@ fn run_parsed(
 ///|
 /// Run the query and render the physical plan annotated with the
 /// actual row counts each stage produced — scans, join outputs,
-/// aggregate groups and the final result. No clocks: row counts are
-/// the deterministic part of ANALYZE.
+/// aggregate groups and the final result — plus what it spilled, if
+/// anything. No clocks: row counts and byte counts are the
+/// deterministic part of ANALYZE.
 pub fn explain_analyze(
   sql : String,
   catalog : @catalog.Catalog,
 ) -> String raise @types.SqlError {
-  let stats : Array[(String, Int32)] = []
-  let result = run_parsed(
-    @sql.parse_select(sql),
-    catalog,
-    stats,
-    ExecOptions::in_memory(),
-  )
+  explain_analyze_with(sql, catalog, ExecOptions::in_memory())
+}
+
+///|
+/// `explain_analyze` under explicit execution options. ANALYZE runs the
+/// query, so the budget has to come in here as well: a plan rendered
+/// under `ExecOptions::in_memory()` can never show a spill, which is
+/// exactly the case a reader of ANALYZE wants to see.
+pub fn explain_analyze_with(
+  sql : String,
+  catalog : @catalog.Catalog,
+  opts : ExecOptions,
+) -> String raise @types.SqlError {
+  let stats : Array[(String, Int64)] = []
+  let meter = SpillMeter::new()
+  let run_opts = match opts.spill {
+    Some(store) => { budget: opts.budget, spill: Some(meter.wrap(store)), }
+    None => opts
+  }
+  let result = run_parsed(@sql.parse_select(sql), catalog, stats, run_opts)
+  meter.report(stats)
   let sb = StringBuilder()
   sb.write_string(explain(sql, catalog))
   sb.write_string("\n-- actual rows")

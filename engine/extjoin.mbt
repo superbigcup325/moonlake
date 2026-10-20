@@ -120,37 +120,79 @@ fn partition_side(
 }
 
 ///|
+/// Cap on how many hash partitions one level may create.
+const JOIN_PARTITION_CAP : Int32 = 256
+
+///|
+/// How many times an over-budget partition may be split again. Two
+/// extra levels reach 256 x 256 partitions, which covers a very small
+/// budget against a much larger input; what they cannot cover is one
+/// join-key value holding most of a side, since equal keys must land in
+/// the same partition at every level.
+const JOIN_MAX_DEPTH : Int32 = 2
+
+///|
+/// Partition count for `bytes` under `budget`: proportional to the
+/// input, at least two, at most JOIN_PARTITION_CAP.
+fn partitions_for(bytes : Int32, budget : Int32) -> Int32 {
+  let mut p = bytes * 4 / budget + 1
+  if p < 2 {
+    p = 2
+  }
+  if p > JOIN_PARTITION_CAP {
+    p = JOIN_PARTITION_CAP
+  }
+  p
+}
+
+///|
 /// Grace hash join: partition both sides by join-key hash into spill
-/// runs, then replay `join_step` per partition and concatenate. P is
-/// derived from the estimated input bytes so one partition's build side
-/// fits the budget; a partition that still overflows (hash skew) is a
-/// clean error — recursive re-partitioning is future work.
+/// runs, then replay `join_step` per partition and concatenate.
+///
+/// A partition that still exceeds the budget after the first level is
+/// partitioned again (up to JOIN_MAX_DEPTH) instead of failing: the
+/// common cause is a small budget against a large input, where the
+/// partition cap alone leaves partitions too big. Equal keys land in
+/// the same partition at every level, so a multi-level split still
+/// computes exactly the global join. Only one kind of skew survives it
+/// — a single join-key value holding most of a side — and that is
+/// reported with a message that says so, because no hash partitioning
+/// can split a key.
 fn grace_join(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,
   budget : Int32,
   store : SpillStore,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
-  let total = batches_bytes(acc) + batches_bytes(right)
-  let mut p = total * 4 / budget + 1
-  if p < 2 {
-    p = 2
-  }
-  if p > 64 {
-    p = 64
-  }
+  let out = join_partitions(acc, right, step, budget, store, stats, 0)
+  concat_batches(out, step.out_dtypes)
+}
+
+///|
+/// One partitioning level of the grace join, recursing on over-budget
+/// partitions. `depth` counts the extra splits already applied.
+fn join_partitions(
+  left : Array[@types.DataBatch],
+  build : Array[@types.DataBatch],
+  step : JoinStep,
+  budget : Int32,
+  store : SpillStore,
+  stats : Array[(String, Int64)],
+  depth : Int32,
+) -> Array[@types.DataBatch] raise @types.SqlError {
+  let p = partitions_for(batches_bytes(left) + batches_bytes(build), budget)
   let wl : Array[RunWriter] = []
   let wr : Array[RunWriter] = []
   for _ in 0..<p {
     wl.push({ store, budget, acc: [], acc_bytes: 0, ids: [], })
     wr.push({ store, budget, acc: [], acc_bytes: 0, ids: [], })
   }
-  for batch in acc {
+  for batch in left {
     partition_side(batch, step.keys_l, wl)
   }
-  for batch in right {
+  for batch in build {
     partition_side(batch, step.keys_r, wr)
   }
   for k in 0..<p {
@@ -158,7 +200,11 @@ fn grace_join(
     wr[k].flush()
   }
   if stats.length() > 0 {
-    stats.push(("spill partitions", p))
+    if depth == 0 {
+      stats.push(("spill partitions", p.to_int64()))
+    } else {
+      stats.push(("spill repartitions", p.to_int64()))
+    }
   }
   errdefer remove_join_partitions(store, wl, wr)
   let out : Array[@types.DataBatch] = []
@@ -167,13 +213,27 @@ fn grace_join(
     let build_p = read_partition(store, wr[k].ids)
     let lb = batches_bytes(left_p)
     let bb = batches_bytes(build_p)
-    if lb > budget || bb > budget {
+    if lb <= budget && bb <= budget {
+      out.push(join_step(left_p, build_p, step))
+    } else if depth < JOIN_MAX_DEPTH {
+      let sub = join_partitions(
+        left_p,
+        build_p,
+        step,
+        budget,
+        store,
+        stats,
+        depth + 1,
+      )
+      for b in sub {
+        out.push(b)
+      }
+    } else {
       raise @types.SqlError::Execute(
-        "join partition \{k} exceeds the memory budget (left \{lb} + build \{bb} bytes > \{budget}); hash skew on the join key or budget too small",
+        "join partition \{k} exceeds the memory budget (left \{lb} + build \{bb} bytes > \{budget}) after \{depth} extra split level(s); one join-key value dominates a side, which no hash partitioning can split — raise the budget or filter that key",
       )
     }
-    out.push(join_step(left_p, build_p, step))
   }
   remove_join_partitions(store, wl, wr)
-  concat_batches(out, step.out_dtypes)
+  out
 }

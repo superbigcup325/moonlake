@@ -448,11 +448,78 @@ fn acc_step_num(acc : Acc, as_int : Int64, as_f64 : Double) -> Unit {
 }
 
 ///|
+/// A pull-based batch source for aggregation. `next` returns `None`
+/// exactly once, at the end.
+priv struct BatchSeq {
+  next : () -> @types.DataBatch? raise @types.SqlError
+}
+
+///|
+/// A sequence over batches the caller already holds.
+fn BatchSeq::of_batches(batches : Array[@types.DataBatch]) -> BatchSeq {
+  let mut i = 0
+  {
+    next: fn() {
+      if i < batches.length() {
+        let b = batches[i]
+        i += 1
+        Some(b)
+      } else {
+        None
+      }
+    },
+  }
+}
+
+///|
+/// A sequence over spill files: each file is decoded when the cursor
+/// reaches it and dropped once its batches have been consumed, so a
+/// partition made of many runs stays bounded by one run file.
+fn BatchSeq::of_runs(store : SpillStore, ids : Array[Int32]) -> BatchSeq {
+  let mut file = 0
+  let mut decoded : Array[@types.DataBatch] = []
+  let mut inner = 0
+  {
+    next: fn() -> @types.DataBatch? raise @types.SqlError {
+      let mut out : @types.DataBatch? = None
+      let mut done = false
+      while !done {
+        if inner < decoded.length() {
+          out = Some(decoded[inner])
+          inner += 1
+          done = true
+        } else if file < ids.length() {
+          decoded = @types.DataBatch::from_spill_bytes((store.read)(ids[file]))
+          inner = 0
+          file += 1
+        } else {
+          done = true
+        }
+      }
+      out
+    },
+  }
+}
+
+///|
 /// Hash aggregation: one output row per distinct group key (in first-
 /// seen order). With no GROUP BY the result is exactly one row, even for
 /// empty input.
 fn aggregate(
   batches : Array[@types.DataBatch],
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch raise @types.SqlError {
+  aggregate_seq(BatchSeq::of_batches(batches), group_exprs, group_types, aggs)
+}
+
+///|
+/// The pull form of `aggregate`: the group state is built batch by batch,
+/// so a caller that decodes spill runs (grace aggregation) never holds a
+/// whole partition in memory — one run file plus the state at most.
+fn aggregate_seq(
+  seq : BatchSeq,
   group_exprs : Array[PhysExpr],
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
@@ -476,7 +543,7 @@ fn aggregate(
   let acc_rows : Array[Array[Acc]] = []
   let mut null_gi = -1
   let mut zero_created = false
-  for batch in batches {
+  while (seq.next)() is Some(batch) {
     // evaluate group keys and aggregate inputs once per batch, then the
     // row loop reads the materialized columns
     let key_cols : Array[@types.ColumnVector] = []
@@ -1026,7 +1093,7 @@ fn exec_joins(
   steps : Array[JoinStep],
   deferred : PhysExpr?,
   opts : ExecOptions,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
   prescanned : Array[Bool],
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   if steps.length() == 0 {
@@ -1061,7 +1128,7 @@ fn join_or_spill(
   right : Array[@types.DataBatch],
   step : JoinStep,
   opts : ExecOptions,
-  stats : Array[(String, Int32)],
+  stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
   if opts.budget <= 0 {
     return join_step(acc, right, step)

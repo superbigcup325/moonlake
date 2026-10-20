@@ -2326,10 +2326,11 @@ priv struct MemBox {
 }
 
 ///|
-/// A hermetic in-memory SpillStore for engine tests.
-fn mem_store() -> @engine.SpillStore {
+/// A hermetic in-memory SpillStore for engine tests, plus the box that
+/// holds its files, so a test can assert what a query left behind.
+fn mem_store_boxed() -> (@engine.SpillStore, MemBox) {
   let box : MemBox = { next: 0, files: Map([]), }
-  {
+  let store : @engine.SpillStore = {
     write: fn(b : Bytes) -> Int32 {
       let id = box.next
       box.next += 1
@@ -2344,6 +2345,14 @@ fn mem_store() -> @engine.SpillStore {
     },
     remove: fn(id : Int32) -> Unit { let _ = box.files.remove(id) },
   }
+  (store, box)
+}
+
+///|
+/// A hermetic in-memory SpillStore for engine tests.
+fn mem_store() -> @engine.SpillStore {
+  let (store, _) = mem_store_boxed()
+  store
 }
 
 ///|
@@ -2407,6 +2416,64 @@ test "external sort honors DISTINCT and desc/asc mixes" {
     run(q2, cat),
     run_opts(q2, cat, { budget: 900, spill: Some(mem_store()), }),
   )
+}
+
+///|
+/// Regression: a spilled sort used to leak every intermediate run file
+/// it wrote while merging, because `reduce_and_merge` only removed them
+/// on the raising path. On disk that meant one leftover directory per
+/// spilled query (the CLI's non-recursive `remove_dir` then failed
+/// silently); here an in-memory store can be inspected directly.
+test "a spilled sort removes every run file it wrote" {
+  let cat = spill_catalog()
+  let (store, box) = mem_store_boxed()
+  let _ = run_opts("SELECT k, v FROM t ORDER BY v, k", cat, {
+    budget: 1500,
+    spill: Some(store),
+  })
+  assert_eq(box.files.length(), 0)
+}
+
+///|
+/// The error path must be just as clean: a skewed join that refuses to
+/// run has already written every partition file by then.
+test "a failed spilled query removes every run file it wrote" {
+  let sb = StringBuilder()
+  sb.write_string("id,k,pad\n")
+  for i in 0..<5000 {
+    sb.write_string(
+      "\{i},1,padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad\n",
+    )
+  }
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k\n")
+  for i in 0..<10 {
+    sb2.write_string("\{i},1\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  let (store, box) = mem_store_boxed()
+  let _ = @engine.run_select_opts(
+    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    cat,
+    { budget: 8192, spill: Some(store), },
+  ) catch {
+    e => {
+      assert_true(e.to_string().contains("exceeds the memory budget"))
+      assert_eq(box.files.length(), 0)
+      return
+    }
+  }
+  abort("expected a hash-skew error")
 }
 
 ///|
@@ -2646,6 +2713,44 @@ test "grace join errors: a skewed key that outgrows every partition is an error"
     }
   }
   abort("expected a hash-skew error")
+}
+
+///|
+test "grace join splits an over-budget partition again instead of failing" {
+  // 200k rows over 200k distinct keys under a 4 KiB budget: the first
+  // level is capped at 256 partitions, so a partition still holds more
+  // than the budget. Before multi-level partitioning that was a hard
+  // error even though no key dominates; now it is split again and the
+  // join completes.
+  let sb = StringBuilder()
+  sb.write_string("id,k\n")
+  for i in 0..<200000 {
+    sb.write_string("\{i},\{i}\n")
+  }
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k\n")
+  for i in 0..<100 {
+    sb2.write_string("\{i + 1000},\{i}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  let (store, box) = mem_store_boxed()
+  let got = run_opts(
+    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    cat,
+    { budget: 4096, spill: Some(store), },
+  )
+  assert_eq(got.get(0, 0), @types.Int64(100L))
+  assert_eq(box.files.length(), 0)
 }
 
 ///|
