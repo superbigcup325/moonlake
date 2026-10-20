@@ -1,0 +1,192 @@
+{
+  "schema": 1,
+  "kind": "moonlake-release-baseline",
+  "created_at": "2026-10-20T23:40:48+0800",
+  "release": {
+    "version": "0.3.1",
+    "git_commit": "3d766de28279c1a39d3aad54617575df019e3376",
+    "git_branch": "main",
+    "git_subject": "fix(harness): don't call a fresh spill driver stale, and record CPU MHz",
+    "git_dirty": false,
+    "binary": "_build/native/release/build/cmd/main/main.exe",
+    "binary_sha256": "7d405d0042116e4db79da2f97d4ec7d7081a4f10ebe1fe5773f27ae42c4e6d12"
+  },
+  "environment": {
+    "toolchain": {
+      "raw": [
+        "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon",
+        "moonc v0.10.16+b1a0e846e (2026-10-16) ~/.moon/bin/moonc",
+        "moonrun 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moonrun",
+        "",
+        "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+      ],
+      "moon": "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon"
+    },
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "cpu_mhz_at_start": 1731,
+    "kernel": "7.2.11-1-cachyos",
+    "os": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      1.86474609375,
+      2.361328125,
+      2.51318359375
+    ],
+    "python": "3.14.8"
+  },
+  "method": {
+    "runs": 7,
+    "warmups": 2,
+    "statistic": "fastest wall time after the warm-ups",
+    "stdout": "drained to a temp file and hashed (SHA-256), not stored",
+    "data": "harness/data/sf01",
+    "data_note": "TPC-H SF0.1, tracked in the repository; regenerate with `python harness/gen_tpch.py 0.1`",
+    "build": "native release (`moon build cmd/main --target native --release`)"
+  },
+  "cases": [
+    {
+      "id": "scan/count_csv",
+      "family": "scan",
+      "what": "count(*) over lineitem.csv: schema only, no column decoded",
+      "wall_ms": 204.6,
+      "median_ms": 207.1,
+      "cpu_ms": 202.5,
+      "rss_mb": 340.9,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/filtered_count_csv",
+      "family": "scan",
+      "what": "count(*) with a one-column predicate: decode + filter",
+      "wall_ms": 211.0,
+      "median_ms": 212.9,
+      "cpu_ms": 209.8,
+      "rss_mb": 345.1,
+      "output_sha256": "9f4edf695e6314ddc5f3ea07ae2497a86ea9bec7bdce26080c38e169f231d5c3",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/parquet_count",
+      "family": "scan",
+      "what": "count(*) over lineitem.parquet: footer only, no column chunk read",
+      "wall_ms": 10.9,
+      "median_ms": 12.0,
+      "cpu_ms": 10.6,
+      "rss_mb": 24.9,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "scan/parquet_sum",
+      "family": "scan",
+      "what": "sum(l_quantity) over lineitem.parquet: one column chunk per group",
+      "wall_ms": 18.5,
+      "median_ms": 22.8,
+      "cpu_ms": 18.1,
+      "rss_mb": 39.1,
+      "output_sha256": "62ad427c9c47764ae7071d38f5d061d48d0a52bf2c7637d47947770b5e90a842",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "join/two_table_count",
+      "family": "join",
+      "what": "lineitem x orders hash join, count(*) only",
+      "wall_ms": 263.0,
+      "median_ms": 275.6,
+      "cpu_ms": 261.4,
+      "rss_mb": 344.9,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "join/q3",
+      "family": "join",
+      "what": "TPC-H Q3 official text over three CSV tables (build+probe+group+top-N)",
+      "wall_ms": 286.8,
+      "median_ms": 296.6,
+      "cpu_ms": 285.2,
+      "rss_mb": 290.9,
+      "output_sha256": "78b510ebf57948a1ebf6a89b6c1a337dbed494ef941102b798b1e52804c9a3b0",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "gather/wide_projection",
+      "family": "gather",
+      "what": "filter then wide projection inside a derived table: the 16 materialized columns are assembled by per-column gathers, and only one output row is printed",
+      "wall_ms": 488.8,
+      "median_ms": 493.3,
+      "cpu_ms": 485.4,
+      "rss_mb": 372.7,
+      "output_sha256": "25ad7303da3136745ece964d42bb4c45a574bb02300ff32f0633472c2d5749a3",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "gather/self_join_fanout",
+      "family": "gather",
+      "what": "self-join emitting 600k wide rows, counted: join-output assembly gathers 16 columns per output row",
+      "wall_ms": 418.4,
+      "median_ms": 428.8,
+      "cpu_ms": 416.0,
+      "rss_mb": 386.9,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {}
+    },
+    {
+      "id": "spill/order_by_wide",
+      "family": "spill",
+      "what": "two-column external sort over 600k rows under a 2 MB budget (must actually spill)",
+      "wall_ms": 469.5,
+      "median_ms": 476.2,
+      "cpu_ms": 467.8,
+      "rss_mb": 344.9,
+      "output_sha256": "003b819440e02d0d6adc6fbfcf61199c2c0a3605d79364388e6b7e29cd650f3e",
+      "output_stable": true,
+      "extra": {
+        "budget": "2M",
+        "require_spill_files": 1,
+        "spill_files": 7
+      }
+    },
+    {
+      "id": "spill/format_write",
+      "family": "spill",
+      "what": "MLSPILL3 encode+write of every lineitem batch (release driver)",
+      "wall_ms": 1191.7,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 404.3,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    },
+    {
+      "id": "spill/format_read",
+      "family": "spill",
+      "what": "MLSPILL3 read+decode of the same file (release driver)",
+      "wall_ms": 429.4,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 230.4,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    }
+  ]
+}

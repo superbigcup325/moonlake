@@ -100,8 +100,8 @@ embed as hex; it needs pyarrow rather than duckdb because duckdb floors
 
 ```bash
 python3 harness/bench_release.py                     # measure, print a table
-python3 harness/bench_release.py --json-out harness/baseline/2026-10-20.json
-python3 harness/bench_release.py --compare harness/baseline/2026-10-20.json
+python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.json
+python3 harness/bench_release.py --compare harness/baseline/2026-10-20-0.3.1.json
 ```
 
 One record, one machine: scan (CSV/Parquet), join (2-table and Q3), gather
@@ -111,10 +111,12 @@ the toolchain, CPU/governor/kernel, git commit, binary hash and load average,
 times the fastest of `--runs` (default 7) after two warm-ups with both wall
 and CPU time, and hashes each case's stdout so `--compare` can tell "same
 work, different speed" from "the result changed". `harness/baseline/` holds
-the committed records; `docs/bench-baseline.md` is the human-readable one,
-including the measured noise floor (±7% on the same binary). Numbers are only
-comparable on the same machine and data (TPC-H SF0.1, tracked in
-`harness/data/sf01`; SF0.01 was too short to survive host noise).
+one committed record per release (`<date>-<version>.json`);
+`docs/bench-baseline.md` is the human-readable one, including the measured
+noise floor (±7% within a session, up to ~25% across sessions on the same
+binary). Numbers are only comparable on the same machine and data (TPC-H
+SF0.1, tracked in `harness/data/sf01`; SF0.01 was too short to survive host
+noise).
 
 ## Playground acceptance (`playground_accept.cjs`)
 

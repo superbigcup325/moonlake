@@ -412,7 +412,7 @@ moon build cmd/main --target native
 python3 harness/measure.py sf001 sf01
 python3 harness/bench_scan.py --base <binary of the previous commit> --big
   # --big needs pyarrow: uv run --with pyarrow python harness/bench_scan.py
-python3 harness/bench_release.py --compare harness/baseline/2026-10-20.json
+python3 harness/bench_release.py --compare harness/baseline/2026-10-20-0.3.1.json
   # release baseline: scan/join/gather/spill, see docs/bench-baseline.md
 node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
   # browser acceptance; serve playground/index.html + playground.wasm first

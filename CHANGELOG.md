@@ -38,8 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   scan, join, gather and spill, with the toolchain, machine, git commit and
   binary hash alongside the numbers, stdout hashes to prove the work did not
   change, and `--compare` for release-to-release deltas. The first record is
-  [`harness/baseline/2026-10-20.json`](harness/baseline/2026-10-20.json), read
-  in [`docs/bench-baseline.md`](docs/bench-baseline.md)
+  [`harness/baseline/2026-10-20-0.3.1.json`](harness/baseline/2026-10-20-0.3.1.json),
+  with the 0.3.0-era record beside it, read in
+  [`docs/bench-baseline.md`](docs/bench-baseline.md)
 - 2026-10-20 `harness/playground_accept.cjs`: drives the playground in headless
   Chromium — CSV and Parquet uploads with DATE columns, two error paths, a
   cross-file JOIN (refused by name) and a same-file self-join
