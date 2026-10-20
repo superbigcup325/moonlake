@@ -95,3 +95,22 @@ what makes the row-group skipping measurable. `gen_parquet_stats.py` writes the
 small fixtures (`harness/data/parquet/stats/`) that the lazy-scan unit tests
 embed as hex; it needs pyarrow rather than duckdb because duckdb floors
 `ROW_GROUP_SIZE` at 2048 rows.
+
+## Playground acceptance (`playground_accept.cjs`)
+
+```bash
+moon build --target wasm-gc playground
+mkdir -p /tmp/site && cp playground/index.html /tmp/site/ \
+  && cp _build/wasm-gc/debug/build/playground/playground.wasm /tmp/site/
+python3 -m http.server 8971 --directory /tmp/site &
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
+  node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
+```
+
+Drives the real page in headless Chromium: CSV upload, Parquet upload with
+DATE columns, two error paths, a cross-file JOIN (refused by name — the page
+holds one table), a same-file self-join, and a no-uncaught-JS-error check.
+Playwright is not a project dependency; a real browser is the manual step
+release acceptance needs, and this script is that step written down. CI only
+guards the wasm's import list (the `Playground wasm is host-free` step), which
+is what silently broke the 0.3.0 page.
