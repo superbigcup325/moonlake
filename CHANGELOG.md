@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-20
+
+> First release since `0.1.0` (published 2026-10-03). The `0.2.0` entries
+> below record an internal development milestone that was never published on
+> its own; everything since `0.1.0` ships in this version.
 
 ### Added
 
@@ -52,41 +56,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   single group 424→47 ms, peak RSS 130→32-39 MB; `harness/bench_scan.py`
   reproduces the comparison
 
-### Changed
-
-- 2026-10-20 the Parquet scan no longer concatenates row groups into one
-  batch; the reader decodes one chunk of one row group at a time, which is
-  what makes streaming and skipping possible. A full 16-column read (the shape
-  of q6p's derived table) is 152→142 ms but needs ~3 MB more, because the
-  scan's batches are what the engine then materializes
-- 2026-10-20 `write_bytes`/`write_file` materialize a lazy entry before
-  writing it, so a CSV or Parquet table can be written out without a separate
-  copy step
-- 2026-10-20 `moonbitlang/x` 0.5.5 → 0.5.6 (the latest `quickcheck`, 0.15.0,
-  and `colenc` 0.1.0 are unchanged). Nothing in this tree changes behavior: it
-  already uses `moonbitlang/core/encoding/utf8` rather than the now-deprecated
-  `@unicode` helpers, and the new `@time` zone loading is unused here. The one
-  upstream behavior change that reaches us is
-  `@fs.read_file_to_string`, which the CLI uses for `--file <f>`: malformed
-  UTF-8 now decodes to U+FFFD instead of dropping the trailing bytes. 200 tests
-  on wasm-gc/native/js and the 27-query golden chain are unchanged
-
-### Fixed
-
-- 2026-10-20 a Parquet file that is both out of scope and internally
-  inconsistent now reports the scope refusal: registering a table ran the
-  footer row-count check before the schema gate, so a file with an unsupported
-  schema *and* a wrong `num_rows` (apache/parquet-testing's
-  `repeated_no_annotation.parquet` carries `num_rows = 0` over a 6-row group)
-  failed with "row groups hold 6 rows, the file metadata says 0" instead of
-  "nested schemas are not supported". The schema gate runs first again, so
-  `harness/check_parquet_corpus.py` is back to 39 read / 29 refused by design /
-  0 failing
-
-## [0.3.0] - 2026-10-19
-
-### Added
-
 - 2026-10-19 the spill format is MLSPILL3: presence is a bitmap instead of one
   byte per row. A column with no NULLs costs a single mode byte and a nullable
   one `ceil(rows / 8)` bytes, so the bake-off file drops from 5.10 MB to 4.13 MB
@@ -121,14 +90,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- 2026-10-20 the Parquet scan no longer concatenates row groups into one
+  batch; the reader decodes one chunk of one row group at a time, which is
+  what makes streaming and skipping possible. A full 16-column read (the shape
+  of q6p's derived table) is 152→142 ms but needs ~3 MB more, because the
+  scan's batches are what the engine then materializes
+- 2026-10-20 `write_bytes`/`write_file` materialize a lazy entry before
+  writing it, so a CSV or Parquet table can be written out without a separate
+  copy step
+- 2026-10-20 `moonbitlang/x` 0.5.5 → 0.5.6 (the latest `quickcheck`, 0.15.0,
+  and `colenc` 0.1.0 are unchanged). Nothing in this tree changes behavior: it
+  already uses `moonbitlang/core/encoding/utf8` rather than the now-deprecated
+  `@unicode` helpers, and the new `@time` zone loading is unused here. The one
+  upstream behavior change that reaches us is
+  `@fs.read_file_to_string`, which the CLI uses for `--file <f>`: malformed
+  UTF-8 now decodes to U+FFFD instead of dropping the trailing bytes. 200 tests
+  on wasm-gc/native/js and the 27-query golden chain are unchanged
+
 - 2026-10-19 `superbigcup325/colenc@0.1.0` is on mooncakes, so the module
   resolves its encoding kernel from the registry like any other dependency: a
-  plain checkout builds with `moon update && moon install`, CI needs no
-  workspace definition, and `moon publish --dry-run` validates a clean unpack
-  again. The local-only `moon.work` + symlink setup is gone; the README keeps
-  the recipe for editing both modules side by side
+  plain checkout builds after `moon update` (the dependency graph downloads on
+  the first check/build/test), CI needs no workspace definition, and
+  `moon publish --dry-run` validates a clean unpack again. The local-only
+  `moon.work` + symlink setup is gone; the README keeps the recipe for editing
+  both modules side by side
 
 ### Fixed
+
+- 2026-10-20 a Parquet file that is both out of scope and internally
+  inconsistent now reports the scope refusal: registering a table ran the
+  footer row-count check before the schema gate, so a file with an unsupported
+  schema *and* a wrong `num_rows` (apache/parquet-testing's
+  `repeated_no_annotation.parquet` carries `num_rows = 0` over a 6-row group)
+  failed with "row groups hold 6 rows, the file metadata says 0" instead of
+  "nested schemas are not supported". The schema gate runs first again, so
+  `harness/check_parquet_corpus.py` is back to 39 read / 29 refused by design /
+  0 failing
 
 - 2026-10-20 `harness/compare.py` judged the goldens too loosely in five ways,
   each able to pass a real divergence: an empty cell counted as SQL NULL (so
@@ -147,7 +144,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.2.0] - 2026-10-16
 
-> Covers everything since `0.1.0` (published 2026-10-03).
+> Not published on its own: this milestone's changes ship in `0.3.0`.
 
 ### Changed
 

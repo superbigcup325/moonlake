@@ -107,15 +107,14 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-> The registry release lags `main`: everything this README describes is on
-> `main`, whose version is not published yet. `moon add` gives you the last
-> published release.
+> `moon add` gives you the latest release from mooncakes (0.3.0). Everything
+> this README describes is in it.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
 
 ```bash
-moon update && moon install   # fetch the registry index and dependencies
+moon update   # refresh the registry index; the graph downloads on the first check
 moon check
 ```
 
@@ -128,8 +127,6 @@ printf 'members = [".", "./.colenc"]\n' > moon.work
 ```
 
 Remove both again before checking what a consumer actually installs.
-
-If you need something that installs today, use the registry release (0.1.0).
 
 ```moonbit nocheck
 // a @catalog.Catalog with registered table entries — @csv/@parquet
