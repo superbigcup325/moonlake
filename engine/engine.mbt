@@ -726,7 +726,8 @@ pub fn explain(
 
 ///|
 /// Whole result as one JSON array line. Strings are escaped; SQL NULL
-/// becomes null.
+/// becomes null. DATE renders as a quoted calendar date (DuckDB's own JSON
+/// spelling), not a bare epoch integer.
 pub fn SelectResult::to_json(self : SelectResult) -> String {
   let sb = StringBuilder()
   sb.write_char('[')
@@ -747,6 +748,11 @@ pub fn SelectResult::to_json(self : SelectResult) -> String {
         @types.Str(v) => {
           sb.write_char('"')
           sb.write_string(json_escape(v))
+          sb.write_char('"')
+        }
+        @types.Date(v) => {
+          sb.write_char('"')
+          sb.write_string(@types.epoch_to_string(v))
           sb.write_char('"')
         }
         other => sb.write_string(other.to_string())

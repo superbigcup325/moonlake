@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moonlake playground</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232563eb'/%3E%3Cpath d='M6 19h20v3H6z' fill='%23fff' opacity='.85'/%3E%3Cpath d='M6 24h13v3H6z' fill='%23fff' opacity='.55'/%3E%3C/svg%3E">
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
@@ -127,13 +128,13 @@ async function runSQL() {
   let out;
   try {
     out = load($('sql').value);
-  } catch (e) { $('err').textContent = String(e); return; }
+  } catch (e) { $('err').textContent = String(e); $('status').textContent = 'failed'; return; }
   const ms = performance.now() - t0;
   try {
     const parsed = JSON.parse(out);
     if (parsed && parsed.error) { $('err').textContent = parsed.error; $('status').textContent = 'failed'; return; }
     render(out, ms);
-  } catch { $('err').textContent = out; }
+  } catch { $('err').textContent = out; $('status').textContent = 'failed'; }
 }
 $('run').addEventListener('click', runSQL);
 addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') runSQL(); });

@@ -968,6 +968,19 @@ test "CAST converts across types and errors on garbage" {
 }
 
 ///|
+test "to_json quotes DATE values instead of emitting bare epoch days" {
+  let cat = q6_catalog()
+  // 1994-01-01 is a DATE column inferred from CSV: bare epoch days (8766)
+  // would be a JSON number, which loses the date and is not what DuckDB's
+  // own JSON output shows.
+  let r = run("SELECT l_shipdate AS d FROM lineitem ORDER BY d LIMIT 1", cat)
+  assert_eq(r.to_json(), "[{\"d\":\"1994-01-01\"}]")
+  // NULL stays null (not quoted) in a DATE column
+  let n = run("SELECT CAST(NULL AS date) AS d FROM lineitem LIMIT 1", cat)
+  assert_eq(n.to_json(), "[{\"d\":null}]")
+}
+
+///|
 test "simple CASE compares the base expression" {
   let cat = funcs_catalog()
   let r = run(
