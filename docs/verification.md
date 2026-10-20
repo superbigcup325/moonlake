@@ -571,3 +571,68 @@ have; that is a gap in the workloads, not a claim about the change.
 Counters are taken at the store boundary (one wrapper around the caller's
 `SpillStore`, `engine/options.mbt`), not inside each operator, so a future
 spilling operator cannot forget to report itself.
+
+## 11. Parquet write path (2026-10-21)
+
+The writer existed but was invisible to everyone: no CLI path, no annotations,
+no statistics, no compression. A written file was a valid Parquet file that no
+consumer could interpret — a DATE came back as an integer, a string column as a
+BLOB — and moonlake's own statistics-based row-group skipping could not prune
+its own output.
+
+**Annotations.** `w_schema_leaf` now writes the standard `STRING` and `DATE`
+annotations on both spellings: the deprecated `ConvertedType` (field 6) and the
+current `LogicalType` union (field 10), because consumers disagree on which one
+they look at. The reader parses both (`parse_logical_type`, plus field 6) and
+acts on them: an annotated DATE column no longer needs `--date-col`, which the
+writer's own round trip now demonstrates (a written DATE reads back as
+`@types.Date` with no `--date-col`).
+
+**Refusals instead of wrong answers.** An annotation with no faithful engine
+type is refused at registration:
+
+| annotation | before | now |
+|---|---|---|
+| DECIMAL (all physical types) | byte array decoded lossily as text | `column "x": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)` |
+| UINT_32 | read as INT32, large values negative | refused, names the overflow |
+| UINT_64 | read as INT64, large values negative | refused, names the overflow |
+
+On apache/parquet-testing (71 files) that moved six files from "read" to
+"refused by design": `byte_array_decimal`, `fixed_length_decimal`,
+`fixed_length_decimal_legacy`, `int32_decimal`, `int64_decimal`,
+`concatenated_gzip_members` (which carries a UINT_64 column). The corpus check
+now reports 35 read, 33 refused, 0 failing — the reader did not lose a file it
+could actually answer.
+
+**Statistics.** Each column chunk carries `null_count` plus `min_value` /
+`max_value` (fields 3, 5, 6) marked exact (7, 8). The deprecated `min`/`max`
+pair is deliberately not written: for BYTE_ARRAY it was defined in signed byte
+order, which is a trap this reader refuses to trust on the way in. Bounds are
+omitted rather than guessed when they cannot be proven: a NaN in a float column
+makes min/max meaningless, and a string column containing non-ASCII bytes could
+be ordered differently by a byte-comparing reader and this string-comparing one.
+The whitebox test `the writer's statistics let the reader skip a row group`
+writes two row groups (0–9 and 100–109) and asserts `row_groups_skipped = 1` for
+`v < 50` — the loop is closed.
+
+**Snappy.** A ~120-line LZ77 compressor in the Snappy block format (14-bit hash
+table over 4-byte sequences, literals between matches, `copy2` tags) sits beside
+the decoder in `sources/parquet/snappy.mbt`; `--snappy` and
+`write_bytes_with`/`write_file_with` store pages compressed, and page/chunk
+headers carry both sizes plus codec id 1. Measured on a 4000-row text table:
+140,274 → 24,323 bytes. Round-trip tests cover empty, sub-match, a 200-byte run,
+incompressible bytes and a 200 KB block (the 64 KiB offset window).
+
+**Bidirectional acceptance.** `harness/check_writer_interop.py` (new CI job
+`writer`) writes the same four-row table raw and with Snappy, then:
+
+1. pyarrow reads it: `string`, `date32[day]`, `int32`, `int64`, `double`, `bool`
+   — and the NULLs and the `é` string survive;
+2. DuckDB reads it: `VARCHAR`, `DATE`, `INTEGER`, `BIGINT`, `DOUBLE`,
+   `BOOLEAN`, same values;
+3. moonlake reads it back with no `--date-col`;
+4. DuckDB writes its own file (`COPY … TO … (format parquet)`) and moonlake
+   reads that one with no `--date-col` either.
+
+The CLI form is `moonlake write --csv in.csv --out out.parquet [--snappy]
+[--table <name>]`; the library form is `write_file_with(path, entry, codec)`.

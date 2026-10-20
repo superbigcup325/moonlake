@@ -1,4 +1,77 @@
 ///|
+/// `--csv` globs expand to their matches; several matches scan into ONE table
+/// named after the pattern (partitioned-dataset shape). `--parquet` stays
+/// single-file. Each group is (table name, kind, files).
+fn build_groups(
+  paths : Array[(String, String)],
+) -> Array[(String, String, Array[String])] raise {
+  let groups : Array[(String, String, Array[String])] = []
+  for pair in paths {
+    if pair.0 == "csv" && pair.1.contains("*") {
+      let hits = expand_glob(pair.1)
+      if hits.length() == 0 {
+        raise cli_fail("the --csv pattern \{pair.1} matched no files")
+      }
+      let name = if hits.length() == 1 {
+        table_stem(hits[0])
+      } else {
+        pattern_stem(pair.1)
+      }
+      groups.push((name, "csv", hits))
+    } else {
+      groups.push((table_stem(pair.1), pair.0, [pair.1]))
+    }
+  }
+  groups
+}
+
+///|
+/// Register every input as a table. A misspelled `--date-col` would otherwise
+/// be a silent no-op and only surface later as a confusing int32-vs-date type
+/// mismatch, so it is checked against the registered schemas.
+fn register_inputs(
+  groups : Array[(String, String, Array[String])],
+  date_cols : Array[String],
+) -> @catalog.Catalog raise {
+  let cat = @catalog.Catalog::new()
+  for (name, kind, files) in groups {
+    let entry = match kind {
+      "parquet" =>
+        @pq.scan_file(files[0], name, date_cols) catch {
+          err => raise cli_fail(err.to_string())
+        }
+      _ =>
+        if files.length() > 1 {
+          @csv.scan_files(files, name) catch {
+            err => raise cli_fail(err.to_string())
+          }
+        } else {
+          @csv.scan_file(files[0], name) catch {
+            err => raise cli_fail(err.to_string())
+          }
+        }
+    }
+    cat.register(entry)
+  }
+  for dc in date_cols {
+    let mut found = false
+    for _, entry in cat.tables {
+      for col in entry.schema.columns {
+        if col.name == dc {
+          found = true
+        }
+      }
+    }
+    if !found {
+      raise cli_fail(
+        "--date-col: no column named \"\{dc}\" in any scanned table",
+      )
+    }
+  }
+  cat
+}
+
+///|
 /// Entry point for the `moonlake` CLI.
 /// Run with `moon run cmd/main` from the project root.
 fn main raise {
@@ -15,6 +88,10 @@ fn main raise {
     exec_command(args)
     return
   }
+  if args.length() > 1 && args[1] == "write" {
+    write_command(args)
+    return
+  }
   // the classic first-commands slip: flags without the subcommand
   if args.length() > 1 && (args[1] == "--csv" || args[1] == "--parquet") {
     eprintln(
@@ -23,6 +100,96 @@ fn main raise {
     @sys.exit(1)
   }
   println(usage())
+}
+
+///|
+/// `write`: register the inputs and write one table back out as Parquet.
+/// This is the writer's only way out of the library. Without it a round trip
+/// cannot be scripted, and a round trip that is not scripted cannot be checked
+/// against another reader.
+fn write_command(args : Array[String]) -> Unit raise {
+  let paths : Array[(String, String)] = []
+  let date_cols : Array[String] = []
+  let mut out : String? = None
+  let mut table : String? = None
+  let mut codec = @pq.ParquetCodec::Raw
+  let mut i = 2
+  let n = args.length()
+  while i < n {
+    if args[i] == "--csv" && i + 1 < n {
+      paths.push(("csv", args[i + 1]))
+      i += 2
+    } else if args[i] == "--parquet" && i + 1 < n {
+      paths.push(("parquet", args[i + 1]))
+      i += 2
+    } else if args[i] == "--date-col" && i + 1 < n {
+      date_cols.push(args[i + 1])
+      i += 2
+    } else if args[i] == "--out" && i + 1 < n {
+      out = Some(args[i + 1])
+      i += 2
+    } else if args[i] == "--table" && i + 1 < n {
+      table = Some(args[i + 1])
+      i += 2
+    } else if args[i] == "--snappy" {
+      codec = @pq.ParquetCodec::Snappy
+      i += 1
+    } else {
+      raise cli_fail(write_usage())
+    }
+  }
+  let out = match out {
+    Some(o) => o
+    None => raise cli_fail(write_usage())
+  }
+  if paths.length() == 0 {
+    raise cli_fail(write_usage())
+  }
+  let cat = register_inputs(build_groups(paths), date_cols)
+  let entry = match table {
+    Some(name) =>
+      match cat.lookup(name) {
+        Some(e) => e
+        None => raise cli_fail("no table named \"\{name}\" is registered")
+      }
+    None => {
+      let mut only : @catalog.TableEntry? = None
+      let mut count = 0
+      for _, e in cat.tables {
+        count += 1
+        if only is None {
+          only = Some(e)
+        }
+      }
+      if count != 1 {
+        raise cli_fail(
+          "--table <name> is required when more than one table is registered (\{count} here)",
+        )
+      }
+      match only {
+        Some(e) => e
+        None => raise cli_fail(write_usage())
+      }
+    }
+  }
+  @pq.write_file_with(out, entry, codec) catch {
+    err => raise cli_fail(err.to_string())
+  }
+  println("wrote \{out}")
+}
+
+///|
+fn write_usage() -> String {
+  (
+    #|write needs an input and an output: moonlake write --csv <file> --out <file.parquet> [options]
+    #|
+    #|  --csv <file>          register a CSV file (repeatable)
+    #|  --parquet <file>      register a Parquet file (repeatable)
+    #|  --date-col <c>        declare an unannotated Parquet INT32 column as DATE
+    #|  --out <file>          where to write the Parquet file (required)
+    #|  --table <name>        which registered table to write (default: the only one)
+    #|  --snappy              compress pages with Snappy instead of storing them raw
+  )
 }
 
 ///|
@@ -76,26 +243,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   if paths.length() == 0 || (i >= n && sql_file is None) {
     raise cli_fail(exec_usage())
   }
-  // --csv globs expand to their matches; several matches scan into ONE
-  // table named after the pattern (partitioned-dataset shape).
-  // --parquet stays single-file.
-  let groups : Array[(String, String, Array[String])] = []
-  for pair in paths {
-    if pair.0 == "csv" && pair.1.contains("*") {
-      let hits = expand_glob(pair.1)
-      if hits.length() == 0 {
-        raise cli_fail("the --csv pattern \{pair.1} matched no files")
-      }
-      let name = if hits.length() == 1 {
-        table_stem(hits[0])
-      } else {
-        pattern_stem(pair.1)
-      }
-      groups.push((name, "csv", hits))
-    } else {
-      groups.push((table_stem(pair.1), pair.0, [pair.1]))
-    }
-  }
+  let groups = build_groups(paths)
   if sql_file is Some(_) && i < n {
     raise cli_fail("pass the SQL either inline or via --file, not both")
   }
@@ -113,43 +261,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
       }
     None => args[i]
   }
-  let cat = @catalog.Catalog::new()
-  for (name, kind, files) in groups {
-    let entry = match kind {
-      "parquet" =>
-        @pq.scan_file(files[0], name, date_cols) catch {
-          err => raise cli_fail(err.to_string())
-        }
-      _ =>
-        if files.length() > 1 {
-          @csv.scan_files(files, name) catch {
-            err => raise cli_fail(err.to_string())
-          }
-        } else {
-          @csv.scan_file(files[0], name) catch {
-            err => raise cli_fail(err.to_string())
-          }
-        }
-    }
-    cat.register(entry)
-  }
-  // a misspelled --date-col would otherwise be a silent no-op and only
-  // surface later as a confusing int32-vs-date type mismatch
-  for dc in date_cols {
-    let mut found = false
-    for _, entry in cat.tables {
-      for col in entry.schema.columns {
-        if col.name == dc {
-          found = true
-        }
-      }
-    }
-    if !found {
-      raise cli_fail(
-        "--date-col: no column named \"\{dc}\" in any scanned table",
-      )
-    }
-  }
+  let cat = register_inputs(groups, date_cols)
   if explain || analyze {
     let rendered = if analyze {
       analyze_query(sql, cat, memory, spill_dir) catch {
@@ -527,6 +639,10 @@ fn usage() -> String {
     #|Commands:
     #|  exec (--csv <file> | --parquet <file> | --date-col <c])+ <sql>
     #|      Run a SELECT over CSV/Parquet files (one flag per table)
+    #|  write (--csv <file> | --parquet <file> | --date-col <c])+ --out <file>
+    #|      Write one registered table back out as Parquet
+    #|      --table <name>   pick the table (default: the only one)
+    #|      --snappy         compress pages with Snappy
     #|
     #|    exec options:
     #|      --date-col <c>        declare a Parquet column as DATE (epoch-day)

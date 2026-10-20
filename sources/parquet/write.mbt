@@ -39,6 +39,9 @@ const W_LIST : Int32 = 9
 const W_STRUCT : Int32 = 12
 
 ///|
+const W_TRUE : Int32 = 1
+
+///|
 fn w_uvarint(out : Buffer, value : UInt64) -> Unit {
   let mut rest = value
   while rest >= 0x80UL {
@@ -83,6 +86,13 @@ fn w_binary(out : Buffer, value : String) -> Unit {
 }
 
 ///|
+/// Length-prefixed raw bytes (statistics bounds are binary, not text).
+fn w_raw(out : Buffer, value : Bytes) -> Unit {
+  w_uvarint(out, value.length().to_uint64())
+  out.write_bytes(value)
+}
+
+///|
 fn w_stop(out : Buffer) -> Unit {
   out.write_byte(b'\x00')
 }
@@ -124,8 +134,25 @@ fn w_magic(out : Buffer) -> Unit {
 }
 
 ///|
-/// Parquet physical type for an engine data type. DATE rides on INT32; the
-/// reader lifts it back when the column is registered with --date-col.
+/// The compression a written file uses. UNCOMPRESSED stays the default: a
+/// written file is meant to be readable by anything, and Snappy is a choice
+/// the caller makes knowing the size/CPU trade-off.
+pub(all) enum ParquetCodec {
+  Raw // stored as written; the reader's SNAPPY/UNCOMPRESSED both accept it
+  Snappy
+}
+
+///|
+fn w_codec_id(codec : ParquetCodec) -> Int32 {
+  match codec {
+    Raw => 0
+    Snappy => 1
+  }
+}
+
+///|
+/// Parquet physical type for an engine data type. DATE rides on INT32 and
+/// carries a DATE annotation (see `w_annotation`).
 fn w_type_id(dt : @types.DataType) -> Int32 {
   match dt {
     Int32 | Date => 1
@@ -147,12 +174,56 @@ fn w_schema_root(children : Int32) -> Bytes {
 }
 
 ///|
-fn w_schema_leaf(name : String, type_id : Int32, optional : Bool) -> Bytes {
+/// The annotation a column carries on top of its physical type: text is
+/// BYTE_ARRAY + UTF8/STRING, a DATE is INT32 + DATE. Both spellings are
+/// written — the spec asks writers to, and consumers disagree on which one
+/// they look at (DuckDB and pyarrow accept either, some tools only the
+/// deprecated `converted_type`). Without it a written DATE is an INT32 and a
+/// written string is an untyped byte array, i.e. a BLOB to DuckDB.
+fn w_annotation(dt : @types.DataType) -> (Int32?, Int32?) {
+  match dt {
+    Str => (Some(CONVERTED_UTF8), Some(LOGICAL_STRING))
+    Date => (Some(CONVERTED_DATE), Some(LOGICAL_DATE))
+    _ => (None, None)
+  }
+}
+
+///|
+/// A LogicalType union holding one empty arm (`StringType` / `DateType`), as
+/// a complete Thrift struct including its STOP byte.
+fn w_logical_type(arm : Int32) -> Bytes {
+  let out = Buffer()
+  let mut last = 0
+  last = w_field(out, last, arm, W_STRUCT)
+  w_stop(out) // the arm's own empty struct
+  w_stop(out) // the LogicalType union
+  out.to_bytes()
+}
+
+///|
+fn w_schema_leaf(
+  name : String,
+  type_id : Int32,
+  dt : @types.DataType,
+  optional : Bool,
+) -> Bytes {
   let out = Buffer()
   let mut last = 0
   last = w_field_i32(out, last, 1, type_id)
   last = w_field_i32(out, last, 3, if optional { 1 } else { 0 }) // OPTIONAL | REQUIRED
   last = w_field_binary(out, last, 4, name)
+  let (converted, logical) = w_annotation(dt)
+  match converted {
+    Some(id) => last = w_field_i32(out, last, 6, id)
+    None => ()
+  }
+  match logical {
+    Some(arm) => {
+      last = w_field(out, last, 10, W_STRUCT)
+      out.write_bytes(w_logical_type(arm))
+    }
+    None => ()
+  }
   w_stop(out)
   out.to_bytes()
 }
@@ -170,13 +241,19 @@ fn w_data_page_header(num_values : Int32) -> Bytes {
 }
 
 ///|
-fn w_page_header(body_len : Int32, num_values : Int32) -> Bytes {
+/// `body_len` is what the reader has to produce, `stored_len` what the file
+/// holds (the same number when the page is not compressed).
+fn w_page_header(
+  body_len : Int32,
+  stored_len : Int32,
+  num_values : Int32,
+) -> Bytes {
   let page = w_data_page_header(num_values)
   let out = Buffer()
   let mut last = 0
   last = w_field_i32(out, last, 1, 0) // DATA_PAGE
   last = w_field_i32(out, last, 2, body_len)
-  last = w_field_i32(out, last, 3, body_len)
+  last = w_field_i32(out, last, 3, stored_len)
   last = w_field(out, last, 5, W_STRUCT)
   out.write_bytes(page)
   w_stop(out)
@@ -188,9 +265,12 @@ fn w_column_meta_data(
   path : String,
   type_id : Int32,
   num_values : Int32,
-  total_size : Int32,
+  total_uncompressed : Int32,
+  total_compressed : Int32,
   data_page_offset : Int32,
   optional : Bool,
+  codec : ParquetCodec,
+  stats : ColStats,
 ) -> Bytes {
   let out = Buffer()
   let mut last = 0
@@ -207,11 +287,13 @@ fn w_column_meta_data(
   last = w_field(out, last, 3, W_LIST)
   w_list(out, 1, W_BINARY)
   w_binary(out, path)
-  last = w_field_i32(out, last, 4, 0) // UNCOMPRESSED
+  last = w_field_i32(out, last, 4, w_codec_id(codec))
   last = w_field_i64(out, last, 5, num_values.to_int64())
-  last = w_field_i64(out, last, 6, total_size.to_int64())
-  last = w_field_i64(out, last, 7, total_size.to_int64())
+  last = w_field_i64(out, last, 6, total_uncompressed.to_int64())
+  last = w_field_i64(out, last, 7, total_compressed.to_int64())
   last = w_field_i64(out, last, 9, data_page_offset.to_int64())
+  last = w_field(out, last, 12, W_STRUCT)
+  out.write_bytes(w_statistics(stats))
   w_stop(out)
   out.to_bytes()
 }
@@ -267,6 +349,252 @@ fn w_file_meta_data(
     out.write_bytes(group)
   }
   last = w_field_binary(out, last, 6, "moonlake parquet writer")
+  w_stop(out)
+  out.to_bytes()
+}
+
+// ------------------------------------------------------------- statistics
+
+///|
+/// One column chunk's statistics: the NULL count and the PLAIN-encoded
+/// bounds. `min`/`max` are None when the column cannot carry a trustworthy
+/// bound — a NaN in a float column makes min/max meaningless, and text whose
+/// bytes are not ASCII could be ordered differently by a reader that compares
+/// decoded strings (this engine) and one that compares bytes (the spec).
+/// A column without bounds still gets its NULL count.
+priv struct ColStats {
+  nulls : Int64
+  min : Bytes?
+  max : Bytes?
+}
+
+///|
+fn no_bounds(nulls : Int64) -> ColStats {
+  { nulls, min: None, max: None, }
+}
+
+///|
+fn le_i64(out : Buffer, value : Int64) -> Unit {
+  let bits = value.reinterpret_as_uint64()
+  for i in 0..<8 {
+    out.write_byte(((bits >> (8 * i)).to_int() & 0xFF).to_byte())
+  }
+}
+
+///|
+fn le_double(out : Buffer, value : Double) -> Unit {
+  let bits = value.reinterpret_as_uint64()
+  for i in 0..<8 {
+    out.write_byte(((bits >> (8 * i)).to_int() & 0xFF).to_byte())
+  }
+}
+
+///|
+/// Compare two byte arrays as unsigned bytes (the Parquet order for
+/// BYTE_ARRAY statistics).
+fn bytes_less(a : Bytes, b : Bytes) -> Bool {
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  let mut i = 0
+  while i < n {
+    let av = a[i].to_int()
+    let bv = b[i].to_int()
+    if av != bv {
+      return av < bv
+    }
+    i += 1
+  }
+  a.length() < b.length()
+}
+
+///|
+/// Compute a column's bounds for one row group. One extra pass over the
+/// vectors: the writer is not the hot path, and a bound it cannot prove is
+/// worse than no bound at all (the reader trusts exact bounds to skip groups).
+fn column_stats(vector : @types.ColumnVector) -> ColStats {
+  let n = vector.len()
+  match vector.dtype() {
+    Int32 | Date => {
+      let mut lo : Int32? = None
+      let mut hi : Int32? = None
+      let mut nulls = 0L
+      for i in 0..<n {
+        match vector.get(i) {
+          Int32(v) | Date(v) => {
+            match lo {
+              Some(x) => if v < x { lo = Some(v) }
+              None => lo = Some(v)
+            }
+            match hi {
+              Some(x) => if v > x { hi = Some(v) }
+              None => hi = Some(v)
+            }
+          }
+          Null => nulls += 1L
+          _ => ()
+        }
+      }
+      match (lo, hi) {
+        (Some(lo), Some(hi)) => {
+          let minb = Buffer()
+          minb.write_int_le(lo)
+          let maxb = Buffer()
+          maxb.write_int_le(hi)
+          { nulls, min: Some(minb.to_bytes()), max: Some(maxb.to_bytes()), }
+        }
+        _ => no_bounds(nulls)
+      }
+    }
+    Int64 => {
+      let mut lo : Int64? = None
+      let mut hi : Int64? = None
+      let mut nulls = 0L
+      for i in 0..<n {
+        match vector.get(i) {
+          Int64(v) => {
+            match lo {
+              Some(x) => if v < x { lo = Some(v) }
+              None => lo = Some(v)
+            }
+            match hi {
+              Some(x) => if v > x { hi = Some(v) }
+              None => hi = Some(v)
+            }
+          }
+          Null => nulls += 1L
+          _ => ()
+        }
+      }
+      match (lo, hi) {
+        (Some(lo), Some(hi)) => {
+          let minb = Buffer()
+          le_i64(minb, lo)
+          let maxb = Buffer()
+          le_i64(maxb, hi)
+          { nulls, min: Some(minb.to_bytes()), max: Some(maxb.to_bytes()), }
+        }
+        _ => no_bounds(nulls)
+      }
+    }
+    Float64 => {
+      let mut lo : Double? = None
+      let mut hi : Double? = None
+      let mut nulls = 0L
+      let mut nan = false
+      for i in 0..<n {
+        match vector.get(i) {
+          Float64(v) =>
+            if v.is_nan() {
+              nan = true
+            } else {
+              match lo {
+                Some(x) => if v < x { lo = Some(v) }
+                None => lo = Some(v)
+              }
+              match hi {
+                Some(x) => if v > x { hi = Some(v) }
+                None => hi = Some(v)
+              }
+            }
+          Null => nulls += 1L
+          _ => ()
+        }
+      }
+      if nan {
+        // the spec leaves NaN ordering undefined: a bound would be a guess
+        return no_bounds(nulls)
+      }
+      match (lo, hi) {
+        (Some(lo), Some(hi)) => {
+          let minb = Buffer()
+          le_double(minb, lo)
+          let maxb = Buffer()
+          le_double(maxb, hi)
+          { nulls, min: Some(minb.to_bytes()), max: Some(maxb.to_bytes()), }
+        }
+        _ => no_bounds(nulls)
+      }
+    }
+    Str => {
+      let mut lo : Bytes? = None
+      let mut hi : Bytes? = None
+      let mut nulls = 0L
+      let mut ascii = true
+      for i in 0..<n {
+        match vector.get(i) {
+          Str(v) => {
+            for ch in v {
+              if ch > '\u{7F}' {
+                ascii = false
+              }
+            }
+            let raw = @utf8.encode(v)
+            match lo {
+              Some(x) => if bytes_less(raw, x) { lo = Some(raw) }
+              None => lo = Some(raw)
+            }
+            match hi {
+              Some(x) => if bytes_less(x, raw) { hi = Some(raw) }
+              None => hi = Some(raw)
+            }
+          }
+          Null => nulls += 1L
+          _ => ()
+        }
+      }
+      if !ascii {
+        return no_bounds(nulls)
+      }
+      { nulls, min: lo, max: hi, }
+    }
+    Bool => {
+      let mut any_false = false
+      let mut any_true = false
+      let mut nulls = 0L
+      for i in 0..<n {
+        match vector.get(i) {
+          Boolean(v) => if v { any_true = true } else { any_false = true }
+          Null => nulls += 1L
+          _ => ()
+        }
+      }
+      if !any_false || !any_true {
+        return no_bounds(nulls)
+      }
+      { nulls, min: Some(b"\x00"), max: Some(b"\x01"), }
+    }
+  }
+}
+
+///|
+/// The Thrift `Statistics` struct: null count plus the current-spelling
+/// bounds (`min_value`/`max_value`), marked exact. The deprecated
+/// `min`/`max` pair is deliberately not written: for BYTE_ARRAY it was
+/// defined in signed byte order, which is a trap this reader refuses to trust
+/// on the way in, so writing it on the way out would be inconsistent.
+fn w_statistics(st : ColStats) -> Bytes {
+  let out = Buffer()
+  let mut last = 0
+  if st.nulls > 0L {
+    last = w_field_i64(out, last, 3, st.nulls)
+  }
+  match st.max {
+    Some(b) => {
+      last = w_field(out, last, 5, W_BINARY)
+      w_raw(out, b)
+    }
+    None => ()
+  }
+  match st.min {
+    Some(b) => {
+      last = w_field(out, last, 6, W_BINARY)
+      w_raw(out, b)
+    }
+    None => ()
+  }
+  if st.min is Some(_) && st.max is Some(_) {
+    last = w_field(out, last, 7, W_TRUE)
+    last = w_field(out, last, 8, W_TRUE)
+  }
   w_stop(out)
   out.to_bytes()
 }
@@ -399,6 +727,15 @@ fn w_column_body(
 /// one data page per column. A column that holds a NULL anywhere is written
 /// OPTIONAL (definition levels per page); otherwise REQUIRED.
 pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
+  write_bytes_with(entry, ParquetCodec::Raw)
+}
+
+///|
+/// Write a table entry as Parquet bytes with an explicit codec.
+pub fn write_bytes_with(
+  entry : @catalog.TableEntry,
+  codec : ParquetCodec,
+) -> Bytes raise @types.SqlError {
   let file = Buffer()
   w_magic(file)
   let groups : Array[Bytes] = []
@@ -445,22 +782,30 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
     for index in 0..<columns.length() {
       let name = entry.schema.columns[index].name
       let body = w_column_body(columns[index], name, optional[index])
-      let header = w_page_header(body.length(), rows)
+      let stored = match codec {
+        Raw => body
+        Snappy => snappy_compress(body)
+      }
+      let header = w_page_header(body.length(), stored.length(), rows)
       if file.length() > 2000000000 {
         raise write_error("file would exceed the 2 GiB page offset limit")
       }
       let offset = file.length()
       file.write_bytes(header)
-      file.write_bytes(body)
-      let size = header.length() + body.length()
-      group_size += size
+      file.write_bytes(stored)
+      // the row group's size is what the reader will hold, the column chunk
+      // records both so a reader can size its buffer before decompressing
+      group_size += header.length() + body.length()
       let meta = w_column_meta_data(
         name,
         w_type_id(columns[index].dtype()),
         rows,
-        size,
+        body.length(),
+        header.length() + stored.length(),
         offset,
         optional[index],
+        codec,
+        column_stats(columns[index]),
       )
       chunks.push(w_column_chunk(offset, meta))
     }
@@ -470,7 +815,12 @@ pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
   let schema : Array[Bytes] = [w_schema_root(entry.schema.columns.length())]
   for index, column in entry.schema.columns {
     schema.push(
-      w_schema_leaf(column.name, w_type_id(column.dtype), optional[index]),
+      w_schema_leaf(
+        column.name,
+        w_type_id(column.dtype),
+        column.dtype,
+        optional[index],
+      ),
     )
   }
   let footer = w_file_meta_data(schema, total_rows, groups)
@@ -486,7 +836,17 @@ pub fn write_file(
   path : String,
   entry : @catalog.TableEntry,
 ) -> Unit raise @types.SqlError {
-  let bytes = write_bytes(entry)
+  write_file_with(path, entry, ParquetCodec::Raw)
+}
+
+///|
+/// Write a table entry to a file with an explicit codec (native target).
+pub fn write_file_with(
+  path : String,
+  entry : @catalog.TableEntry,
+  codec : ParquetCodec,
+) -> Unit raise @types.SqlError {
+  let bytes = write_bytes_with(entry, codec)
   @fs.write_bytes_to_file(path, bytes) catch {
     _ => raise write_error("cannot write file at \{path}")
   }

@@ -43,3 +43,7 @@ jobs:
           bash harness/check_all.sh
       - name: Parquet corpus cross-check (apache/parquet-testing)
         run: python3 harness/check_parquet_corpus.py
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Writer interop (pyarrow + duckdb, both directions)
+        run: uv run --with duckdb --with pyarrow python harness/check_writer_interop.py

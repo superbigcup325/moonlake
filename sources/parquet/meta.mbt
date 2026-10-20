@@ -98,6 +98,52 @@ priv struct SchemaElement {
   repetition : Repetition?
   num_children : Int32
   is_timestamp : Bool
+  converted : Int32? // ConvertedType (deprecated but still written by every writer)
+  logical : Int32? // LogicalType union field id
+  int_bit_width : Int32 // INTEGER annotation, when present
+  int_signed : Bool
+}
+
+///|
+/// ConvertedType ids this reader acts on: the ones that change what the
+/// physical bytes mean.
+const CONVERTED_UTF8 : Int32 = 0
+
+///|
+const CONVERTED_DECIMAL : Int32 = 5
+
+///|
+const CONVERTED_DATE : Int32 = 6
+
+///|
+const CONVERTED_UINT_32 : Int32 = 13
+
+///|
+const CONVERTED_UINT_64 : Int32 = 14
+
+///|
+/// LogicalType union field ids, same purpose.
+const LOGICAL_STRING : Int32 = 1
+
+///|
+const LOGICAL_DECIMAL : Int32 = 5
+
+///|
+const LOGICAL_DATE : Int32 = 6
+
+///|
+const LOGICAL_TIMESTAMP : Int32 = 8
+
+///|
+const LOGICAL_INTEGER : Int32 = 9
+
+///|
+/// What a LogicalType union carried: which arm, plus the INTEGER details
+/// when that is the arm.
+priv struct LogicalInfo {
+  id : Int32?
+  bit_width : Int32
+  signed : Bool
 }
 
 ///|
@@ -231,6 +277,10 @@ fn parse_schema_element(tr : Tr) -> SchemaElement raise @types.SqlError {
   let mut name = ""
   let mut num_children = 0
   let mut is_timestamp = false
+  let mut converted : Int32? = None
+  let mut logical : Int32? = None
+  let mut int_bit_width = 0
+  let mut int_signed = true
   let mut last : Int32 = 0
   while true {
     let (id, t) = tr.field_header(last)
@@ -259,44 +309,83 @@ fn parse_schema_element(tr : Tr) -> SchemaElement raise @types.SqlError {
         }
       4 => if t is BinaryT { name = tr.string() } else { tr.skip(t) }
       5 => if t is I32T { num_children = tr.zigzag_i32() } else { tr.skip(t) }
-      6 => tr.skip(t)
+      6 =>
+        if t is I32T {
+          converted = Some(tr.zigzag_i32())
+        } else {
+          tr.skip(t)
+        }
       10 =>
         if t is StructT {
-          // only TIMESTAMP is acted on (it is refused at registration);
-          // everything else keeps the pre-existing behaviour of treating
-          // the physical type as the whole story
-          is_timestamp = is_timestamp || parse_logical_type_is_timestamp(tr)
+          let info = parse_logical_type(tr)
+          logical = info.id
+          int_bit_width = info.bit_width
+          int_signed = info.signed
+          if info.id is Some(LOGICAL_TIMESTAMP) {
+            is_timestamp = true
+          }
         } else {
           tr.skip(t)
         }
       _ => tr.skip(t)
     }
   }
-  { name, physical, repetition, num_children, is_timestamp, }
+  {
+    name,
+    physical,
+    repetition,
+    num_children,
+    is_timestamp,
+    converted,
+    logical,
+    int_bit_width,
+    int_signed,
+  }
 }
 
 ///|
-/// LogicalType is a Thrift union: the set field says which logical type
-/// applies. TIMESTAMP is the one that matters here, because decoding it as a
-/// plain INT64 would hand the engine epoch numbers that look like data.
-fn parse_logical_type_is_timestamp(tr : Tr) -> Bool raise @types.SqlError {
-  let mut timestamp = false
+/// LogicalType is a Thrift union: the arm that is set says which logical type
+/// applies. The ones that matter here are the arms that change what the
+/// physical bytes mean — a TIMESTAMP decoded as a plain INT64 hands the engine
+/// epoch numbers that look like data, a UINT_32 read as INT32 turns large
+/// values negative, a DECIMAL byte array is not text at all.
+fn parse_logical_type(tr : Tr) -> LogicalInfo raise @types.SqlError {
+  let mut id : Int32? = None
+  let mut bit_width = 0
+  let mut signed = true
   let mut last : Int32 = 0
   while true {
-    let (id, t) = tr.field_header(last)
-    last = id
+    let (field, t) = tr.field_header(last)
+    last = field
     if t is Stop {
       break
     }
-    match id {
-      8 => {
-        timestamp = true
-        tr.skip(t)
+    id = Some(field)
+    if field == LOGICAL_INTEGER && t is StructT {
+      let mut inner_last : Int32 = 0
+      while true {
+        let (fid, ft) = tr.field_header(inner_last)
+        inner_last = fid
+        if ft is Stop {
+          break
+        }
+        match fid {
+          // IntType.bitWidth is a thrift BYTE (signed, one raw byte)
+          1 => if ft is ByteType { bit_width = tr.u8() } else { tr.skip(ft) }
+          2 =>
+            match ft {
+              BoolTrue => signed = true
+              BoolFalse => signed = false
+              _ => tr.skip(ft)
+            }
+          _ => tr.skip(ft)
+        }
       }
-      _ => tr.skip(t)
+    } else {
+      tr.skip(t)
     }
   }
-  timestamp
+  { id, bit_width, signed, }
 }
 
 ///|

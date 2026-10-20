@@ -26,8 +26,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   CLI passes `--memory`, and the engine counts files and bytes at the store
   boundary (`spill files` / `spill bytes written` / `spill bytes read`)
 
+### Changed
+
+- 2026-10-21 the Parquet writer speaks the format, not just the encoding: it
+  writes the standard `STRING` and `DATE` annotations (both the deprecated
+  `converted_type` and the current `logicalType`, because readers disagree on
+  which they look at), and per-column-chunk statistics marked exact. Before
+  this a written DATE was a bare INT32 and a written string an unannotated byte
+  array — a BLOB to DuckDB, an integer to anyone else. A file moonlake writes is
+  now prunable by moonlake's own row-group skipping
+- 2026-10-21 the Parquet reader acts on those annotations: an annotated DATE
+  column needs no `--date-col`, and an annotation with no faithful engine type
+  is refused instead of silently misread — `DECIMAL` (its bytes are not text)
+  and `UINT_32`/`UINT_64` (values past the signed maximum would read as
+  negative) now fail with a message naming the column and the reason. Six
+  apache/parquet-testing files moved from "read" to "refused by design"
+
 ### Added
 
+- 2026-10-21 Snappy compression on the write path: `--snappy` (CLI) or
+  `write_bytes_with` / `write_file_with` (library). The compressor is ~120
+  lines of LZ77 in the Snappy block format (`sources/parquet/snappy.mbt`), so
+  the writer still has no dependency the reader does not already need. On a
+  4000-row text table the file goes 140,274 → 24,323 bytes
+- 2026-10-21 `moonlake write (--csv|--parquet …)+ --out <file.parquet>
+  [--table <name>] [--snappy]`: the writer's only way out of the library, which
+  is what lets a round trip be scripted and checked
+- 2026-10-21 `harness/check_writer_interop.py`: moonlake → pyarrow → DuckDB and
+  DuckDB → moonlake, checking the schema (VARCHAR vs BLOB, DATE vs INTEGER), the
+  values, the NULLs and a non-ASCII string; `--snappy` shrinking is asserted on
+  a table large enough for it to show. A new CI job `writer` runs it on every
+  PR
 - 2026-10-21 a grace hash join partition that still exceeds the budget is
   partitioned again (up to two extra levels, 256 partitions each) instead of
   failing at the first level: a small budget against a large input used to be

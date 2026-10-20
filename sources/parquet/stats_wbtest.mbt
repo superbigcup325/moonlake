@@ -10,6 +10,10 @@ fn stats_el(physical : PhysicalType?) -> SchemaElement {
     repetition: Some(Optional),
     num_children: 0,
     is_timestamp: false,
+    converted: None,
+    logical: None,
+    int_bit_width: 0,
+    int_signed: true,
   }
 }
 

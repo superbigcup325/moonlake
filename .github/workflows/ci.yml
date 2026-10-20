@@ -112,3 +112,24 @@ jobs:
           python3 harness/gen_multigroup.py
       - name: Cross-validate golden queries
         run: bash harness/check_all.sh
+      - name: Spill lifecycle
+        run: bash harness/spill_accept.sh
+
+  writer:
+    # The write path is only worth having if software that did not write the
+    # file reads it correctly: pyarrow and duckdb check the schema (STRING vs
+    # BLOB, DATE vs INT32), the values and the NULLs, and duckdb writes a file
+    # moonlake has to read back.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Update registry index
+        run: moon update
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Writer interop (pyarrow + duckdb, both directions)
+        run: uv run --with duckdb --with pyarrow python harness/check_writer_interop.py

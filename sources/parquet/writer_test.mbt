@@ -80,6 +80,70 @@ test "writer round trips every physical type" {
 }
 
 ///|
+/// The writer emits column-chunk statistics, and the reader's row-group
+/// skipping consumes them: a file moonlake wrote is a file moonlake can prune.
+/// This is what makes "write it back out" useful rather than merely possible.
+test "the writer's statistics let the reader skip a row group" {
+  let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
+    ("v", @types.Int32, []),
+  ]
+  let low : Array[@types.Scalar] = []
+  for i in 0..<10 {
+    low.push(@types.Int32(i))
+  }
+  let high : Array[@types.Scalar] = []
+  for i in 0..<10 {
+    high.push(@types.Int32(100 + i))
+  }
+  let entry = make_entry(columns, [
+    [make_vector(@types.Int32, low)],
+    [make_vector(@types.Int32, high)],
+  ])
+  let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
+  let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
+  let request = @catalog.ScanRequest::new([0], [
+    { column: 0, op: @types.CmpOp::Lt, value: @types.Int32(50), },
+  ])
+  let plan = back.plan(request) catch { e => abort("\{e}") }
+  assert_eq(plan.row_groups, 2)
+  assert_eq(plan.row_groups_skipped, 1)
+  // and the surviving group still answers the predicate correctly
+  let scanned = back.scan(request) catch { e => abort("\{e}") }
+  assert_eq(scanned.length(), 1)
+  assert_eq(scanned[0].row_count(), 10)
+  assert_eq(scanned[0].columns()[0].get(0), @types.Int32(0))
+}
+
+///|
+/// A written DATE used to be a bare INT32: a consumer had to be told which
+/// column it was (`--date-col`), and DuckDB saw an integer. The writer now
+/// carries the standard annotation on both the deprecated and the current
+/// spelling, so the reader lifts the column by itself.
+test "writer annotates STRING and DATE, so a DATE needs no --date-col" {
+  let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
+    ("s", @types.Str, [@types.Str("a"), @types.Str("b")]),
+    ("d", @types.Date, [@types.Date(0), @types.Date(20000)]),
+    ("n", @types.Int32, [@types.Int32(1), @types.Int32(2)]),
+  ]
+  let batch = [
+    make_vector(@types.Str, columns[0].2),
+    make_vector(@types.Date, columns[1].2),
+    make_vector(@types.Int32, columns[2].2),
+  ]
+  let entry = make_entry(columns, [batch])
+  let bytes = @parquet.write_bytes(entry) catch { e => abort("\{e}") }
+  // no --date-col: the annotation has to do the work
+  let back = @parquet.scan_bytes(bytes, "t", []) catch { e => abort("\{e}") }
+  assert_eq(back.schema.columns[0].dtype, @types.Str)
+  assert_eq(back.schema.columns[1].dtype, @types.Date)
+  assert_eq(back.schema.columns[2].dtype, @types.Int32)
+  let scanned = read_all(back)[0]
+  for row in 0..<2 {
+    assert_eq(scanned.columns()[1].get(row), columns[1].2[row])
+  }
+}
+
+///|
 test "writer emits one row group per batch" {
   let columns : Array[(String, @types.DataType, Array[@types.Scalar])] = [
     ("k", @types.Int32, []),

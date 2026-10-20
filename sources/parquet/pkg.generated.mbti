@@ -13,11 +13,19 @@ pub fn scan_file(String, String, Array[String]) -> @catalog.TableEntry raise @ty
 
 pub fn write_bytes(@catalog.TableEntry) -> Bytes raise @types.SqlError
 
+pub fn write_bytes_with(@catalog.TableEntry, ParquetCodec) -> Bytes raise @types.SqlError
+
 pub fn write_file(String, @catalog.TableEntry) -> Unit raise @types.SqlError
+
+pub fn write_file_with(String, @catalog.TableEntry, ParquetCodec) -> Unit raise @types.SqlError
 
 // Errors
 
 // Types and methods
+pub(all) enum ParquetCodec {
+  Raw
+  Snappy
+}
 
 // Type aliases
 

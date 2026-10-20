@@ -42,6 +42,12 @@ REFUSALS = (
     "dictionary index",
     "and none of them is PLAIN or a dictionary encoding",
     "TIMESTAMP is not supported",
+    # annotations the reader has no faithful engine type for: reading them as
+    # text (DECIMAL byte arrays) or as signed integers (UINT) would return
+    # wrong values rather than fail
+    "DECIMAL is not supported",
+    "UINT_64 is not supported",
+    "UINT_32 is not supported",
 )
 
 SCHEMA = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

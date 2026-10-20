@@ -118,6 +118,32 @@ binary). Numbers are only comparable on the same machine and data (TPC-H
 SF0.1, tracked in `harness/data/sf01`; SF0.01 was too short to survive host
 noise).
 
+## Writer interop (`check_writer_interop.py`)
+
+```bash
+uv run --with duckdb --with pyarrow python harness/check_writer_interop.py
+```
+
+The writer's acceptance: it writes a four-row table (int32/int64/double/string/
+bool/date, NULLs, a non-ASCII string) raw and with `--snappy`, and requires
+pyarrow and DuckDB to read the same schema (VARCHAR vs BLOB, DATE vs INTEGER),
+values and NULLs, moonlake to read it back without `--date-col`, and DuckDB's
+own `COPY … TO` output to be readable by moonlake. A separate 4000-row table
+asserts that `--snappy` actually shrinks the file — four rows are all page
+header. Runs on every PR (job `writer`).
+
+## Spill lifecycle (`spill_accept.sh`)
+
+```bash
+bash harness/spill_accept.sh
+```
+
+Five checks over what a spilled query leaves behind: no directory after a
+successful sort, none after a failed query, `--spill-dir` keeps files moonlake
+did not write (only `run<n>.bin` is removed), `ANALYZE` under a budget reports
+`spill files` / `spill bytes written` / `spill bytes read`, and an in-memory
+`ANALYZE` stays silent about spilling.
+
 ## Playground acceptance (`playground_accept.cjs`)
 
 ```bash

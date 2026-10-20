@@ -73,27 +73,71 @@ fn check_version(meta : FileMeta) -> Unit raise @types.SqlError {
 /// registration so an unsupported physical type fails before any query runs,
 /// while a column that is merely encoded in an unsupported way still fails
 /// only when somebody reads it (so pruning can leave it alone).
+
+///|
+/// The annotation changes what the physical bytes mean. Refuse what has no
+/// faithful engine type — a DECIMAL byte array read as text, a UINT_32 read as
+/// INT32 — and let the rest through with the dtype the annotation implies.
+fn annotated_dtype(
+  el : SchemaElement,
+  is_date : Bool,
+) -> @types.DataType? raise @types.SqlError {
+  if el.converted is Some(CONVERTED_DECIMAL) ||
+    el.logical is Some(LOGICAL_DECIMAL) {
+    raise unsupported(
+      "column \"\{el.name}\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)",
+    )
+  }
+  let unsigned = (el.logical is Some(LOGICAL_INTEGER) && !el.int_signed) ||
+    el.converted is Some(CONVERTED_UINT_32) ||
+    el.converted is Some(CONVERTED_UINT_64)
+  if unsigned {
+    if el.converted is Some(CONVERTED_UINT_64) || el.int_bit_width > 32 {
+      raise unsupported(
+        "column \"\{el.name}\": UINT_64 is not supported (values above INT64_MAX would read as negative)",
+      )
+    }
+    raise unsupported(
+      "column \"\{el.name}\": UINT_32 is not supported (values above INT32_MAX would read as negative; expose it as INT64 in the source)",
+    )
+  }
+  if el.physical is Some(Int32T) &&
+    (
+      is_date ||
+      el.converted is Some(CONVERTED_DATE) ||
+      el.logical is Some(LOGICAL_DATE)
+    ) {
+    return Some(@types.Date)
+  }
+  None
+}
+
+///|
 fn column_dtype(
   el : SchemaElement,
   is_date : Bool,
 ) -> @types.DataType raise @types.SqlError {
-  match el.physical {
-    Some(BooleanT) => @types.Bool
-    Some(Int32T) => if is_date { @types.Date } else { @types.Int32 }
-    Some(Int64T) => @types.Int64
-    Some(FloatT) | Some(DoubleT) => @types.Float64
-    Some(ByteArrayT) => @types.Str
-    Some(Int96T) =>
-      raise unsupported(
-        "column \"\{el.name}\": INT96 timestamps are not supported",
-      )
-    Some(FixedLenByteArrayT) =>
-      raise unsupported(
-        "column \"\{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported",
-      )
-    Some(UnknownPhysical(id)) =>
-      raise unsupported("column \"\{el.name}\": unknown physical type \{id}")
-    None => raise unsupported("column \"\{el.name}\": missing physical type")
+  match annotated_dtype(el, is_date) {
+    Some(dt) => dt
+    None =>
+      match el.physical {
+        Some(BooleanT) => @types.Bool
+        Some(Int32T) => @types.Int32
+        Some(Int64T) => @types.Int64
+        Some(FloatT) | Some(DoubleT) => @types.Float64
+        Some(ByteArrayT) => @types.Str
+        Some(Int96T) =>
+          raise unsupported(
+            "column \"{el.name}\": INT96 timestamps are not supported",
+          )
+        Some(FixedLenByteArrayT) =>
+          raise unsupported(
+            "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported",
+          )
+        Some(UnknownPhysical(id)) =>
+          raise unsupported("column \"{el.name}\": unknown physical type \{id}")
+        None => raise unsupported("column \"{el.name}\": missing physical type")
+      }
   }
 }
 
