@@ -212,25 +212,32 @@ fn scan_pushdown_text(
     }
   }
   match catalog.lookup(schemas[t].table) {
-    Some(entry) =>
-      if entry.is_lazy() {
-        let info = entry.plan(request)
-        if info.files > 1 {
-          sb.write_string("\n  files: \{info.files}")
-        }
-        if info.row_groups > 0 {
-          sb.write_string("\n  row groups: ")
-          sb.write_string(
-            (info.row_groups - info.row_groups_skipped).to_string(),
-          )
-          sb.write_string(" of \{info.row_groups} read")
-          if info.row_groups_skipped > 0 {
-            sb.write_string(
-              " (\{info.row_groups_skipped} skipped by statistics)",
-            )
-          }
+    Some(entry) => {
+      // both kinds can answer this: a lazy source from its footer, a
+      // materialized entry by summing its batches
+      let info = entry.plan(request)
+      // exact when the format knows it (a Parquet footer, a materialized
+      // table), unknown for a lazy CSV scan that has not counted anything.
+      // No estimates: the engine has no cardinality model, and printing a
+      // guess next to an exact count invites trusting the guess.
+      sb.write_string(
+        match info.rows {
+          Some(n) => "\n  rows: \{n}"
+          None => "\n  rows: ?"
+        },
+      )
+      if info.files > 1 {
+        sb.write_string("\n  files: \{info.files}")
+      }
+      if info.row_groups > 0 {
+        sb.write_string("\n  row groups: ")
+        sb.write_string((info.row_groups - info.row_groups_skipped).to_string())
+        sb.write_string(" of \{info.row_groups} read")
+        if info.row_groups_skipped > 0 {
+          sb.write_string(" (\{info.row_groups_skipped} skipped by statistics)")
         }
       }
+    }
     None => ()
   }
   sb.to_string()

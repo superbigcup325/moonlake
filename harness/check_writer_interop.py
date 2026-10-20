@@ -167,6 +167,33 @@ def check_moonlake_reads(binary: str, path: pathlib.Path, label: str) -> None:
     print(f"ok: {label} — moonlake reads it without --date-col")
 
 
+def check_explain_rows(binary: str, parquet: pathlib.Path, csv: pathlib.Path) -> None:
+    """EXPLAIN must state the row count when the format knows it (a Parquet
+    footer does) and say `?` when it does not (a lazy CSV scan has counted
+    nothing). A written file being readable includes being plannable."""
+    out = run(
+        binary,
+        "exec",
+        "--parquet",
+        str(parquet),
+        "--explain",
+        f"select count(*) from {parquet.stem}",
+    )
+    if "rows: 4" not in out:
+        fail(f"EXPLAIN over a written Parquet file did not report rows: 4:\n{out}")
+    out = run(
+        binary,
+        "exec",
+        "--csv",
+        str(csv),
+        "--explain",
+        "select count(*) from t",
+    )
+    if "rows: ?" not in out:
+        fail(f"EXPLAIN over a CSV scan claimed a row count it cannot know:\n{out}")
+    print("ok: EXPLAIN reports exact rows for Parquet and `?` for a CSV scan")
+
+
 def main() -> int:
     binary = moonlake_bin()
     with tempfile.TemporaryDirectory() as tmp:
@@ -184,6 +211,7 @@ def main() -> int:
             check_duckdb(path, label)
             check_moonlake_reads(binary, path, label)
 
+        check_explain_rows(binary, raw, csv)
         duckdb_reference(foreign, csv)
         check_moonlake_reads(binary, foreign, "duckdb->moonlake")
 

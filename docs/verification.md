@@ -636,3 +636,27 @@ incompressible bytes and a 200 KB block (the 64 KiB offset window).
 
 The CLI form is `moonlake write --csv in.csv --out out.parquet [--snappy]
 [--table <name>]`; the library form is `write_file_with(path, entry, codec)`.
+
+## 12. EXPLAIN row reporting (2026-10-21)
+
+`EXPLAIN` described what a scan would do (projection width, pushed predicates,
+row groups read) but never how many rows. The information existed for free:
+`ScanPlan.rows` is `Some` for a Parquet footer and for a materialized entry, and
+`None` for a lazy CSV scan, and it had no consumer at all.
+
+The scan line now prints `rows: <n>` or `rows: ?`, and the guard is removed so a
+materialized table reports its count too (it used to be skipped because the line
+was only built for lazy entries). Nothing is estimated: the engine has no
+cardinality model, and a number produced by one would be indistinguishable from
+the exact ones in the same list.
+
+```
+scan lineitem (0 cols)
+  rows: 600572
+  row groups: 5 of 5 read
+```
+
+Covered by `engine/e2e_test.mbt` ("explain prints the row count it knows, and ?
+when it does not"), and end to end by `harness/check_writer_interop.py`, which
+requires `rows: 4` over a written four-row file and `rows: ?` over the same data
+as a CSV.

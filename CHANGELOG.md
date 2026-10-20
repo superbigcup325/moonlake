@@ -44,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-21 `EXPLAIN` states a scan's row count: exact when the format knows
+  it (`rows: 600572` from a Parquet footer or a materialized table) and `?` when
+  it does not (a lazy CSV scan). No estimates are printed — the engine has no
+  cardinality model, and a guess beside an exact count invites trusting it
 - 2026-10-21 Snappy compression on the write path: `--snappy` (CLI) or
   `write_bytes_with` / `write_file_with` (library). The compressor is ~120
   lines of LZ77 in the Snappy block format (`sources/parquet/snappy.mbt`), so

@@ -852,6 +852,33 @@ test "explain reports pruned column counts" {
 }
 
 ///|
+/// EXPLAIN states the row count when the format knows it and says `?` when it
+/// does not. No estimates: the engine has no cardinality model, and a guess
+/// printed beside an exact count invites trusting the guess.
+test "explain prints the row count it knows, and ? when it does not" {
+  let cat = spill_catalog()
+  let plan = @engine.explain("SELECT k FROM t WHERE v > 500", cat) catch {
+    e => abort("\{e}")
+  }
+  assert_true(plan.contains("rows: ?"))
+  // a materialized entry knows its rows
+  let mat = @catalog.Catalog::new()
+  let values = @types.ColumnVector::make(@types.Int32, 2)
+  values.set(0, @types.Int32(1))
+  values.set(1, @types.Int32(2))
+  mat.register(
+    @catalog.TableEntry::new(
+      { table: "m", columns: [{ name: "a", dtype: @types.Int32, }], },
+      [@types.DataBatch::new([values], 2)],
+    ),
+  )
+  let exact = @engine.explain("SELECT a FROM m", mat) catch {
+    e => abort("\{e}")
+  }
+  assert_true(exact.contains("rows: 2"))
+}
+
+///|
 test "joins prune to referenced columns only" {
   let cat = @catalog.Catalog::new()
   cat.register(

@@ -70,6 +70,12 @@ direct-to-vector CSV materialization) lands at 122–183 ms, down
 3.4–6x from the original row-at-a-time build on the same machine
 (539–995 ms on the four queries benchmarked then).
 
+`--explain` prints the plan; a scan line states what it will read: the exact
+row count when the format knows it (a Parquet footer) and `?` when it does not
+(a lazy CSV scan counts nothing up front), plus `row groups: k of n read` when
+statistics eliminated some. `--analyze` adds the actual row count per stage and,
+under `--memory`, what the query spilled.
+
 **Scan pushdown (2026-10-20).** Registering a table now stores its schema and
 where the bytes live, not the rows; a scan produces 4096-row batches, decodes
 only the columns the query projects, and skips Parquet row groups whose
