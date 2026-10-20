@@ -6,7 +6,19 @@ on:
     branches:
       - main
     paths:
+      # The page embeds the whole engine, so an engine change ships with it:
+      # limiting this to playground/** left the deployed wasm on 0.1.0 while
+      # the 0.3.0 engine was on main.
       - playground/**
+      - engine/**
+      - sources/**
+      - types/**
+      - sql/**
+      - catalog/**
+      - spill/**
+      - moonlake.mbt
+      - moon.pkg
+      - moon.mod
 
 permissions:
   contents: read
