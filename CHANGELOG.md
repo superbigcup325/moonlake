@@ -42,8 +42,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   negative) now fail with a message naming the column and the reason. Six
   apache/parquet-testing files moved from "read" to "refused by design"
 
+### Performance
+
+- 2026-10-21 a join on two int32 equality keys is 4.9x faster (69.3 → 14.0 ms
+  on a 100k x 100k join, same session, single-key control unchanged at
+  ~13 ms). It was falling back to the general path, which builds a canonical
+  string per row on both sides; the two keys are now packed into one exact
+  Int64, `(a << 32) | (b & 0xFFFFFFFF)`, which is injective so no collision
+  handling is needed, and a NULL in either component still never matches. This
+  is the partsupp-on-(partkey, suppkey) shape of TPC-H Q9. Strings, Int64 pairs
+  and three-plus keys keep the general path
+
 ### Added
 
+- 2026-10-21 `harness/kernel_bench`: in-memory operators measured without the
+  CSV ingest every release-record case contains, with case pairs chosen so a
+  difference isolates one structural cost. The same run recorded two
+  candidates that did *not* justify work: gather over nullable columns is not
+  slower than over non-nullable ones (so bit-packing the validity channel has
+  no measured cost to recover), and the whole-side concat in `join_step` is
+  small against the int-key control
 - 2026-10-21 `EXPLAIN` states a scan's row count: exact when the format knows
   it (`rows: 600572` from a Parquet footer or a materialized table) and `?` when
   it does not (a lazy CSV scan). No estimates are printed — the engine has no

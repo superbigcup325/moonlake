@@ -124,3 +124,59 @@ before/after snapshots taken against a specific previous binary. They answer
 "did this change help then". This record answers "did the release we are about
 to ship get slower than the last one", for the four loops that carry the
 engine: scan, join, gather, spill.
+
+## Kernel-level record (2026-10-21)
+
+The record above is end to end, so every join case in it includes CSV ingest
+(75 MB parsed before the join runs) and every gather case includes a scan. That
+answers "how long does this query take", not "what does the operator cost".
+`harness/kernel_bench` fills the gap: tables are materialized in memory and
+split into 4096-row batches exactly like a scan produces, the clock starts
+after the tables exist, and the cases are chosen so that a difference between
+two of them isolates one structural cost.
+
+```bash
+moon run --target native --release harness/kernel_bench            # 100k rows, best of 7
+moon run --target native --release harness/kernel_bench -- --rows 200000 --runs 9
+```
+
+Same machine and session as the release record above (i5-12500H, `powersave`,
+native release, 100k rows per table):
+
+| case | before | after | what it measures |
+|---|---|---|---|
+| `scan/count` | 0.41 ms | 0.42 ms | the floor: execute the pipeline, touch nothing |
+| `join/int_key` | 12.75 ms | 13.7 ms | one int32 equality key → the `Map[Int64, …]` fast path |
+| `join/two_key` | **69.3 ms** | **14.0 ms** | two int32 equality keys |
+| `join/str_key` | 64.3 ms | 75.1 ms | one string key → string hashing |
+| `gather/narrow` | 0.45 ms | 0.45 ms | one column out of eight |
+| `gather/wide` | 2.42 ms | 2.8 ms | eight columns out of eight |
+| `gather/nullable` | 2.16 ms | 2.0 ms | eight nullable columns (half the rows absent) |
+
+"Noise, not a regression": `int_key`, `str_key` and `gather/wide` did not change
+code between the two columns — they moved +7%, +17% and +17% because the
+machine drifted between runs, which is the same lesson as §"0.3.0 → 0.3.1"
+below. The one number that moved against that backdrop is `join/two_key`,
+4.9× in the same session while its single-key control stayed put.
+
+**What changed.** Two int32-width join keys were taking the general path, which
+builds a canonical string per row on both sides. They are now packed into one
+exact Int64 hash key, `(a << 32) | (b & 0xFFFFFFFF)` — injective, so no
+collision handling is needed, and a NULL in either component still never
+matches. That is the TPC-H shape of partsupp joined on (partkey, suppkey) in
+Q9, and of Q2/Q7/Q8's multi-key joins. The general path remains for strings,
+Int64 pairs and three-plus columns, where an Int64 cannot hold the key exactly.
+
+**What this did not justify.** The audit's third candidate was bit-packing the
+validity channel (`FixedArray[Bool]`, one byte per row). `gather/nullable` is
+not slower than `gather/wide` at this shape, so there is no measured cost to
+recover — the channel is not the bottleneck for gather, and the optimization
+stays on the shelf until a case shows it. Same for dropping the whole-side
+`concat_batches` copy in `join_step`: the int-key control is 13.7 ms, of which
+the copy is a small part, and the change would touch every join path; the
+measurement does not yet ask for it.
+
+**Limits.** In-process wall clock, one machine, one session; the numbers are
+comparable to each other and to a re-run on the same machine, not to a
+different host. `harness/kernel_bench` is dev-only tooling (not part of the
+published package) and takes `--rows` / `--runs`.

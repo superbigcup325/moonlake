@@ -118,6 +118,21 @@ binary). Numbers are only comparable on the same machine and data (TPC-H
 SF0.1, tracked in `harness/data/sf01`; SF0.01 was too short to survive host
 noise).
 
+## Kernel benchmark (`kernel_bench/`)
+
+```bash
+moon run --target native --release harness/kernel_bench
+moon run --target native --release harness/kernel_bench -- --rows 200000 --runs 9
+```
+
+The kernel-level complement to `bench_release.py`: tables are materialized in
+memory and split into 4096-row batches like a scan produces, so a case times the
+operator instead of the ingest. Cases are paired so that the difference between
+two of them isolates one structural cost — one int key vs two int keys vs a
+string key, narrow vs wide vs nullable gather. It is how the packed two-key
+join (`69 ms → 14 ms` on 100k rows) was found and accepted; the numbers and the
+noise caveat are in [`docs/bench-baseline.md`](../docs/bench-baseline.md).
+
 ## Writer interop (`check_writer_interop.py`)
 
 ```bash

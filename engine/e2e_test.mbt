@@ -852,6 +852,39 @@ test "explain reports pruned column counts" {
 }
 
 ///|
+/// Two int32 join keys are packed into one Int64 hash key instead of a
+/// canonical string per row. The packing has to be injective (no false match)
+/// and the NULL rule has to survive (a NULL in any component never matches),
+/// so this pins both, plus duplicates on the build side.
+test "two int join keys match exactly, NULLs included" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("a,b,tag\n1,1,x\n1,2,y\n2,1,z\n2,2,w\n1,1,d\n", "l") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("a,b,v\n1,1,10\n1,2,20\n2,2,22\n3,3,30\n,,40\n", "r") catch {
+      e => abort("\{e}")
+    },
+  )
+  // duplicates on both sides: (1,1) appears twice in l and once in r
+  let got = run("SELECT count(*) FROM l JOIN r ON l.a = r.a AND l.b = r.b", cat)
+  // (1,1) twice from l, (1,2) once, (2,2) once
+  assert_eq(got.get(0, 0), @types.Int64(4L))
+  // the NULL row in r can never match, and neither can the absent (2,1)
+  let pairs = run(
+    "SELECT l.tag FROM l JOIN r ON l.a = r.a AND l.b = r.b ORDER BY l.tag", cat,
+  )
+  assert_eq(pairs.row_count(), 4)
+  // a mixed width key must still take a correct path (packing does not apply)
+  assert_eq(
+    run("SELECT count(*) FROM l JOIN r ON l.a = r.v", cat).get(0, 0),
+    @types.Int64(0L),
+  )
+}
+
+///|
 /// EXPLAIN states the row count when the format knows it and says `?` when it
 /// does not. No estimates: the engine has no cardinality model, and a guess
 /// printed beside an exact count invites trusting the guess.

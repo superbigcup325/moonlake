@@ -1,0 +1,10 @@
+import {
+  "superbigcup325/moonlake",
+  "superbigcup325/moonlake/types",
+  "superbigcup325/moonlake/catalog",
+  "moonbitlang/core/bench",
+  "moonbitlang/core/env",
+  "moonbitlang/core/string",
+}
+
+pkgtype(kind: "executable")

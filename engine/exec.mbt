@@ -1214,12 +1214,9 @@ fn join_step(
   // FULL also preserves unmatched build rows: remember who matched
   let matched_build : FixedArray[Bool] = FixedArray::make(n_build, false)
   let track = step.kind is Full
-  // single-int-key fast path: hash Int64s, no key strings per row
-  let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
-    int_key_cols(build_keys[0], left_keys[0])
-  } else {
-    None
-  }
+  // int-key fast path: hash Int64s, no key strings per row. One key as it
+  // stands; two int32-width keys packed (see int_key_vecs).
+  let int_keys = int_key_cols(build_keys, left_keys)
   match int_keys {
     Some((bd, bv, ld, lv)) => {
       let map : Map[Int64, Array[Int32]] = Map([])
@@ -1735,29 +1732,72 @@ fn residual_ok(
 }
 
 ///|
-/// Normalize a single-int join key pair to (Int64 data, validity) for
-/// both sides; None when either key is not a 32/64-bit int column (the
-/// binder promotes both sides to one type, so mixed int widths do not
-/// reach the executor, but staying type-exact costs one check).
-fn int_key_cols(
-  build_key : @types.ColumnVector,
-  left_key : @types.ColumnVector,
-) -> (FixedArray[Int64], FixedArray[Bool], FixedArray[Int64], FixedArray[Bool])? {
-  fn norm(v : @types.ColumnVector) -> (FixedArray[Int64], FixedArray[Bool])? {
-    match v {
-      @types.I32(d, valid) => {
-        let n = v.len()
-        let od : FixedArray[Int64] = FixedArray::make(n, 0L)
-        for i in 0..<n {
-          od[i] = d[i].to_int64()
+/// Normalize one side's join keys into Int64 hash keys, or None when the
+/// shape has no exact Int64 form.
+///
+/// One int-like key is used as it stands. Two int32-width keys are packed
+/// into one Int64 as `(a << 32) | (b & 0xFFFFFFFF)`, which is injective: a
+/// distinct `a` changes the high half, a distinct `b` the low half. This is
+/// worth a fast path because the alternative builds a canonical string per
+/// row on both sides: on a 100k x 100k join, two int keys measured 69 ms
+/// against 13 ms for one. The TPC-H shape it covers is partsupp joined on
+/// (partkey, suppkey).
+///
+/// Wider keys, strings and three-plus columns stay on the general path: an
+/// Int64 cannot hold them exactly, and a plain hash would need collision
+/// handling the packed form does not.
+fn int_key_vecs(
+  keys : Array[@types.ColumnVector],
+) -> (FixedArray[Int64], FixedArray[Bool])? {
+  match keys {
+    [one] =>
+      match one {
+        @types.I32(d, valid) => {
+          let n = one.len()
+          let od : FixedArray[Int64] = FixedArray::make(n, 0L)
+          for i in 0..<n {
+            od[i] = d[i].to_int64()
+          }
+          Some((od, valid))
         }
-        Some((od, valid))
+        @types.I64(d, valid) => Some((d, valid))
+        _ => None
       }
-      @types.I64(d, valid) => Some((d, valid))
-      _ => None
-    }
+    [first, second] =>
+      match (first, second) {
+        (@types.I32(a, av), @types.I32(b, bv)) => {
+          let n = first.len()
+          let od : FixedArray[Int64] = FixedArray::make(n, 0L)
+          let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+          for i in 0..<n {
+            // a NULL in any component can never match
+            ovalid[i] = av[i] && bv[i]
+            od[i] = (a[i].to_int64() << 32) | (b[i].to_int64() & 0xFFFFFFFFL)
+          }
+          Some((od, ovalid))
+        }
+        (@types.DateV(a, av), @types.DateV(b, bv)) => {
+          let n = first.len()
+          let od : FixedArray[Int64] = FixedArray::make(n, 0L)
+          let ovalid : FixedArray[Bool] = FixedArray::make(n, false)
+          for i in 0..<n {
+            ovalid[i] = av[i] && bv[i]
+            od[i] = (a[i].to_int64() << 32) | (b[i].to_int64() & 0xFFFFFFFFL)
+          }
+          Some((od, ovalid))
+        }
+        _ => None
+      }
+    _ => None
   }
-  match (norm(build_key), norm(left_key)) {
+}
+
+///|
+fn int_key_cols(
+  build_keys : Array[@types.ColumnVector],
+  left_keys : Array[@types.ColumnVector],
+) -> (FixedArray[Int64], FixedArray[Bool], FixedArray[Int64], FixedArray[Bool])? {
+  match (int_key_vecs(build_keys), int_key_vecs(left_keys)) {
     (Some((bd, bv)), Some((ld, lv))) => Some((bd, bv, ld, lv))
     _ => None
   }
@@ -1973,11 +2013,7 @@ fn join_swapped(
   }
   let acc_ids : Array[Int32] = []
   let right_ids : Array[Int32] = [] // -1 marks a NULL accumulated side
-  let int_keys = if step.keys_l.length() == 1 && step.keys_r.length() == 1 {
-    int_key_cols(build_keys[0], probe_keys[0])
-  } else {
-    None
-  }
+  let int_keys = int_key_cols(build_keys, probe_keys)
   match int_keys {
     Some((bd, bv, pd, pv)) => {
       let map : Map[Int64, Array[Int32]] = Map([])
