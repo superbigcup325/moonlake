@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- 2026-10-21 the Parquet corpus check counted a footer-only `select count(*)`
+  as a read, so 18 of its 35 "read" files were ones whose data pages this reader
+  refuses (LZ4/ZSTD/GZIP codecs, v2 pages, an empty dictionary page). It now
+  decodes every column and compares a five-row sample against DuckDB cell for
+  cell, and pins each file's class in `harness/parquet_corpus_expected.json`, so
+  a file that stops decoding fails the nightly instead of hiding inside a count.
+  The honest classification is 17 decoded by value, 51 refused by design, 0
+  failing
 - 2026-10-21 a spilled sort leaked its intermediate run files on the success
   path: `reduce_and_merge` recorded the files it produced while merging and
   then only removed them through `errdefer`, so every successful spilled

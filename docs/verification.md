@@ -244,6 +244,10 @@ design** — by reason: nested schema 13, other compression codecs
 encodings only 4, v2 data pages 3, TIMESTAMP 1, repeated 1, empty dictionary page
 1 — **3 that DuckDB itself cannot read either** (skipped), and **0 wrong answers**.
 
+> Read counts in this section and in §6.6 are footer-level (`count(*)`); §11
+> replaced the metric with a column-and-value check, which is why the number it
+> reports is smaller.
+
 **Supported range** (everything else is a structured scan error, no guessing):
 flat schema, v1 data pages, PLAIN, dictionary (including RLE/bit-packed
 indices and definition levels), DELTA_BINARY_PACKED (INT32/INT64),
@@ -369,7 +373,8 @@ still decodes everything and the engine then materializes its batches.
 **5. Third-party corpus** (`harness/check_parquet_corpus.py`, nightly): the
 apache/parquet-testing files must either read with DuckDB's row count or be
 refused with one of the documented scope messages — 39 read, 29 refused by
-design, 0 failing. This is what caught an ordering regression the per-push jobs
+design, 0 failing (footer-level counts; §11 replaced the metric). This is what
+caught an ordering regression the per-push jobs
 missed: the lazy rewrite moved the footer row-count check ahead of the schema
 gate, so `repeated_no_annotation.parquet` (repeated scope *and* `num_rows = 0`
 over a 6-row group) reported "row groups hold 6 rows, the file metadata says 0"
@@ -600,9 +605,23 @@ type is refused at registration:
 On apache/parquet-testing (71 files) that moved six files from "read" to
 "refused by design": `byte_array_decimal`, `fixed_length_decimal`,
 `fixed_length_decimal_legacy`, `int32_decimal`, `int64_decimal`,
-`concatenated_gzip_members` (which carries a UINT_64 column). The corpus check
-now reports 35 read, 33 refused, 0 failing — the reader did not lose a file it
-could actually answer.
+`concatenated_gzip_members` (which carries a UINT_64 column).
+
+**The corpus count was measuring the wrong thing.** It asked each file for
+`select count(*)`, which reads only the footer, so a file whose data pages need
+LZ4, ZSTD, GZIP or v2 pages counted as "read". Reading one column through the
+CLI showed 18 of the 35 decoded nothing: `hadoop_lz4_compressed` passed while
+`select c0` raised `compression codec 5 is not supported`, and
+`delta_binary_packed` passed although its pages are v2, so the DELTA path never
+ran. The check now decodes every column (`count(<col>)`) and compares a
+five-row sample against DuckDB cell for cell, and it records the class of every
+file in `harness/parquet_corpus_expected.json` so a later flip fails instead of
+hiding inside a count. The honest classification is **17 decoded by value, 51
+refused by design, 0 failing** (three files DuckDB cannot read either are
+skipped). The DELTA and BYTE_STREAM_SPLIT paths stay covered by the embedded
+fixtures in `sources/parquet/colenc_integration_test.mbt`: every corpus file
+that carries them also carries a v2 page or a codec outside the scope, so no
+external file exercises them end to end.
 
 **Statistics.** Each column chunk carries `null_count` plus `min_value` /
 `max_value` (fields 3, 5, 6) marked exact (7, 8). The deprecated `min`/`max`

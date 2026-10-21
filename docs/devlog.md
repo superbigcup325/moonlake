@@ -753,3 +753,25 @@ at the store boundary so an operator cannot forget to report. Honest limit
 recorded in `verification.md` §10: the aggregation change removes a term from
 the memory equation but is not separately measurable on the current workloads,
 which is a workload gap rather than an optimization.
+
+2026-10-21 (later) — **The corpus gate was counting footers, not reads.**
+Goal: check the 0.4.0 priority list against the tree instead of against its own
+summary, starting with the claim that the apache/parquet-testing corpus proves
+what the reader says it supports. It did not. The check asked each file for
+`count(*)`, which reads a footer and no page, so 18 of the 35 files it counted
+as "read" could not decode a single column: `hadoop_lz4_compressed` passed while
+`select c0` raised "compression codec 5 is not supported", and
+`delta_binary_packed` passed with v2 pages, so the DELTA path never ran. The
+gate now decodes every column, compares a five-row sample against DuckDB cell
+for cell (type-aware, so `true`/`1`/`NaN` compare as values, not spellings), and
+records each file's class in `harness/parquet_corpus_expected.json` so a class
+flip fails the nightly instead of being invisible. Result: 17 decoded by value,
+51 refused by design, 0 failing; 3 skipped because DuckDB cannot read them
+either. What the corpus still cannot prove is now written down: no external file
+exercises DELTA_BINARY_PACKED, the DELTA byte-array pair or BYTE_STREAM_SPLIT,
+because every file that carries one also carries a v2 page or a codec outside
+scope — those five encodings rest on the embedded fixtures in
+`colenc_integration_test.mbt`, not on third-party data. Two smaller corrections
+went in beside it: the `page.mbt` scope comment (still said "PLAIN and
+dictionary" after colenc landed) and the `verification.md` §11 count that had
+been quoted as evidence.

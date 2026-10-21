@@ -1,9 +1,11 @@
 // Page decoding: turns the column chunks of a Parquet file into values the
 // adapter can hand to the engine.
 //
-// Scope: flat schemas, data page v1, PLAIN and dictionary encodings,
-// UNCOMPRESSED and SNAPPY. Anything else is refused with a pointed message
-// rather than guessed at, because a wrong decode is worse than a refusal.
+// Scope: flat schemas, data page v1, PLAIN and dictionary encodings, the DELTA
+// family and BYTE_STREAM_SPLIT (both through colenc), RLE boolean values,
+// UNCOMPRESSED and SNAPPY. Anything else — v2 pages, other codecs, INT96,
+// DECIMAL, UINT — is refused with a pointed message rather than guessed at,
+// because a wrong decode is worse than a refusal.
 
 ///|
 /// Decoded values for one column, with a parallel validity array. A `false`

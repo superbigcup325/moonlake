@@ -1,0 +1,279 @@
+{
+  "schema": 1,
+  "note": "Class of every apache/parquet-testing file this reader has been checked against. `decoded` means every column's pages decode and a value sample matches DuckDB; `refused` means a documented refusal. Regenerate with `python3 harness/check_parquet_corpus.py --update` after reviewing the diff.",
+  "checked_with": "moon 0.1.20261016 (1af328f 2026-10-16)",
+  "files": {
+    "alltypes_dictionary.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "alltypes_plain.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "alltypes_plain.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "alltypes_tiny_pages.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "alltypes_tiny_pages_plain.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "binary.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 0 sampled"
+    },
+    "binary_truncated_min_max.parquet": {
+      "class": "decoded",
+      "why": "6 columns, 3 sampled"
+    },
+    "byte_array_decimal.parquet": {
+      "class": "refused",
+      "why": "column \"value\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)"
+    },
+    "byte_stream_split.zstd.parquet": {
+      "class": "refused",
+      "why": "column \"f32\": compression codec 6 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "byte_stream_split_extended.gzip.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+    },
+    "column_chunk_key_value_metadata.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 2 sampled"
+    },
+    "concatenated_gzip_members.parquet": {
+      "class": "refused",
+      "why": "column \"long_col\": UINT_64 is not supported (values above INT64_MAX would read as negative"
+    },
+    "data_index_bloom_encoding_stats.parquet": {
+      "class": "refused",
+      "why": "column \"String\": GZIP compression is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "data_index_bloom_encoding_with_length.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "datapage_v1-corrupt-checksum.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 2 sampled"
+    },
+    "datapage_v1-snappy-compressed-checksum.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 2 sampled"
+    },
+    "datapage_v1-uncompressed-checksum.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 2 sampled"
+    },
+    "datapage_v2.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"e\": nested schemas are not supported (group node with 1 children)"
+    },
+    "datapage_v2_empty_datapage.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"value\": data page v2 is not supported"
+    },
+    "delta_binary_packed.parquet": {
+      "class": "refused",
+      "why": "column \"bitwidth0\": data page v2 is not supported"
+    },
+    "delta_byte_array.parquet": {
+      "class": "refused",
+      "why": "column \"c_customer_id\": data page v2 is not supported"
+    },
+    "delta_encoding_optional_column.parquet": {
+      "class": "refused",
+      "why": "column \"c_customer_sk\": data page v2 is not supported"
+    },
+    "delta_encoding_required_column.parquet": {
+      "class": "refused",
+      "why": "column \"c_customer_sk:\": data page v2 is not supported"
+    },
+    "delta_length_byte_array.parquet": {
+      "class": "refused",
+      "why": "column \"FRUIT\": compression codec 6 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "dict-page-offset-zero.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "fixed_length_byte_array.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+    },
+    "fixed_length_decimal.parquet": {
+      "class": "refused",
+      "why": "column \"value\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)"
+    },
+    "fixed_length_decimal_legacy.parquet": {
+      "class": "refused",
+      "why": "column \"value\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)"
+    },
+    "flba12_timestamp.parquet": {
+      "class": "refused",
+      "why": "column \"timestamp_millis\": TIMESTAMP is not supported (it would decode as raw epoch intege"
+    },
+    "float16_nonzeros_and_nans.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+    },
+    "float16_zeros_and_nans.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+    },
+    "floating_orders_nan_count.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+    },
+    "hadoop_lz4_compressed.parquet": {
+      "class": "refused",
+      "why": "column \"c0\": compression codec 5 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "hadoop_lz4_compressed_larger.parquet": {
+      "class": "refused",
+      "why": "column \"a\": compression codec 5 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "incorrect_map_schema.parquet": {
+      "class": "refused",
+      "why": "column \"my_map\": nested schemas are not supported (group node with 1 children)"
+    },
+    "int32_decimal.parquet": {
+      "class": "refused",
+      "why": "column \"value\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)"
+    },
+    "int32_with_null_pages.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "int32_with_uuid_logical_type.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "int64_decimal.parquet": {
+      "class": "refused",
+      "why": "column \"value\": DECIMAL is not supported (read it as DOUBLE, or cast it in the source)"
+    },
+    "int96_from_spark.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "int96_timestamp_order.parquet": {
+      "class": "refused",
+      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+    },
+    "json.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 0 sampled"
+    },
+    "large_string_map.brotli.parquet": {
+      "class": "refused",
+      "why": "column \"arr\": nested schemas are not supported (group node with 1 children)"
+    },
+    "list_columns.parquet": {
+      "class": "refused",
+      "why": "column \"int64_list\": nested schemas are not supported (group node with 1 children)"
+    },
+    "lz4_raw_compressed.parquet": {
+      "class": "refused",
+      "why": "column \"c0\": compression codec 7 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "lz4_raw_compressed_larger.parquet": {
+      "class": "refused",
+      "why": "column \"a\": compression codec 7 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "nan_in_stats.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "nation.dict-malformed.parquet": {
+      "class": "decoded",
+      "why": "4 columns, 2 sampled"
+    },
+    "nested_lists.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"a\": nested schemas are not supported (group node with 1 children)"
+    },
+    "nested_maps.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"a\": nested schemas are not supported (group node with 1 children)"
+    },
+    "nested_structs.rust.parquet": {
+      "class": "refused",
+      "why": "column \"roll_num\": nested schemas are not supported (group node with 6 children)"
+    },
+    "non_hadoop_lz4_compressed.parquet": {
+      "class": "refused",
+      "why": "column \"c0\": compression codec 5 is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "nonnullable.impala.parquet": {
+      "class": "refused",
+      "why": "column \"Int_Array\": nested schemas are not supported (group node with 1 children)"
+    },
+    "null_list.parquet": {
+      "class": "refused",
+      "why": "column \"emptylist\": nested schemas are not supported (group node with 1 children)"
+    },
+    "nullable.impala.parquet": {
+      "class": "refused",
+      "why": "column \"int_array\": nested schemas are not supported (group node with 1 children)"
+    },
+    "nulls.snappy.parquet": {
+      "class": "refused",
+      "why": "column \"b_struct\": nested schemas are not supported (group node with 1 children)"
+    },
+    "old_list_structure.parquet": {
+      "class": "refused",
+      "why": "column \"a\": nested schemas are not supported (group node with 1 children)"
+    },
+    "overflow_i16_page_cnt.parquet": {
+      "class": "decoded",
+      "why": "1 columns, 1 sampled"
+    },
+    "page_v2_empty_compressed.parquet": {
+      "class": "refused",
+      "why": "column \"integer_column\": compression codec 6 is not supported (UNCOMPRESSED and SNAPPY are"
+    },
+    "plain-dict-uncompressed-checksum.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 1 sampled"
+    },
+    "repeated_no_annotation.parquet": {
+      "class": "refused",
+      "why": "column \"phoneNumbers\": nested schemas are not supported (group node with 1 children)"
+    },
+    "repeated_primitive_no_list.parquet": {
+      "class": "refused",
+      "why": "column \"Int32_list\": repeated fields are not supported"
+    },
+    "rle-dict-snappy-checksum.parquet": {
+      "class": "refused",
+      "why": "column \"long_field\": data page v2 is not supported"
+    },
+    "rle-dict-uncompressed-corrupt-checksum.parquet": {
+      "class": "refused",
+      "why": "column \"long_field\": data page v2 is not supported"
+    },
+    "rle_boolean_encoding.parquet": {
+      "class": "refused",
+      "why": "column \"datatype_boolean\": GZIP compression is not supported (UNCOMPRESSED and SNAPPY are)"
+    },
+    "single_nan.parquet": {
+      "class": "refused",
+      "why": "column \"mycol\": the dictionary page holds no entries"
+    },
+    "sort_columns.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 2 sampled"
+    },
+    "unknown-logical-type.parquet": {
+      "class": "decoded",
+      "why": "2 columns, 1 sampled"
+    }
+  }
+}

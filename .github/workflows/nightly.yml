@@ -42,6 +42,10 @@ jobs:
           python3 harness/gen_parquet_fixtures.py
           bash harness/check_all.sh
       - name: Parquet corpus cross-check (apache/parquet-testing)
+        env:
+          # the check now decodes every column, so a `moon run` per query would
+          # pay the build path ~five times per file; use the binary built above
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
         run: python3 harness/check_parquet_corpus.py
       - name: Install uv
         uses: astral-sh/setup-uv@v6
