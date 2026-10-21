@@ -249,3 +249,19 @@ table:
 
 `count(*)` over the same files is footer-only (0.02–0.05 s) and measures
 nothing, which is why the read column above aggregates a real column.
+
+**Same measurement after the writer learned to stream (2026-10-21, later).**
+The input is no longer materialized (one pass over a `BatchStream`, every column
+written OPTIONAL — see `verification.md` §11), so the write column moves to:
+
+| | file size | write | write peak RSS |
+|---|---|---|---|
+| `--out` (raw) | 75.2 MB | 0.84 s | 421 MB |
+| `--out --snappy` | 34.5 MB | 1.03 s | 351 MB |
+
+The 452 → 421 / 367 → 351 part of that is the table copy the writer used to
+hold. The rest is not the writer: the CSV source reads the whole file into
+`Bytes` and `count(*)` over the same file costs 341 MB before the writer appends
+anything, and `write_bytes` still accumulates the archive because the fs API has
+no incremental write. Writing from `lineitem.parquet` (84.8 MB, no CSV parse)
+shows the split more cleanly: 407 → 328 MB raw and 286 → 203 MB with Snappy.

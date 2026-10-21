@@ -90,6 +90,43 @@ pub fn TableEntry::scan(
 }
 
 ///|
+/// The same scan as a cursor instead of an array. `scan` materializes every
+/// batch because the engine's operators are still eager; a caller that can
+/// consume one batch at a time (the Parquet writer) uses this and never holds
+/// the table. The cursor owns its batches either way — a lazy source decodes
+/// them as `next` is called.
+pub fn TableEntry::stream(
+  self : TableEntry,
+  request : ScanRequest,
+) -> &BatchStream raise @types.SqlError {
+  match self.source {
+    Some(src) => src.open(request)
+    None => {
+      let projected = project_batches(self.batches, request.projection)
+      (BatchesStream::{ batches: projected, index: 0, } : &BatchStream)
+    }
+  }
+}
+
+///|
+/// A cursor over batches that are already in memory, for an entry built with
+/// `TableEntry::new`.
+priv struct BatchesStream {
+  batches : Array[@types.DataBatch]
+  mut index : Int32
+}
+
+///|
+impl BatchStream for BatchesStream with fn next(self) -> @types.DataBatch? raise @types.SqlError {
+  if self.index >= self.batches.length() {
+    return None
+  }
+  let batch = self.batches[self.index]
+  self.index += 1
+  Some(batch)
+}
+
+///|
 /// Planning information for EXPLAIN: row groups statistics eliminated.
 /// Materialized entries have no plan to report.
 pub fn TableEntry::plan(

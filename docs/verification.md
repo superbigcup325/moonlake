@@ -685,6 +685,33 @@ incompressible bytes and a 200 KB block (the 64 KiB offset window).
 The CLI form is `moonlake write --csv in.csv --out out.parquet [--snappy]
 [--table <name>]`; the library form is `write_file_with(path, entry, codec)`.
 
+**One pass instead of a materialized input (2026-10-21).** The writer used to
+call `entry.scan(...)`, which returns `Array[DataBatch]` — the whole projected
+table — and it walked that array twice: once to decide REQUIRED vs OPTIONAL per
+column (the schema is file-wide) and once to write. It now walks one
+`BatchStream` (`TableEntry::stream`) and writes each page as its batch arrives,
+because every column is written OPTIONAL: an OPTIONAL schema is the only one
+that can be declared before the first page and still describe a later NULL, so
+giving up REQUIRED is what removes the pre-pass. The cost is the definition
+levels: 600,572 rows × 16 columns grew the SF0.1 lineitem file by 18,816 bytes
+(75,155,785 → 75,174,601, 0.03%), because the hybrid RLE stream compresses a run
+of ones to a few bytes. Measured peak RSS on the same data (native release):
+
+| input | before | after |
+|---|---|---|
+| `--csv` (raw) | 456 MB | 421 MB |
+| `--csv --snappy` | 401 MB | 351 MB |
+| `--parquet` (raw, 84.8 MB) | 407 MB | 328 MB |
+| `--parquet --snappy` | 286 MB | 203 MB |
+
+What is left is not the writer's own buffering and is not fixable here: the
+sources read a whole file into `Bytes` (75 MB CSV, 84.8 MB Parquet) because the
+fs API has no range reads, and `write_bytes` still accumulates the whole archive
+before handing it to `write_bytes_to_file` (the CLI path needs an incremental
+write handle for that, which `moonbitlang/x/fs` does not expose). The CSV path
+in particular is now dominated by the scan itself: `count(*)` over the same CSV
+costs 341 MB on its own.
+
 ## 12. EXPLAIN row reporting (2026-10-21)
 
 `EXPLAIN` described what a scan would do (projection width, pushed predicates,

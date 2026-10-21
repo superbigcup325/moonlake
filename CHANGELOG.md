@@ -75,6 +75,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   runs after the measurements and the parent is collected before they start;
   the controlled check (150 MB of ballast → an 11 ms case reported 164 MB) is
   written down in `docs/bench-baseline.md`
+- 2026-10-21 the Parquet writer streams its input. It used to call
+  `entry.scan(...)` — the whole projected table in memory — and walk it twice:
+  once to decide REQUIRED vs OPTIONAL per column (the schema is file-wide, the
+  pages are written before the footer), once to write. Every column is now
+  written OPTIONAL with definition levels, which is the only schema that can be
+  declared before the first page and still describe a NULL arriving later, so
+  the pre-pass is gone and one `BatchStream` feeds pages as batches arrive.
+  Cost: 18,816 bytes on the SF0.1 lineitem file (0.03% — hybrid RLE turns a run
+  of ones into a few bytes). Peak RSS: 407 → 328 MB writing from
+  `lineitem.parquet` (286 → 203 with `--snappy`), 456 → 421 MB from the CSV.
+  What still bounds it is not the writer: sources read whole files (the fs API
+  has no range reads) and `write_bytes` still accumulates the archive before
+  `write_bytes_to_file`; an incremental file handle would be needed for that
 
 ### Performance
 
@@ -89,6 +102,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-21 `TableEntry::stream(request)` returns the scan a `TableEntry::scan`
+  would return, as a `BatchStream` cursor instead of an `Array[DataBatch]`, so a
+  caller that consumes batches one at a time never materializes the table. The
+  Parquet writer is the first user; the engine keeps `scan` because its
+  operators are still eager
 - 2026-10-21 the release record carries the dataset's SHA-256 and each case's
   `sql`. A path is not an identity (regenerating SF0.1 with a different
   generator yields the same names and different numbers), and a prose `what` is

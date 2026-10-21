@@ -824,3 +824,25 @@ around the fix, compared by the new guard — the RSS rows move 94.9 → 25.1 an
 39.1 while nothing else does, and the same pair shows wall time moving up to 21%
 between two runs of the same binary, which is exactly why the spread column
 exists.
+
+2026-10-21 (writer) — **One pass, and the two walls behind it.** Goal: take the
+materialized input out of the Parquet writer, the one term the audit could
+attribute without touching a dependency. The writer called `entry.scan`, held
+the whole projected table, and walked it twice — the first walk existed only to
+decide REQUIRED vs OPTIONAL, because the schema is file-wide while the pages are
+written before the footer is. Writing every column OPTIONAL removes the reason
+for the walk: an OPTIONAL schema can be declared up front and still describe a
+NULL that arrives in a later batch. Measured on SF0.1 lineitem: the file grows
+by 18,816 bytes (0.03% — hybrid RLE turns 600k ones into a few bytes), and peak
+RSS falls 407 → 328 MB writing from `lineitem.parquet`, 286 → 203 MB with
+`--snappy`, 456 → 421 MB from the CSV. Two walls stand behind this change and
+neither is the writer's: the sources read whole files (75 and 84.8 MB) because
+the fs API has no range reads, and `write_bytes` still accumulates the archive
+because `x/fs` has no incremental write handle. The CSV number is now dominated
+by the scan itself — `count(*)` over the same file costs 341 MB before the
+writer appends anything — so the next real step is a native file sink, which is
+the same FFI decision the interrupted-spill reaping is waiting on: one decision,
+two payoffs. Scope kept honest by tests instead of prose: the existing writer
+tests are round-trips through the reader, and `check_writer_interop.py` re-read
+the OPTIONAL output with pyarrow and DuckDB on all three paths (raw, snappy,
+DuckDB-written input) without a change.

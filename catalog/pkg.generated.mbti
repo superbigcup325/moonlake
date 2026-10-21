@@ -63,6 +63,7 @@ pub fn TableEntry::is_lazy(Self) -> Bool
 pub fn TableEntry::new(TableSchema, Array[@types.DataBatch]) -> Self
 pub fn TableEntry::plan(Self, ScanRequest) -> ScanPlan raise @types.SqlError
 pub fn TableEntry::scan(Self, ScanRequest) -> Array[@types.DataBatch] raise @types.SqlError
+pub fn TableEntry::stream(Self, ScanRequest) -> &BatchStream raise @types.SqlError
 
 pub(all) struct TableSchema {
   table : String
