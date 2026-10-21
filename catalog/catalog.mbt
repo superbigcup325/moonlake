@@ -112,6 +112,14 @@ pub fn TableEntry::plan(
 }
 
 ///|
+/// Drop one table. A missing name is a no-op: the caller that cares whether it
+/// existed can `lookup` first, and a drop that fails because the table is
+/// already gone is not an error worth reporting.
+pub fn Catalog::drop(self : Catalog, name : String) -> Unit {
+  let _ = self.tables.remove(name)
+}
+
+///|
 /// The registry `execute` reads from: map table name to its entry.
 /// Plain values everywhere — build one per execution (or share one
 /// across threads that never mutate it).

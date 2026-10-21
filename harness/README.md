@@ -170,6 +170,8 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
   node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
 ```
 
+Runs on every PR (job `playground`, which installs Playwright and Chromium).
+
 Drives the real page in headless Chromium: CSV upload, Parquet upload with
 DATE columns, two error paths, a cross-file JOIN (refused by name — the page
 holds one table), a same-file self-join, and a no-uncaught-JS-error check.

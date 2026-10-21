@@ -55,6 +55,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-21 the playground holds a session instead of one table per run: the
+  bridge exports `add_csv` / `add_parquet` / `drop_table` / `tables` / `query`
+  / `plan` / `reset`, so several files can be registered, listed with their
+  schema, dropped, and joined across. A duplicate table name is refused rather
+  than silently replacing the old table, the page has a Plan panel
+  (`engine.explain`, including the scan row counts), and `Catalog::drop` is the
+  library-side equivalent
+- 2026-10-21 `harness/playground_accept.cjs` grew to 15 checks and the new CI
+  job `playground` runs it in headless Chromium on every PR: two files at once,
+  a cross-file JOIN, the plan panel, a duplicate name, a dropped table, a clear,
+  CSV and Parquet agreeing cell for cell, both error paths and no uncaught JS
+  error
 - 2026-10-21 `harness/kernel_bench`: in-memory operators measured without the
   CSV ingest every release-record case contains, with case pairs chosen so a
   difference isolates one structural cost. The same run recorded two

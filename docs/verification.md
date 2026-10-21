@@ -660,3 +660,55 @@ Covered by `engine/e2e_test.mbt` ("explain prints the row count it knows, and ?
 when it does not"), and end to end by `harness/check_writer_interop.py`, which
 requires `rows: 4` over a written four-row file and `rows: ?` over the same data
 as a CSV.
+
+## 13. Playground session (2026-10-21)
+
+The page used to hold one table: uploading a second file replaced the first,
+a cross-file JOIN could not even be expressed, and the bridge rebuilt the
+catalog on every run. That was a bridge limitation, not an engine one, and it
+was the wrong limitation for a demo that leads the README.
+
+**Session bridge.** `playground/lib.mbt` now keeps one `@ref.Ref[@catalog.Catalog]`
+for the lifetime of the wasm instance and exports `add_csv`, `add_parquet`,
+`drop_table`, `tables`, `query`, `plan`, `reset` and `version`. Two decisions
+worth naming:
+
+- a duplicate table name is an **error** (`table "t" is already registered;
+  drop it first`), not a silent replacement. The page shows the table list, so
+  a rename or a drop is visible there; "the second upload quietly replaced the
+  first" is not;
+- `plan` returns `engine.explain`'s text, which since §12 includes the scan row
+  count, so the panel answers "what will this read" as well as "what will it do".
+
+`Catalog::drop` is the library-side equivalent (a missing name is a no-op; a
+caller that cares can `lookup` first).
+
+**Page.** Several files at once (input `multiple` or drag-and-drop), a table
+list with `name (col:type, …)` and a per-table drop, Run / Plan / Clear, a
+`<pre>` for the plan, and the engine version on `document.body.dataset.engine`
+as well as the status line — the status line is rewritten as the session
+changes, so a reader that needs the version asks the attribute.
+
+**Acceptance.** `harness/playground_accept.cjs`, 15 checks, now run on every PR
+by the new `playground` job (`moon build --target wasm-gc playground`, then
+Playwright + Chromium in the working tree):
+
+| # | check |
+|---|---|
+| 1 | the wasm loads and reports `0.3.1` |
+| 2 | two files in one upload become two tables |
+| 3 | the table list shows `id:int32, k:int32` |
+| 4 | a cross-file JOIN returns the expected 3 pairs (it used to be refused) |
+| 5 | the plan panel shows `scan t1` and a `rows:` line |
+| 6 | a duplicate name is refused |
+| 7 | a dropped table is gone and the query names it |
+| 8 | Clear empties the session and disables Run |
+| 9 | CSV and Parquet of SF0.01 agree cell for cell (`60175 | 1992-01-04 | 1998-11-29`) |
+| 10 | DATE renders as `yyyy-mm-dd` on both paths |
+| 11 | a JOIN across the two uploaded copies runs (301,389 rows) |
+| 12 | an unknown column surfaces and marks the run failed |
+| 13 | a syntax error surfaces |
+| 14 | no uncaught JS error across the run |
+
+The wasm still imports nothing but the JS-string builtins (the PR gate asserts
+it), so the page needs no server-side anything.

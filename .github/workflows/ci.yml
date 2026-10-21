@@ -115,6 +115,40 @@ jobs:
       - name: Spill lifecycle
         run: bash harness/spill_accept.sh
 
+  playground:
+    # The page is the artifact candidates click first, and 0.3.0 shipped a wasm
+    # that could not instantiate at all. The import gate below catches that
+    # class; this job drives the real page in a real browser: upload, register,
+    # join across files, plan panel, drop, error paths.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Update registry index
+        run: moon update
+      - name: Build the playground wasm
+        run: moon build --target wasm-gc playground
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i --silent playwright
+          npx playwright install --with-deps chromium
+      - name: Playground acceptance (real browser)
+        run: |
+          mkdir -p site
+          cp playground/index.html site/
+          cp _build/wasm-gc/debug/build/playground/playground.wasm site/
+          python3 -m http.server 8971 --directory site &
+          sleep 1
+          PLAYWRIGHT_MODULE="$PWD/node_modules/playwright" \
+            node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
+
   writer:
     # The write path is only worth having if software that did not write the
     # file reads it correctly: pyarrow and duckdb check the schema (STRING vs

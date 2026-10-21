@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Playground file-upload acceptance: drives the real page in headless
-// Chromium and reports one PASS/FAIL line per scenario.
+// Playground acceptance: drives the real page in headless Chromium and reports
+// one PASS/FAIL line per scenario.
 //
 // Dev-only (not part of the package). Playwright is not a project dependency;
 // point PLAYWRIGHT_MODULE at an install, or have it resolvable by require.
+// CI installs it in the `playground` job.
 //
 //   moon build --target wasm-gc playground
 //   mkdir -p /tmp/site && cp playground/index.html /tmp/site/ \
@@ -11,13 +12,10 @@
 //   python3 -m http.server 8971 --directory /tmp/site &
 //   node harness/playground_accept.cjs http://127.0.0.1:8971/index.html
 //
-// The suite uploads the SF0.01 fixtures (harness/gen_tpch.py) and covers:
-//   - CSV upload and a grouped aggregate
-//   - Parquet upload with DATE columns (--datecols) and DATE rendering
-//   - two error paths: unknown column / syntax error
-//   - a cross-file JOIN (one table per upload, so it must be refused by name)
-//   - a same-file self-join (the engine does support joins)
-//   - one uncaught-JS-error check across the whole run
+// What it covers: the session model (several files registered at once, listed
+// with their schema, dropped again), a cross-file JOIN that now actually runs,
+// the plan panel, CSV and Parquet agreeing cell for cell, two error paths, and
+// one uncaught-JS-error check across the whole run.
 //
 // Environment:
 //   PLAYWRIGHT_MODULE=/path/to/node_modules/playwright
@@ -70,167 +68,181 @@ function check(name, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-async function waitReady() {
+async function waitForEngine() {
   await page.waitForFunction(
-    () => document.querySelector("#status").textContent.startsWith("engine "),
+    () => /^\d+\.\d+\.\d+/.test(document.body.dataset.engine || ""),
     null,
-    { timeout: 30000 },
+    { timeout: 60000 },
   );
-  return (await page.textContent("#status")).trim();
 }
 
-async function loadFile(file, datecols) {
-  const name = path.basename(file);
-  if (datecols !== undefined) await page.fill("#datecols", datecols);
-  const before = await page.textContent("#loaded");
-  await page.setInputFiles("#file", file);
-  // the parquet path reads asynchronously: wait for *this* file's name, not
-  // just for the Run button (which the previous file already enabled)
+async function waitForStatus(prefix) {
   await page.waitForFunction(
-    ([want, prev]) => {
-      const loaded = document.querySelector("#loaded").textContent;
-      return !document.querySelector("#run").disabled && loaded.includes(want) && loaded !== prev;
-    },
-    [name, before],
-    { timeout: 120000 },
+    (p) => document.querySelector("#status").textContent.startsWith(p),
+    prefix,
+    { timeout: 60000 },
   );
-  return (await page.textContent("#loaded")).trim();
 }
 
-async function runSql(sql) {
+async function statusText() {
+  return page.textContent("#status");
+}
+
+// Upload one or more files through the real <input type=file multiple>.
+async function upload(files) {
+  await page.setInputFiles("#file", files);
+  await page.waitForTimeout(300); // the handler is async
+}
+
+function csvFile(name, body) {
+  return { name, mimeType: "text/csv", buffer: Buffer.from(body, "utf8") };
+}
+
+async function runSQL(sql) {
   await page.fill("#sql", sql);
   await page.click("#run");
-  // The handler runs synchronously: once click() resolves, status/err/out are
-  // final. (Polling for a status *change* is not enough — two consecutive
-  // failing queries both end on "failed".)
-  await page.waitForTimeout(50);
-  const status = (await page.textContent("#status")).trim();
-  const err = (await page.textContent("#err")).trim();
-  const rows = await page.$$eval("#out table tbody tr", (trs) =>
-    trs.map((tr) => [...tr.children].map((td) => td.textContent)),
+  await page.waitForTimeout(30);
+}
+
+async function rowTexts() {
+  return page.$$eval("#out table tbody tr", (rows) =>
+    rows.map((r) => [...r.querySelectorAll("td")].map((c) => c.textContent)),
   );
-  return { status, err, rows };
 }
 
-function defaultQuery() {
-  return [
-    "SELECT l_returnflag, count(*) AS n, sum(l_extendedprice) AS total",
-    "FROM lineitem",
-    "WHERE l_shipdate <= date '1998-09-02'",
-    "GROUP BY l_returnflag",
-    "ORDER BY l_returnflag",
-  ].join("\n");
+async function tableNames() {
+  return page.$$eval("#tables .t", (rows) => rows.map((r) => r.dataset.table));
 }
 
-async function main() {
-  const browser = await chromium.launch({
-    executablePath: chrome,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-  page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+(async () => {
+  const browser = await chromium.launch(chrome ? { executablePath: chrome } : {});
+  const ctx = await browser.newContext();
+  page = await ctx.newPage();
   page.on("pageerror", (e) => pageErrors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
     if (m.type() === "error") pageErrors.push(`console.error: ${m.text()}`);
   });
 
-  console.log(`url   ${url}`);
   await page.goto(url, { waitUntil: "load" });
-  const engine = await waitReady();
-  console.log(`engine  ${engine}`);
-  check("wasm loads and reports an engine version", /^engine \d+\.\d+\.\d+ loaded/.test(engine), engine);
 
-  // 1. CSV upload
-  const csvName = await loadFile(path.join(data, "lineitem.csv"));
-  check("CSV upload is accepted and enables Run", /lineitem\.csv/.test(csvName), csvName);
-  const csv = await runSql(defaultQuery());
-  const csvFlags = csv.rows.map((r) => r[0]);
-  check(
-    "CSV: default aggregate returns 3 groups (A,N,R)",
-    csv.rows.length === 3 && csvFlags.join(",") === "A,N,R" && /3 rows in/.test(csv.status),
-    `${csv.status}; groups ${csvFlags.join(",")}`,
-  );
+  // 1. the wasm loads and reports its version
+  await waitForEngine();
+  const version = await page.evaluate(() => document.body.dataset.engine);
+  check("wasm loads and reports the engine version", /^\d+\.\d+\.\d+/.test(version), version);
 
-  // 2. Parquet with DATE columns
-  const pqName = await loadFile(
-    path.join(data, "lineitem.parquet"),
-    "l_shipdate,l_commitdate,l_receiptdate",
-  );
-  check("Parquet upload is accepted and enables Run", /lineitem\.parquet/.test(pqName), pqName);
-  const pq = await runSql(defaultQuery());
+  // 2. two CSV files uploaded at once become two tables with their schema
+  await upload([
+    csvFile("t1.csv", "id,k\n1,10\n2,10\n3,20\n"),
+    csvFile("t2.csv", "id,k\n1,10\n2,20\n4,30\n"),
+  ]);
+  let tables = await tableNames();
+  check("two files register as two tables", tables.join(",") === "t1,t2", tables.join(","));
+  const schema = await page.textContent('#tables .t[data-table="t1"] .cols');
+  check("the table list shows the schema", schema.includes("id:int32") && schema.includes("k:int32"), schema);
+
+  // 3. a cross-file JOIN now runs (this used to be refused by design)
+  await runSQL("SELECT count(*) AS n FROM t1 JOIN t2 ON t1.k = t2.k");
+  let rows = await rowTexts();
+  // t1.k = 10,10,20 against t2.k = 10,20,30: three matching pairs
+  check("a cross-file JOIN runs", rows.length === 1 && rows[0][0] === "3", JSON.stringify(rows));
+
+  // 4. the plan panel shows the physical plan with scan row counts
+  await page.fill("#sql", "SELECT count(*) AS n FROM t1 WHERE k = 10");
+  await page.click("#planbtn");
+  await page.waitForTimeout(100);
+  const plan = await page.textContent("#planout");
+  const planVisible = await page.isVisible("#planout");
   check(
-    "Parquet DATE: default date-filtered aggregate returns 3 groups",
-    pq.rows.length === 3 && pq.rows.map((r) => r[0]).join(",") === "A,N,R",
-    `${pq.status}; groups ${pq.rows.map((r) => r[0]).join(",")}`,
-  );
-  check(
-    "CSV and Parquet agree cell-for-cell on the same query",
-    JSON.stringify(csv.rows) === JSON.stringify(pq.rows),
-    JSON.stringify(pq.rows).slice(0, 160),
-  );
-  const dates = await runSql("SELECT min(l_shipdate) AS lo, max(l_shipdate) AS hi FROM lineitem");
-  const lo = dates.rows[0] && dates.rows[0][0];
-  const hi = dates.rows[0] && dates.rows[0][1];
-  check(
-    "Parquet DATE: min/max render as calendar dates, not epoch ints",
-    /^\d{4}-\d{2}-\d{2}$/.test(lo || "") && /^\d{4}-\d{2}-\d{2}$/.test(hi || ""),
-    `lo=${lo} hi=${hi}`,
+    "the plan panel shows the plan",
+    planVisible && plan.includes("scan t1") && /rows: (\?|\d+)/.test(plan),
+    (plan.split("\n")[0] || "").slice(0, 60),
   );
 
-  // 3. Broken SQL
-  const bad = await runSql("SELECT nonexistent_column FROM lineitem");
+  // 5. re-uploading the same name is refused instead of replacing silently
+  await upload([csvFile("t1.csv", "x\n1\n")]);
+  const dupErr = await page.textContent("#err");
+  check("a duplicate table name is refused", dupErr.includes("already registered"), dupErr.slice(0, 60));
+
+  // 6. dropping a table removes it, and a query over it fails by name
+  await page.click('#tables .t[data-table="t2"] button');
+  await page.waitForTimeout(50);
+  tables = await tableNames();
+  await runSQL("SELECT count(*) AS n FROM t2");
+  const dropErr = await page.textContent("#err");
   check(
-    "error SQL: message surfaces, status failed, no table",
-    bad.err.length > 0 && bad.status === "failed" && bad.rows.length === 0,
-    `${bad.status}; err=${bad.err.slice(0, 120)}`,
+    "a dropped table is gone and named in the error",
+    tables.join(",") === "t1" && dropErr.includes("unknown table"),
+    `${tables.join(",")} | ${dropErr.slice(0, 40)}`,
   );
-  const syntax = await runSql("SELECT FROM WHERE");
-  check("error SQL: syntax error surfaces", syntax.err.length > 0 && syntax.status === "failed", syntax.err.slice(0, 120));
 
-  // 4. Cross-file JOIN (the page holds one table, so this must fail loudly)
-  const join = await runSql(
-    "SELECT count(*) FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey",
+  // 7. clear empties the session and disables Run
+  await page.click("#clear");
+  await page.waitForTimeout(50);
+  tables = await tableNames();
+  const runDisabled = await page.isDisabled("#run");
+  check("clear empties the session", tables.length === 0 && runDisabled, `${tables.length} tables`);
+
+  // 8. the SF0.01 fixtures: CSV and Parquet, uploaded together, agree
+  const csv = fs.readFileSync(path.join(data, "lineitem.csv"));
+  const pq = fs.readFileSync(path.join(data, "lineitem.parquet"));
+  await page.fill("#datecols", "l_shipdate");
+  await upload([
+    { name: "csvrows.csv", mimeType: "text/csv", buffer: csv },
+    { name: "pqrows.parquet", mimeType: "application/octet-stream", buffer: pq },
+  ]);
+  await waitForStatus("2 tables");
+  await runSQL(
+    "SELECT count(*) AS n, min(l_shipdate) AS lo, max(l_shipdate) AS hi FROM csvrows",
+  );
+  const csvRows = await rowTexts();
+  await runSQL(
+    "SELECT count(*) AS n, min(l_shipdate) AS lo, max(l_shipdate) AS hi FROM pqrows",
+  );
+  const pqRows = await rowTexts();
+  check(
+    "CSV and Parquet agree cell for cell",
+    JSON.stringify(csvRows) === JSON.stringify(pqRows) && csvRows.length === 1,
+    `${JSON.stringify(csvRows)} vs ${JSON.stringify(pqRows)}`,
   );
   check(
-    "cross-file JOIN: refused with a pointed error naming the missing table",
-    join.status === "failed" && /orders/.test(join.err) && join.rows.length === 0,
-    `${join.status}; err=${join.err.slice(0, 200)}`,
+    "DATE renders as a calendar date",
+    /^\d{4}-\d{2}-\d{2}$/.test(csvRows[0][1]) && /^\d{4}-\d{2}-\d{2}$/.test(csvRows[0][2]),
+    csvRows[0].join(","),
   );
 
-  // 5. Same-file self-join still works (the engine is not the limit)
-  const selfJoin = await runSql(
-    "SELECT count(*) AS n FROM lineitem a JOIN lineitem b ON a.l_orderkey = b.l_orderkey WHERE a.l_linenumber = 1 AND b.l_linenumber = 2",
+  // 9. a JOIN across the two uploaded copies (the point of the session)
+  await runSQL(
+    "SELECT count(*) AS n FROM csvrows JOIN pqrows ON csvrows.l_orderkey = pqrows.l_orderkey",
   );
-  check(
-    "same-file JOIN executes (engine supports joins over the uploaded table)",
-    /rows in/.test(selfJoin.status) && selfJoin.err === "",
-    `${selfJoin.status}; n=${selfJoin.rows[0] && selfJoin.rows[0][0]}`,
-  );
+  rows = await rowTexts();
+  check("a JOIN across the two uploaded copies runs", rows.length === 1, JSON.stringify(rows));
 
-  // 6. CSV after Parquet, to prove the two paths do not poison each other
-  await loadFile(path.join(data, "lineitem.csv"));
-  const again = await runSql("SELECT count(*) AS n FROM lineitem");
-  check(
-    "CSV reload after Parquet still scans",
-    again.err === "" && again.rows.length === 1,
-    `${again.status}; n=${again.rows[0] && again.rows[0][0]}`,
-  );
+  // 10. error paths surface and mark the run failed
+  await runSQL("SELECT nope FROM csvrows");
+  let err = await page.textContent("#err");
+  check("an unknown column surfaces", err.includes("unknown column"), err.slice(0, 50));
+  check("a failed query says so", (await statusText()) === "failed", await statusText());
+  await runSQL("SELECT FROM");
+  err = await page.textContent("#err");
+  check("a syntax error surfaces", err.length > 0, err.slice(0, 50));
 
-  check("no uncaught JS errors on the page", pageErrors.length === 0, pageErrors.join(" | "));
-
-  const shotIdx = process.argv.indexOf("--shot");
-  if (shotIdx > 0 && process.argv[shotIdx + 1]) {
-    fs.mkdirSync(process.argv[shotIdx + 1], { recursive: true });
-    await page.screenshot({ path: path.join(process.argv[shotIdx + 1], "playground-accept.png"), fullPage: true });
-    console.log(`shot  ${path.join(process.argv[shotIdx + 1], "playground-accept.png")}`);
-  }
+  // 11. nothing threw outside the page's own error handling
+  check("no uncaught JS error", pageErrors.length === 0, pageErrors.join(" | "));
 
   await browser.close();
-  const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-  process.exit(failed.length ? 1 : 0);
-}
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(2);
+  const failed = results.filter((r) => !r.ok);
+  console.log(
+    `\n${results.length - failed.length}/${results.length} checks passed` +
+      (failed.length ? `; ${failed.length} failed` : ""),
+  );
+  process.exit(failed.length ? 1 : 0);
+})().catch(async (e) => {
+  console.error(`FAIL  harness crashed: ${e && e.stack ? e.stack : e}`);
+  try {
+    if (page) await page.screenshot({ path: "playground-failure.png" });
+  } catch (_) {
+    /* best effort */
+  }
+  process.exit(1);
 });

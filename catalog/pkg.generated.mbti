@@ -19,6 +19,7 @@ pub fn project_batches(Array[@types.DataBatch], Array[Int32]) -> Array[@types.Da
 pub struct Catalog {
   tables : Map[String, TableEntry]
 }
+pub fn Catalog::drop(Self, String) -> Unit
 pub fn Catalog::lookup(Self, String) -> TableEntry?
 pub fn Catalog::new() -> Self
 pub fn Catalog::register(Self, TableEntry) -> Unit

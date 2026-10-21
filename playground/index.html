@@ -12,6 +12,7 @@
   .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .75rem 0; }
   textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: .9rem; min-height: 5.5rem; }
   button { padding: .45rem 1.1rem; font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
   #status { font-size: .9rem; opacity: .85; }
   table { border-collapse: collapse; font-size: .85rem; margin-top: .75rem; }
   th, td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: .25rem .55rem; text-align: left; }
@@ -20,17 +21,23 @@
           padding: 1rem; text-align: center; font-size: .9rem; }
   .drop.over { border-color: highlight; }
   .err { color: #c0392b; font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap; }
+  pre { background: color-mix(in srgb, currentColor 6%, transparent); padding: .6rem .8rem; overflow-x: auto; font-size: .82rem; }
+  #tables { font-size: .85rem; }
+  #tables .t { display: flex; gap: .5rem; align-items: baseline; margin: .2rem 0; }
+  #tables .cols { font-family: ui-monospace, monospace; opacity: .8; }
+  #tables button { padding: 0 .5rem; font-size: .8rem; }
 </style>
 </head>
 <body>
 <h1><code>moonlake</code> playground</h1>
-<p>The whole analytical engine, compiled to WebAssembly GC — your file never leaves the browser, no server, no external wasm modules.</p>
+<p>The whole analytical engine, compiled to WebAssembly GC — your files never leave the browser, no server, no external wasm modules. Upload several files, join across them, inspect the plan.</p>
 
-<div class="drop" id="drop">drop a <code>.csv</code> or <code>.parquet</code> file here, or
-  <input type="file" id="file" accept=".csv,.parquet,text/csv">
-  <div id="loaded"></div>
-  <div>parquet DATE columns: <input type="text" id="datecols" placeholder="comma-separated, e.g. l_shipdate" style="width:16rem"></div>
+<div class="drop" id="drop">drop <code>.csv</code> / <code>.parquet</code> files here (one or many), or
+  <input type="file" id="file" accept=".csv,.parquet,text/csv" multiple>
+  <div>parquet DATE columns without a DATE annotation: <input type="text" id="datecols" placeholder="comma-separated, e.g. l_shipdate" style="width:16rem"></div>
 </div>
+
+<div id="tables"></div>
 
 <div class="row">
   <textarea id="sql" spellcheck="false">SELECT l_returnflag, count(*) AS n, sum(l_extendedprice) AS total
@@ -41,9 +48,12 @@ ORDER BY l_returnflag</textarea>
 </div>
 <div class="row">
   <button id="run" disabled>Run (Ctrl+Enter)</button>
-  <span id="status">load a CSV or Parquet file to begin</span>
+  <button id="planbtn" disabled>Plan</button>
+  <button id="clear">Clear tables</button>
+  <span id="status">load one or more CSV/Parquet files to begin</span>
 </div>
 <div class="err" id="err"></div>
+<pre id="planout" hidden></pre>
 <div id="out"></div>
 
 <script type="module">
@@ -55,65 +65,99 @@ const { instance: inst } = await WebAssembly.instantiate(await resp.arrayBuffer(
   builtins: ['js-string'], importedStringConstants: '_',
 });
 instance = inst;
-$('status').textContent = `engine ${instance.exports.version()} loaded (wasm-gc)`;
+const ex = instance.exports;
+// the version lives on the body as well as the status line: the status line is
+// rewritten as the session changes, and a reader (or an acceptance run) should
+// be able to ask which engine is loaded at any moment
+document.body.dataset.engine = ex.version();
+$('status').textContent = `engine ${ex.version()} loaded (wasm-gc)`;
 
-let load = null; // (sql) => JSON string, set by whichever loader ran
-
-function loadCSV(text, name) {
-  const stem = name.replace(/\.csv$/i, '');
-  load = sql => instance.exports.run(text, stem, sql);
-  afterLoad(name, text.length);
-}
-
-async function loadParquet(buf, name) {
-  const stem = name.replace(/\.parquet$/i, '');
-  // binary string: one char per byte, byte-faithful (windows-1252
-  // decoding is NOT — it remaps 0x80-0x9F)
-  const bytes = new Uint8Array(buf);
-  let bin = '';
-  const CH = 0x8000;
-  for (let i = 0; i < bytes.length; i += CH) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+// one session lives inside the wasm: registering a file is a call, not a reload
+function refreshTables() {
+  const tables = JSON.parse(ex.tables());
+  const host = $('tables');
+  host.innerHTML = '';
+  for (const t of tables) {
+    const row = document.createElement('div');
+    row.className = 't';
+    row.dataset.table = t.name;
+    const cols = t.columns.map(c => `${c.name}:${c.type}`).join(', ');
+    const label = document.createElement('span');
+    label.textContent = t.name;
+    const schema = document.createElement('span');
+    schema.className = 'cols';
+    schema.textContent = `(${cols})`;
+    const drop = document.createElement('button');
+    drop.textContent = 'drop';
+    drop.addEventListener('click', () => {
+      const out = ex.drop_table(t.name);
+      if (out) { $('err').textContent = JSON.parse(out).error; }
+      refreshTables();
+    });
+    row.append(label, schema, drop);
+    host.append(row);
   }
-  load = sql => {
-    const cols = $('datecols').value.trim();
-    return instance.exports.run_parquet(bin, stem, cols, sql);
-  };
-  afterLoad(name, buf.byteLength);
+  const ready = tables.length > 0;
+  $('run').disabled = !ready;
+  $('planbtn').disabled = !ready;
+  if (!ready) $('status').textContent = 'no tables registered';
+  return tables;
 }
 
-function afterLoad(name, size) {
-  $('loaded').textContent = `loaded ${name} (${(size / 1e6).toFixed(1)} MB)`;
-  $('run').disabled = false;
-  $('status').textContent = 'ready';
+function report(err) {
+  $('err').textContent = err;
+  $('status').textContent = 'failed';
 }
 
-$('file').addEventListener('change', e => {
-  const f = e.target.files[0];
-  if (!f) return;
+async function addFile(f) {
+  $('err').textContent = '';
+  const stem = f.name.replace(/\.(csv|parquet)$/i, '');
+  let out;
   if (/\.parquet$/i.test(f.name)) {
-    f.arrayBuffer().then(b => loadParquet(b, f.name));
+    const buf = await f.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const CH = 0x8000;
+    // one char per byte: a windows-1252 decode would remap 0x80-0x9F
+    for (let i = 0; i < bytes.length; i += CH) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    }
+    out = ex.add_parquet(stem, bin, $('datecols').value.trim());
   } else {
-    f.text().then(t => loadCSV(t, f.name));
+    out = ex.add_csv(stem, await f.text());
   }
-});
+  if (out) {
+    report(JSON.parse(out).error);
+    return false;
+  }
+  $('status').textContent = `registered ${stem}`;
+  return true;
+}
+
+async function addFiles(list) {
+  let ok = 0;
+  for (const f of list) {
+    if (await addFile(f)) ok += 1;
+  }
+  const tables = refreshTables();
+  if (ok && tables.length) {
+    $('status').textContent = `${tables.length} table${tables.length === 1 ? '' : 's'} ready`;
+  }
+}
+
+$('file').addEventListener('change', e => addFiles([...e.target.files]));
 const drop = $('drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => {
   e.preventDefault(); drop.classList.remove('over');
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  if (/\.parquet$/i.test(f.name)) {
-    f.arrayBuffer().then(b => loadParquet(b, f.name));
-  } else {
-    f.text().then(t => loadCSV(t, f.name));
-  }
+  addFiles([...e.dataTransfer.files]);
 });
 
 function render(out, ms) {
   const rows = JSON.parse(out);
   $('status').textContent = `${rows.length} rows in ${ms.toFixed(0)} ms`;
+  $('planout').hidden = true;
   if (!rows.length) { $('out').innerHTML = '<p><em>empty result</em></p>'; return; }
   const cols = Object.keys(rows[0]);
   const html = rows.map(r => '<tr>' + cols.map(c => `<td>${String(r[c] ?? '').replace(/</g, '&lt;')}</td>`).join('') + '</tr>').join('');
@@ -121,23 +165,48 @@ function render(out, ms) {
     `<table><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${html}</tbody></table>`;
 }
 
-async function runSQL() {
-  if (!load) return;
+function runSQL() {
   $('err').textContent = ''; $('out').innerHTML = '';
   const t0 = performance.now();
   let out;
   try {
-    out = load($('sql').value);
-  } catch (e) { $('err').textContent = String(e); $('status').textContent = 'failed'; return; }
+    out = ex.query($('sql').value);
+  } catch (e) { report(String(e)); return; }
   const ms = performance.now() - t0;
   try {
     const parsed = JSON.parse(out);
-    if (parsed && parsed.error) { $('err').textContent = parsed.error; $('status').textContent = 'failed'; return; }
+    if (parsed && parsed.error) { report(parsed.error); return; }
     render(out, ms);
-  } catch { $('err').textContent = out; $('status').textContent = 'failed'; }
+  } catch { report(out); }
 }
+
+function showPlan() {
+  $('err').textContent = '';
+  const t0 = performance.now();
+  let out;
+  try {
+    out = ex.plan($('sql').value);
+  } catch (e) { report(String(e)); return; }
+  const ms = performance.now() - t0;
+  let parsed = null;
+  try { parsed = JSON.parse(out); } catch { parsed = null; }
+  if (parsed && parsed.error) { report(parsed.error); return; }
+  $('planout').hidden = false;
+  $('planout').textContent = out;
+  $('status').textContent = `plan in ${ms.toFixed(0)} ms`;
+}
+
 $('run').addEventListener('click', runSQL);
+$('planbtn').addEventListener('click', showPlan);
+$('clear').addEventListener('click', () => {
+  ex.reset();
+  refreshTables();
+  $('out').innerHTML = '';
+  $('planout').hidden = true;
+  $('err').textContent = '';
+});
 addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') runSQL(); });
+refreshTables();
 </script>
 </body>
 </html>

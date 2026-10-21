@@ -2,9 +2,19 @@
 package "superbigcup325/moonlake/playground"
 
 // Values
-pub fn run(String, String, String) -> String
+pub fn add_csv(String, String) -> String
 
-pub fn run_parquet(String, String, String, String) -> String
+pub fn add_parquet(String, String, String) -> String
+
+pub fn drop_table(String) -> String
+
+pub fn plan(String) -> String
+
+pub fn query(String) -> String
+
+pub fn reset() -> Unit
+
+pub fn tables() -> String
 
 pub fn version() -> String
 
