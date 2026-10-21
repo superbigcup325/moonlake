@@ -180,3 +180,30 @@ measurement does not yet ask for it.
 comparable to each other and to a re-run on the same machine, not to a
 different host. `harness/kernel_bench` is dev-only tooling (not part of the
 published package) and takes `--rows` / `--runs`.
+
+## Parquet write cost (2026-10-21)
+
+The writer used to have no choice to make: PLAIN, v1 pages, no compression.
+With `--snappy` (and the annotations/statistics from the same change) it does,
+so here is the trade-off measured on SF0.1 lineitem (600,572 rows × 16 columns,
+native release, one machine, one session, best of 3 for the reads):
+
+| | file size | write | write peak RSS | read (`sum(l_quantity)`) |
+|---|---|---|---|---|
+| `--out` (raw) | 75.2 MB | 1.03 s | 452 MB | 0.051 s |
+| `--out --snappy` | 34.5 MB | 1.27 s | 367 MB | 0.034 s |
+
+Both read back the same value (`15334802`). Three things worth reading off that
+table:
+
+- compression costs ~23% write time and halves the file;
+- write peak RSS goes **down** with compression, because `write_bytes`
+  accumulates the whole archive in one buffer — the compressed pages are simply
+  smaller, so the buffer is too. The writer is not streaming; that is the
+  dominant term in its memory use, not the pages;
+- the read side is faster on the compressed file, and not only because it is
+  smaller: the same pages decode through the same codec path, but there is less
+  to read.
+
+`count(*)` over the same files is footer-only (0.02–0.05 s) and measures
+nothing, which is why the read column above aggregates a real column.
