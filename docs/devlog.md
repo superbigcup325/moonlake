@@ -775,3 +775,26 @@ scope — those five encodings rest on the embedded fixtures in
 went in beside it: the `page.mbt` scope comment (still said "PLAIN and
 dictionary" after colenc landed) and the `verification.md` §11 count that had
 been quoted as evidence.
+
+2026-10-21 (later still) — **One `--spill-dir` was not safe to share.**
+Goal: close the spill holes the audit found without loosening what the
+out-of-core path already proves. The one that mattered was reproducible: every
+query wrote `run0.bin`, `run1.bin` … into the directory it was given, and each
+deleted every `run<n>.bin` it found when it finished — so two concurrent spilled
+queries sharing a `--spill-dir` exited 1 on both sides with `spill read: No such
+file or directory`. Measured against the previous binary; after the fix the same
+pair returns `count 7` and `count 9` and leaves the directory empty. The fix is
+structural rather than defensive: one `moonlake-spill-<n>` subdirectory per
+query, `create_dir` as the lock, the purge scoped to the directory this process
+created — which also means a caller's own files in `--spill-dir` are never even
+listed. The other hole has no fix at this layer: a killed process leaves its
+subdirectory, and `moonbitlang/x/fs` exposes no pid, no clock and no file
+timestamp, so a dead owner is indistinguishable from a live one; deleting on a
+guess would break a running query. The boundary is now measured and pinned in
+the acceptance (`kill -9` leaves `moonlake-spill-0` with 40 files and the next
+query leaves it alone). One path was tried and dropped: read `/proc/self/stat`
+for a pid and reap directories whose owner is gone. It cannot work — x/fs sizes
+a file with `fseek`+`ftell` and /proc reports size 0, so the read comes back
+empty — and the `None` fallback would have turned the reap into silent dead
+code, which is worse than not having it. Reclaiming interrupted runs needs a
+native syscall surface: a decision against the "no FFI" claim, not a bug fix.

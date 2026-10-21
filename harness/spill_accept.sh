@@ -2,7 +2,8 @@
 # Spill lifecycle acceptance: a query that spills must not leave temp
 # files behind, on success or on failure, and ANALYZE must show what it
 # spilled. Also checks that --spill-dir is only ever cleaned of the run
-# files moonlake writes, never of a caller's own files.
+# files moonlake writes, never of a caller's own files, and that two
+# processes can share one --spill-dir without deleting each other's runs.
 #
 # Usage: bash harness/spill_accept.sh
 set -euo pipefail
@@ -79,5 +80,39 @@ out=$($rel exec --csv "$DATA/lineitem.csv" --analyze \
   "SELECT l_orderkey FROM lineitem ORDER BY l_quantity LIMIT 3")
 grep -q "spill files:" <<<"$out" && fail "in-memory ANALYZE reported a spill"
 pass "in-memory ANALYZE stays silent about spilling"
+
+# 6. Two spilled queries sharing one --spill-dir run at the same time. Each
+#    gets its own subdirectory; before that they both started at run0.bin,
+#    overwrote each other and deleted each other's runs ("spill read: No such
+#    file or directory" on both sides, measured against the previous binary).
+dir=$work/e
+mkdir -p "$dir"
+$rel exec --csv "$DATA/lineitem.csv" --memory 200K --spill-dir "$dir" \
+  "SELECT count(*) FROM (SELECT l_orderkey FROM lineitem ORDER BY l_quantity LIMIT 7)" \
+  >"$work/e1.out" 2>&1 &
+p1=$!
+$rel exec --csv "$DATA/lineitem.csv" --memory 200K --spill-dir "$dir" \
+  "SELECT count(*) FROM (SELECT l_orderkey FROM lineitem ORDER BY l_quantity DESC LIMIT 9)" \
+  >"$work/e2.out" 2>&1 &
+p2=$!
+wait $p1 || fail "the first of two concurrent spills failed: $(cat "$work/e1.out")"
+wait $p2 || fail "the second of two concurrent spills failed: $(cat "$work/e2.out")"
+grep -q "7" "$work/e1.out" || fail "concurrent spill 1 printed $(cat "$work/e1.out")"
+grep -q "9" "$work/e2.out" || fail "concurrent spill 2 printed $(cat "$work/e2.out")"
+[ -z "$(ls -A "$dir")" ] || fail "concurrent spills left $(ls -A "$dir" | wc -l) entries behind"
+pass "two queries share one --spill-dir and clean up after themselves"
+
+# 7. A subdirectory an interrupted (killed) query left behind is not removed
+#    by the next run: the fs API exposes no pid, clock or file timestamp, so a
+#    dead owner cannot be told from a live one, and deleting on a guess would
+#    break a running query. This pins the documented boundary.
+dir=$work/f
+mkdir -p "$dir/moonlake-spill-0"
+printf 'leftover' > "$dir/moonlake-spill-0/run0.bin"
+$rel exec --csv "$DATA/lineitem.csv" --memory 200K --spill-dir "$dir" \
+  "SELECT l_orderkey FROM lineitem ORDER BY l_quantity LIMIT 3" >/dev/null
+[ -f "$dir/moonlake-spill-0/run0.bin" ] || fail "an interrupted run's directory was removed"
+[ -z "$(ls -A "$dir" | grep -v '^moonlake-spill-0$')" ] || fail "the accepting run left something behind"
+pass "an interrupted run's directory is left alone, the next query still spills"
 
 echo "spill acceptance: all checks passed"

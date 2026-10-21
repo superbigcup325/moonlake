@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- 2026-10-21 two spilled queries sharing one `--spill-dir` corrupted each
+  other: every query wrote `run0.bin`, `run1.bin` … into the directory it was
+  given and then removed every `run<n>.bin` it found there, so a concurrent
+  pair failed on both sides with `spill read: No such file or directory`. A
+  query now spills into its own `moonlake-spill-<n>` subdirectory (`create_dir`
+  is the lock) and the cleanup only looks inside the directory it created, so a
+  caller's own files in `--spill-dir` are never listed, let alone deleted. A
+  killed process still leaves its subdirectory behind: the filesystem API has
+  no pid, clock or file timestamp, so a dead owner cannot be told from a live
+  one and the next run does not guess — that boundary is pinned by the
+  acceptance instead of staying invisible
 - 2026-10-21 the Parquet corpus check counted a footer-only `select count(*)`
   as a read, so 18 of its 35 "read" files were ones whose data pages this reader
   refuses (LZ4/ZSTD/GZIP codecs, v2 pages, an empty dictionary page). It now

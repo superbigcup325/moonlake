@@ -315,19 +315,19 @@ fn analyze_query(
   if memory <= 0 {
     return @engine.explain_analyze(sql, cat)
   }
-  let dir = match spill_dir {
-    Some(d) => d
-    None => pick_spill_dir()
+  let run = spill_run_dir(spill_dir)
+  let fs = @spill.FsStore::new(run.dir) catch {
+    err => {
+      purge_spill_run(run)
+      raise cli_fail(err.to_string())
+    }
   }
-  let fs = @spill.FsStore::new(dir) catch {
-    err => raise cli_fail(err.to_string())
-  }
-  errdefer purge_spill_dir(dir)
+  errdefer purge_spill_run(run)
   let out = @engine.explain_analyze_with(sql, cat, {
     budget: memory,
     spill: Some(fs.store()),
   })
-  purge_spill_dir(dir)
+  purge_spill_run(run)
   out
 }
 
@@ -345,35 +345,95 @@ fn run_query(
   if memory <= 0 {
     return @moonlake.execute(sql, cat)
   }
-  let dir = match spill_dir {
-    Some(d) => d
-    None => pick_spill_dir()
+  let run = spill_run_dir(spill_dir)
+  let fs = @spill.FsStore::new(run.dir) catch {
+    err => {
+      purge_spill_run(run)
+      raise cli_fail(err.to_string())
+    }
   }
-  let fs = @spill.FsStore::new(dir) catch {
-    err => raise cli_fail(err.to_string())
-  }
-  errdefer purge_spill_dir(dir)
+  errdefer purge_spill_run(run)
   let result = @moonlake.execute_with(sql, cat, {
     budget: memory,
     spill: Some(fs.store()),
   })
-  purge_spill_dir(dir)
+  purge_spill_run(run)
   result
 }
 
 ///|
+/// One query's spill directory, and what removing it means.
+///
+/// `base` is the directory the caller named (`--spill-dir`) or TMPDIR;
+/// `created_base` records that this process made `base`, so an empty base can
+/// be removed again while a caller's own directory is left alone.
+priv struct SpillRun {
+  dir : String
+  base : String
+  created_base : Bool
+}
 
 ///|
-/// Remove the run files of a spill directory, then the directory itself.
+/// The spill directory for one query: a subdirectory of `base`, named
+/// `moonlake-spill-<n>`.
 ///
-/// Only files this store names (`run<n>.bin`) are deleted: `--spill-dir`
-/// accepts a caller's directory, and a purge that wiped everything in it
-/// would be a nasty surprise. The engine drops every run file it wrote,
-/// so in the normal case there is nothing to delete; this still clears
-/// what an earlier crash left behind. A directory that survives is
-/// reported rather than silently ignored — ignoring it is how one leaked
-/// temp tree per spilled query turns into a disk-full failure mid-query.
-fn purge_spill_dir(dir : String) -> Unit {
+/// The subdirectory is not decoration:
+///
+/// * two processes sharing one `--spill-dir` used to start at `run0.bin` in
+///   the same directory, overwrite each other, and then each delete the
+///   other's run files when it finished; a per-process subdirectory makes that
+///   collision impossible without a lock;
+/// * the purge then only touches a directory this process created, so a
+///   caller's own files in `--spill-dir` are never read or deleted;
+/// * `create_dir` is the lock: the `path_exists` check is an optimisation, and
+///   a racing process loses the create and moves to the next index.
+///
+/// What this cannot do is reclaim a subdirectory left behind by a killed
+/// process. The filesystem API in use exposes no pid, no clock and no file
+/// timestamp, so a dead owner is indistinguishable from a live one, and
+/// guessing wrong would delete a running query's run files. The leak is
+/// therefore bounded to one directory per interrupted query under TMPDIR, and
+/// every completed query removes its directory on both the success and the
+/// error path. Making it reclaimable needs a native syscall surface, which is
+/// a decision rather than an oversight (the project advertises no FFI).
+fn spill_run_dir(spill_dir : String?) -> SpillRun raise @types.SqlError {
+  let base = match spill_dir {
+    Some(d) => d
+    None =>
+      match @env.get_env_var("TMPDIR") {
+        Some(d) => d
+        None => "/tmp"
+      }
+  }
+  let created_base = !@fs.path_exists(base)
+  if created_base {
+    @fs.create_dir(base) catch {
+      @fs.IOError(msg) => raise @types.SqlError::Execute("spill dir: \{msg}")
+    }
+  }
+  let mut n = 0
+  while n < 1000 {
+    let dir = "\{base}/moonlake-spill-\{n}"
+    if !@fs.path_exists(dir) {
+      @fs.create_dir(dir) catch {
+        @fs.IOError(_) => {
+          n += 1
+          continue
+        }
+      }
+      return { dir, base, created_base, }
+    }
+    n += 1
+  }
+  raise @types.SqlError::Execute("no free spill directory under \{base}")
+}
+
+///|
+/// Remove one spill directory: the run files this store names, then the
+/// directory. A directory that survives is reported rather than silently
+/// ignored — ignoring it is how a leaked temp tree turns into a disk-full
+/// failure mid-query.
+fn purge_dir(dir : String) -> Unit {
   let entries = @fs.read_dir(dir) catch {
     @fs.IOError(_) => return // already gone: nothing to purge
   }
@@ -387,6 +447,17 @@ fn purge_spill_dir(dir : String) -> Unit {
   @fs.remove_dir(dir) catch {
     @fs.IOError(msg) =>
       eprintln("moonlake: warning: kept spill directory \{dir}: \{msg}")
+  }
+}
+
+///|
+/// Remove this query's spill directory, and an empty base this process made.
+fn purge_spill_run(run : SpillRun) -> Unit {
+  purge_dir(run.dir)
+  if run.created_base {
+    @fs.remove_dir(run.base) catch {
+      @fs.IOError(_) => () // not empty: something else lives there now
+    }
   }
 }
 
@@ -407,31 +478,6 @@ fn is_run_file(name : String) -> Bool {
     }
   }
   ok
-}
-
-///|
-/// A fresh per-run directory under TMPDIR (or /tmp): bump a suffix
-/// until create_dir succeeds, so concurrent processes do not collide.
-fn pick_spill_dir() -> String raise @types.SqlError {
-  let base = match @env.get_env_var("TMPDIR") {
-    Some(d) => d
-    None => "/tmp"
-  }
-  let mut n = 0
-  while n < 1000 {
-    let dir = "\{base}/moonlake-spill-\{n}"
-    if !@fs.path_exists(dir) {
-      @fs.create_dir(dir) catch {
-        @fs.IOError(_) => {
-          n += 1
-          continue
-        }
-      }
-      return dir
-    }
-    n += 1
-  }
-  raise @types.SqlError::Execute("no free spill directory under \{base}")
 }
 
 ///|
@@ -651,7 +697,8 @@ fn usage() -> String {
     #|      --json                emit the result as one JSON array line
     #|      --memory <n>[K|M|G]   budget for the blocking ORDER BY; beyond
     #|                            it runs spill to disk (external sort)
-    #|      --spill-dir <dir>     where run files go (default: TMPDIR)
+    #|      --spill-dir <dir>     parent of this query's run files (default:
+    #|                            TMPDIR); each query gets its own subdirectory
     #|
     #|Options:
     #|  --version   Print version and exit

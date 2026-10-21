@@ -535,10 +535,11 @@ failure was swallowed, so a directory survived as well. Measured on
 `run21.bin`, 560 KB) left in the spill directory. Repeat that a few hundred
 times and the next spilled query fails halfway through with a full disk.
 
-Now the intermediates are removed once the merge returns, and the CLI purges
-only the names its store writes (`run<n>.bin`) before removing the directory —
-`--spill-dir` may point at a caller's own directory, so a blanket purge would
-be wrong — and prints a warning when a directory cannot be removed.
+Now the intermediates are removed once the merge returns, and the CLI removes
+the directory its query wrote into and prints a warning when one cannot be
+removed. Since the query now owns a subdirectory (see "Two processes, one
+`--spill-dir`" below), that removal never has to reason about a caller's
+files at all.
 
 **Multi-level grace join.** A partition that still exceeds the budget after the
 first level is partitioned again (two extra levels, 256 partitions each). The
@@ -562,16 +563,44 @@ aggregation no longer has a term proportional to partition size. A fixture where
 it would show needs a wide aggregation input, which the current workloads do not
 have; that is a gap in the workloads, not a claim about the change.
 
-**Acceptance.** `bash harness/spill_accept.sh` (five checks, deterministic,
-~3 s):
+**Two processes, one `--spill-dir`.** Every query used to write `run0.bin`,
+`run1.bin` … straight into the directory it was given, and the finish purge
+deleted every `run<n>.bin` it found there. Two spilled queries sharing a
+`--spill-dir` therefore overwrote each other's runs and then deleted them: the
+A/B with the previous binary and the current one, two concurrent queries on one
+directory, is exit 1 on both sides with `spill read: No such file or directory`
+before, and `count 7` / `count 9` with an empty directory after. The fix is
+structural rather than defensive: a query spills into its own
+`moonlake-spill-<n>` subdirectory, `create_dir` decides which one (it is the
+lock; a racing process loses and moves on), and the purge only ever looks
+inside the directory it created — so a caller's own files are not even listed,
+let alone deleted.
+
+**What cannot be fixed without a clock or a pid.** A killed process leaves its
+subdirectory behind, and the next run does not remove it: the filesystem API in
+use (`moonbitlang/x/fs`) exposes no pid, no wall clock and no file timestamp,
+so a dead owner and a live one look identical, and deleting on a guess would
+break a running query. Measured: `kill -9` during a spilled sort leaves
+`moonlake-spill-0` with 40 run files (1.8 MB); a following clean query creates
+its own directory, finishes, removes it, and leaves that one alone. The leak is
+therefore bounded to one directory per interrupted query, which the acceptance
+pins as a known boundary. Reclaiming it needs a native syscall surface in the
+CLI, which conflicts with the project's "no FFI" claim and is a decision, not a
+bug fix.
+
+**Acceptance.** `bash harness/spill_accept.sh` (seven checks, deterministic,
+~4 s):
 
 1. a spilled `ORDER BY` leaves no directory behind;
 2. a query that fails on hash skew leaves none either;
 3. `--spill-dir` keeps a caller's `notes.txt` and a `runx.bin` that is not a
-   run file — only `run<n>.bin` is removed;
+   run file — the query's own subdirectory is the only thing removed;
 4. `--analyze --memory 200K` prints `spill runs:`, `spill files:`,
    `spill bytes written:` and `spill bytes read:`;
-5. the same `ANALYZE` without a budget prints no spill line at all.
+5. the same `ANALYZE` without a budget prints no spill line at all;
+6. two spilled queries running at once on one `--spill-dir` both succeed with
+   their own answers and leave the directory empty;
+7. a `moonlake-spill-0` left by an interrupted run survives the next query.
 
 Counters are taken at the store boundary (one wrapper around the caller's
 `SpillStore`, `engine/options.mbt`), not inside each operator, so a future
