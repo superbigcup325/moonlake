@@ -798,3 +798,29 @@ a file with `fseek`+`ftell` and /proc reports size 0, so the read comes back
 empty — and the `None` fallback would have turned the reap into silent dead
 code, which is worse than not having it. Reclaiming interrupted runs needs a
 native syscall surface: a decision against the "no FFI" claim, not a bug fix.
+
+2026-10-21 (bench) — **A guard, and the floor it exposed.** Goal: make "same
+machine, same data, same build" something the tool checks instead of something
+the doc asks the reader to remember. `--compare` now refuses to print deltas
+when the two records disagree on CPU, cores, kernel, toolchain, dataset hash,
+build mode, runs or warm-ups; it prints clock/load/governor as advisory lines
+instead, because those legitimately move between sessions and are what made the
+0.3.0 → 0.3.1 pair look 10–25% faster on identical code. Each case also records
+the spread of its own runs, so a delta smaller than that spread is labelled as
+noise rather than reported as a win; records from before the field say so
+instead of implying the deltas mean something.
+
+Writing that guard turned up a measurement bug that the previous day's
+`data_sha256` had introduced: hashing the dataset read all 75 MB of
+`lineitem.csv` into the harness process before the cases ran, and a forked child
+starts with its parent's resident pages mapped, so `ru_maxrss` on the two
+Parquet cases — whose own footprint is 25 and 39 MB — read 94.9 MB for both. A
+controlled check confirmed the mechanism: 150 MB of ballast in the parent made
+an 11 ms `count(*)` report 164 MB. `posix_spawn` does not help (vfork shares the
+address space until exec). The hash now runs after the measurements and the
+parent is collected before they start; the two cases return to 25.1 and 39.1 MB
+with every other case unchanged. Evidence: two records taken minutes apart
+around the fix, compared by the new guard — the RSS rows move 94.9 → 25.1 and
+39.1 while nothing else does, and the same pair shows wall time moving up to 21%
+between two runs of the same binary, which is exactly why the spread column
+exists.

@@ -34,7 +34,7 @@ whole objects.
 | Toolchain | `moon 0.1.20261016` (moonc `v0.10.16`) |
 | Build | `moon build cmd/main --target native --release` (binary SHA-256 in the JSON) |
 | Data | `harness/data/sf01` (TPC-H SF0.1, eight CSVs + `lineitem.parquet`, tracked in the repository) |
-| Method | 2 warm-ups, then fastest of 7 runs; wall and CPU (`user+sys`) from the child's own `wait4` rusage; peak RSS likewise; stdout drained and hashed, never stored |
+| Method | 2 warm-ups, then fastest of 7 runs; wall and CPU (`user+sys`) from the child's own `wait4` rusage; peak RSS likewise (see "the peak-RSS floor"); each case's run-to-run spread is recorded; stdout drained and hashed, never stored |
 | Load at measurement | 1 min average 1.9 on 16 cores |
 
 ## The record (0.3.1)
@@ -89,6 +89,20 @@ same session**, or re-record the previous release side by side
 cooperate). Cross-session deltas under ~25% on this laptop are not evidence of
 anything.
 
+## The peak-RSS floor (2026-10-21)
+
+`ru_maxrss` is the child's high-water mark, and a forked child starts with its
+parent's resident pages mapped. Anything big in the harness process at fork
+time is therefore a floor on every case it measures. The dataset hash added the
+day before read all 75 MB of `lineitem.csv` before the cases ran, and the two
+Parquet cases — whose own footprint is 25 and 39 MB — both reported **94.9 MB**.
+A controlled check pinned it: 150 MB of ballast in the parent made an 11 ms
+`count(*)` report 164 MB. The hash now runs *after* the measurements and the
+parent is collected before they start, which returns the two cases to 25.1 and
+39.1 MB with every other case unchanged. Records taken in between carry the
+inflated floor for cases smaller than the parent, so compare RSS across the fix
+with that in mind; wall and CPU time are unaffected.
+
 ## What each family is and is not
 
 - **scan** is the lazy scan: registration reads footer/schema only, a `count(*)`
@@ -120,6 +134,23 @@ python3 harness/bench_release.py --compare harness/baseline/2026-10-20-0.3.1.jso
 The comparison prints wall and CPU deltas per case and returns non-zero if a
 case's output digest changed — a different result means the workload changed
 and the timing comparison is not meaningful.
+
+It also refuses to print deltas when the two records were not taken under the
+same conditions (CPU, core count, kernel, toolchain, dataset SHA-256, build
+mode, runs and warm-ups): a difference there is the machine or the input, not
+the code. `--allow-env-mismatch` prints them anyway for a reader who knows what
+moved. Fields an older record predates are reported as "not compared" rather
+than treated as a mismatch, so the committed 0.3.x records stay usable. Clock,
+load average and governor are printed as *advisory* lines instead — they move
+between sessions legitimately, and they are exactly what made the 0.3.0 → 0.3.1
+pair look 10–25% faster on identical code.
+
+Each case also records the spread of its own runs (`run spread`, in the record
+and in the printed table), because that spread is the floor a comparison has to
+clear: a delta inside it is labelled as such, and the run ends with how many
+cases moved further than their own noise. Records taken before 2026-10-21 have
+no spread, and the comparison says so instead of pretending the deltas are
+significant.
 
 Within one session the same binary against itself moved wall time by −6.0% …
 +4.1% and CPU time by −5.5% … +3.7% (largest: the gather cases and the spill

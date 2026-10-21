@@ -60,6 +60,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and `UINT_32`/`UINT_64` (values past the signed maximum would read as
   negative) now fail with a message naming the column and the reason. Six
   apache/parquet-testing files moved from "read" to "refused by design"
+- 2026-10-21 `bench_release.py --compare` refuses to print deltas when the two
+  records were not taken under the same conditions (CPU, cores, kernel,
+  toolchain, dataset SHA-256, build, runs, warm-ups; `--allow-env-mismatch`
+  overrides), prints clock/load/governor as advisory lines instead of refusing
+  on them, labels a delta that sits inside the case's own run-to-run spread,
+  and records that spread per case — so the ±7% rule is measured rather than
+  assumed. Records from before the spread field say so instead of implying
+  their deltas are significant
+- 2026-10-21 the baseline's per-case peak RSS carried a fork-inherited floor:
+  hashing the dataset read all 75 MB of CSV into the harness process before the
+  cases ran, and a forked child starts with its parent's resident pages, so the
+  two Parquet cases (25 and 39 MB on their own) both reported 94.9 MB. The hash
+  runs after the measurements and the parent is collected before they start;
+  the controlled check (150 MB of ballast → an 11 ms case reported 164 MB) is
+  written down in `docs/bench-baseline.md`
 
 ### Performance
 

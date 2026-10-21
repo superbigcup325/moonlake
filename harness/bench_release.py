@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -201,11 +202,21 @@ def measure(cmd: list[str], runs: int, scratch: pathlib.Path) -> dict:
     cpus = [s[3] for s in samples]
     best = min(samples, key=lambda s: s[0])
     digests = {s[2] for s in samples}
+    # The spread of this case's own runs is the floor a comparison has to
+    # clear: a 3% delta against a case that moved 8% between its own runs is
+    # not evidence of anything. Recorded rather than assumed so a later
+    # comparison can say "inside this run's spread" with numbers.
+    spread = (
+        round((max(walls) - min(walls)) / min(walls) * 100.0, 1)
+        if runs > 1 and min(walls) > 0
+        else None
+    )
     return {
         "wall_ms": round(best[0], 1),
         "median_ms": round(statistics.median(walls), 1),
         "cpu_ms": round(best[3], 1),
         "rss_mb": round(best[1] / 1024.0, 1),
+        "wall_spread_pct": spread,
         "output_sha256": best[2],
         "output_stable": len(digests) == 1,
     }
@@ -468,18 +479,77 @@ def run_cases(
 
 
 def print_table(cases: list[dict]) -> None:
-    print("\n| family | case | wall ms | median ms | cpu ms | peak RSS MB |")
-    print("|---|---|---|---|---|---|")
+    print(
+        "\n| family | case | wall ms | median ms | cpu ms | peak RSS MB | run spread |"
+    )
+    print("|---|---|---|---|---|---|---|")
     for case in cases:
+        spread = case.get("wall_spread_pct")
         print(
             f"| {case['family']} | {case['id']} | {case['wall_ms']:.1f} | "
             f"{'-' if case['median_ms'] is None else format(case['median_ms'], '.1f')} | "
             f"{'-' if not case.get('cpu_ms') else format(case['cpu_ms'], '.1f')} | "
-            f"{case['rss_mb']:.1f} |"
+            f"{case['rss_mb']:.1f} | "
+            f"{'-' if spread is None else format(spread, '.1f') + '%'} |"
         )
 
 
-def compare(old: dict, new: dict) -> int:
+def fingerprint(record: dict) -> dict:
+    """The conditions a timing is only meaningful under.
+
+    `compare` refuses to print deltas when two records disagree on any of
+    these, because the difference would be the machine, the data or the build
+    rather than the code — the mistake the 0.3.0 -> 0.3.1 pair made before the
+    fields were recorded. Fields absent from an older record ("not recorded")
+    are reported and skipped, so a record from before 2026-10-21 stays usable.
+    """
+    env = record.get("environment") or {}
+    method = record.get("method") or {}
+    tool = env.get("toolchain") or {}
+    return {
+        "cpu": env.get("cpu"),
+        "cores": env.get("cores"),
+        "kernel": env.get("kernel"),
+        "toolchain": tool.get("moon"),
+        "data_sha256": method.get("data_sha256"),
+        "build": method.get("build"),
+        "runs": method.get("runs"),
+        "warmups": method.get("warmups"),
+    }
+
+
+def advisory(old: dict, new: dict) -> None:
+    """Conditions that legitimately differ between sessions but colour every
+    number: print them, because a reader who cannot see them will read machine
+    state as an optimization (0.3.0 -> 0.3.1 was 10-25% faster on identical
+    code)."""
+    before_env = old.get("environment") or {}
+    after_env = new.get("environment") or {}
+    notes = []
+    for key, label in (
+        ("cpu_mhz_at_start", "CPU MHz at start"),
+        ("loadavg", "load average"),
+        ("governor", "CPU governor"),
+    ):
+        before, after = before_env.get(key), after_env.get(key)
+        if before is not None and after is not None and str(before) != str(after):
+            notes.append(f"{label}: {before} -> {after}")
+    if notes:
+        print("conditions that moved between the records:")
+        for line in notes:
+            print(f"  {line}")
+        print(
+            "  deltas across a session boundary are machine state until a"
+            " re-measurement in this session shows the same thing; a same-session"
+            " spread is in each case's `run spread`."
+        )
+
+
+def num(value):
+    return "-" if not value else f"{value:.1f}"
+
+
+def compare(old: dict, new: dict, allow_env_mismatch: bool = False) -> int:
     old_cases = {case["id"]: case for case in old["cases"]}
     new_cases = {case["id"]: case for case in new["cases"]}
     print(
@@ -489,14 +559,44 @@ def compare(old: dict, new: dict) -> int:
     print(
         f"current  {new['release'].get('version')} @ {new['release'].get('git_commit', '')[:12]}"
     )
+
+    before_fp, after_fp = fingerprint(old), fingerprint(new)
+    mismatched, unrecorded = [], []
+    for key, before in before_fp.items():
+        after = after_fp.get(key)
+        if before is None or after is None:
+            if before != after:
+                unrecorded.append(key)
+            continue
+        if str(before) != str(after):
+            mismatched.append(f"{key}: old {before!r} vs new {after!r}")
+    if unrecorded:
+        print(f"not compared (one record predates it): {', '.join(unrecorded)}")
+    if mismatched:
+        print("\nThese records were not taken under the same conditions:")
+        for line in mismatched:
+            print(f"  {line}")
+        if not allow_env_mismatch:
+            print(
+                "\nrefusing to print deltas: a difference in machine, data or build"
+                " is not an optimization. Re-record the earlier release on this"
+                " machine in this session (`--json-out`), or pass"
+                " --allow-env-mismatch knowing the numbers below mix conditions."
+            )
+            return 2
+        print("continuing anyway (--allow-env-mismatch): the deltas mix conditions.\n")
+
+    advisory(old, new)
     print(
         f"\n| case | wall old | wall new | wall delta | cpu old | cpu new | "
         f"cpu delta | RSS old -> new | note |"
     )
     print("|---|---|---|---|---|---|---|---|---|")
     problems = 0
+    outside = 0
+    spreads_seen = 0
     for id_, case in new_cases.items():
-        before = old_cases.get(id_)
+        before = old_cases.pop(id_, None)
         if not before:
             print(f"| {id_} | - | {case['wall_ms']:.1f} | new case | - | |")
             continue
@@ -508,9 +608,18 @@ def compare(old: dict, new: dict) -> int:
         if not case.get("output_stable", True):
             note = (note + " output unstable").strip()
             problems += 1
-        def num(value):
-            return "-" if not value else f"{value:.1f}"
-
+        spreads = [
+            spread
+            for spread in (before.get("wall_spread_pct"), case.get("wall_spread_pct"))
+            if spread is not None
+        ]
+        if spreads:
+            spreads_seen += 1
+            band = max(spreads)
+            if abs(delta * 100.0) <= band:
+                note = (note + f" inside the {band:.1f}% run spread").strip()
+            else:
+                outside += 1
         cpu_delta = "-"
         if before.get("cpu_ms") and case.get("cpu_ms"):
             d = (case["cpu_ms"] - before["cpu_ms"]) / before["cpu_ms"]
@@ -521,6 +630,19 @@ def compare(old: dict, new: dict) -> int:
             f"{num(case.get('cpu_ms'))} | {cpu_delta} | "
             f"{before['rss_mb']:.1f} -> {case['rss_mb']:.1f} MB | {note} |"
         )
+    for id_, before in old_cases.items():
+        print(f"| {id_} | {before['wall_ms']:.1f} | - | removed from the record | - | |")
+    if outside or spreads_seen:
+        print(
+            f"\n{outside} case(s) moved further than their own run-to-run spread; "
+            "everything else is inside the noise those runs already showed."
+        )
+    else:
+        print(
+            "\nno run spread in these records (recorded since 2026-10-21), so "
+            "these deltas cannot be judged against noise — re-record both sides "
+            "in one session before believing a size."
+        )
     return 1 if problems else 0
 
 
@@ -530,6 +652,11 @@ def main() -> int:
     parser.add_argument("--binary", help="release CLI binary (default: the newest build)")
     parser.add_argument("--json-out", help="write the record here")
     parser.add_argument("--compare", help="compare against an earlier record")
+    parser.add_argument(
+        "--allow-env-mismatch",
+        action="store_true",
+        help="print deltas even when machine/data/build differ (they mix conditions)",
+    )
     parser.add_argument("--no-build", action="store_true", help="reuse existing binaries")
     parser.add_argument("--data", default=str(DATA), help="TPC-H SF0.1 data directory")
     args = parser.parse_args()
@@ -580,10 +707,17 @@ def main() -> int:
             "statistic": "fastest wall time after the warm-ups",
             "stdout": "drained to a temp file and hashed (SHA-256), not stored",
             "data": str(data.relative_to(REPO)) if data.is_relative_to(REPO) else str(data),
-            "data_sha256": dataset_sha256(data),
+            # filled in after the cases run: see `rss_note`
+            "data_sha256": None,
             "data_note": "TPC-H SF0.1, tracked in the repository; regenerate "
             "with `python harness/gen_tpch.py 0.1`",
             "build": "native release (`moon build cmd/main --target native --release`)",
+            "rss_note": "peak RSS is the child's own ru_maxrss, but a forked "
+            "child starts with the parent's resident pages, so anything big in "
+            "this process at fork time becomes a floor on every small case "
+            "(the 75 MB CSV hash showed up as a 70 MB floor on the Parquet "
+            "cases). The parent is therefore kept thin while measuring and the "
+            "dataset is hashed afterwards",
         },
         "cases": [],
     }
@@ -594,6 +728,7 @@ def main() -> int:
           f"governor {metrics['governor']}, {metrics['cpu_mhz_at_start']} MHz at start")
     print(f"data    {record['method']['data']}\n")
 
+    gc.collect()  # a fat parent inflates every child's inherited RSS floor
     with tempfile.TemporaryDirectory(prefix="moonlake-bench-") as tmp:
         scratch = pathlib.Path(tmp)
         specs = case_specs(data)
@@ -601,6 +736,10 @@ def main() -> int:
         format_cases, _ = spill_format_cases(args.runs, moon, scratch, args.no_build, data)
         cases.extend(format_cases)
         record["cases"] = cases
+    # after the cases, not before: reading every data file to hash it would put
+    # ~75 MB in the parent, and the forked children would inherit that as their
+    # measured RSS floor (see method.rss_note)
+    record["method"]["data_sha256"] = dataset_sha256(data)
 
     print_table(cases)
     unstable = [case["id"] for case in cases if not case["output_stable"]]
@@ -615,7 +754,11 @@ def main() -> int:
 
     status = 0
     if args.compare:
-        status = compare(json.loads(pathlib.Path(args.compare).read_text()), record)
+        status = compare(
+            json.loads(pathlib.Path(args.compare).read_text()),
+            record,
+            allow_env_mismatch=args.allow_env_mismatch,
+        )
     return status
 
 
