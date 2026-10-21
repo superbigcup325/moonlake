@@ -712,3 +712,40 @@ Playwright + Chromium in the working tree):
 
 The wasm still imports nothing but the JS-string builtins (the PR gate asserts
 it), so the page needs no server-side anything.
+
+## 14. Release provenance (2026-10-21)
+
+A release had no automated claim of what it was. The 0.3.x series was published
+from a manual checklist, and the checklist had already drifted: `v0.3.1` sits
+two commits after the version-bump commit `61a6cc4`, and the baseline record
+committed *inside* the tagged tree names `3d766de` as its commit.
+
+`harness/check_release.py` checks three claims and a `release` workflow runs it
+on every `v*` tag:
+
+1. **the version claims agree** — `moon.mod` `version`, the library
+   `VERSION` constant in `moonlake.mbt`, the newest versioned `CHANGELOG`
+   heading (an `## [Unreleased]` section is skipped: it is work in progress,
+   not a claim), and the tag name when the check runs on a tag. Disagreement
+   names every value.
+2. **the archive is the one intended** — `moon package --list` must contain
+   `moon.mod`, `README.md`, `LICENSE` and `moonlake.mbt`, and no path matching
+   `.internal/`, `moon.work`, `.mooncakes/`, `_build/`, `target/`,
+   `__pycache__/`, `harness/data/`, `harness/spill_bench/`,
+   `harness/kernel_bench/`, `hooks/`, `.venv/` or `.env`. This is the only
+   trustworthy preview of an archive: `.git/info/exclude` is never consulted for
+   packaging and a `.moonignore` replaces a directory's `.gitignore`.
+   `/harness/kernel_bench/` was excluded alongside the existing spill driver in
+   the same change.
+3. **the tree is clean**, so the archive cannot carry a half-finished edit.
+
+`--publish-dry-run` adds the publish gate the project already used (it unpacks
+the archive in a temp directory and checks it there). It needs credentials —
+`moon publish` reads them from the moon home — so it is opt-in and stays a
+maintainer step; the verdict is the `Server status: 202` line, because the CLI
+exits non-zero after a successful dry run.
+
+Two staging details, both learned the hard way in this change: `moon package
+--list` writes its file list to **stderr**, mixed with the `moon check` progress
+lines it runs first; and the archive's last stderr line is `Package to
+…/publish/<module>-<version>.zip`, which is not a file in the archive.

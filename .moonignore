@@ -23,8 +23,9 @@ __pycache__/
 # Local commit hook — dev-side tooling, not part of the shipped module.
 /hooks/
 
-# Spill benchmark driver — dev-side tooling, not part of the shipped module.
+# Benchmark drivers — dev-side tooling, not part of the shipped module.
 /harness/spill_bench/
+/harness/kernel_bench/
 
 # Local workspace members — a maintainer editing colenc and moonlake together
 # writes these. They are untracked, but packaging reads the working tree, so a

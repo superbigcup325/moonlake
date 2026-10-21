@@ -118,6 +118,20 @@ binary). Numbers are only comparable on the same machine and data (TPC-H
 SF0.1, tracked in `harness/data/sf01`; SF0.01 was too short to survive host
 noise).
 
+## Release provenance (`check_release.py`)
+
+```bash
+python3 harness/check_release.py                  # offline: versions, archive, clean tree
+python3 harness/check_release.py --publish-dry-run  # also the publish gate (needs `moon login`)
+```
+
+Run on every `v*` tag by the `release` workflow. It refuses a tag when the
+version claims disagree (`moon.mod` / `moonlake.mbt` `VERSION` / the newest
+CHANGELOG heading / the tag), when `moon package --list` carries a dev-only path
+(`.internal/`, `moon.work`, `harness/data/`, the bench drivers, `hooks/`, …) or
+when the tree is dirty. Note that `moon package --list` prints its list to
+stderr, below the `moon check` it runs first.
+
 ## Kernel benchmark (`kernel_bench/`)
 
 ```bash

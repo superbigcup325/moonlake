@@ -1,0 +1,38 @@
+# Release provenance: on a version tag, prove that the tag, the manifests, the
+# changelog and the archive agree — the part of a release that a human forgets.
+#
+# The publish itself stays a maintainer action (`moon publish`, credentials in
+# the local moon home); this job only refuses to call a tag releasable when the
+# claims disagree. `moon publish --dry-run` is documented as the local gate in
+# `harness/check_release.py --publish-dry-run` because it needs credentials.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # `git describe --tags` needs the tags
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Update registry index
+        run: moon update
+      - name: Provenance (version claims, archive contents, clean tree)
+        run: python3 harness/check_release.py --json-out release-provenance.json
+      - name: Record the provenance check
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-provenance
+          path: release-provenance.json
