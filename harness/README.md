@@ -104,6 +104,12 @@ python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.js
 python3 harness/bench_release.py --compare harness/baseline/2026-10-20-0.3.1.json
 ```
 
+Every record also carries the dataset's SHA-256 and each case's `sql`, so
+"same work, faster" can be checked against the workload itself rather than a
+prose description of it; the `spill/*` cases ask `ANALYZE` to prove the spill
+(and assert the spill directory is empty afterwards) because the engine now
+removes its run files.
+
 One record, one machine: scan (CSV/Parquet), join (2-table and Q3), gather
 (the filter/join output-assembly paths), and spill (in-query external sort
 plus the MLSPILL3 write/read). It builds the native release binary, records

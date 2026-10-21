@@ -55,6 +55,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-21 the release record carries the dataset's SHA-256 and each case's
+  `sql`. A path is not an identity (regenerating SF0.1 with a different
+  generator yields the same names and different numbers), and a prose `what` is
+  not a workload. The `spill/*` cases now prove the spill with `ANALYZE` and
+  assert the spill directory is empty afterwards, because the engine removes its
+  run files — the old check counted the leaked ones
 - 2026-10-21 `harness/check_release.py` and a `release` workflow on `v*` tags:
   the version claims (`moon.mod`, the library `VERSION`, the newest CHANGELOG
   heading, the tag name) have to agree, `moon package --list` has to hold the

@@ -211,6 +211,21 @@ def measure(cmd: list[str], runs: int, scratch: pathlib.Path) -> dict:
     }
 
 
+def dataset_sha256(data: pathlib.Path) -> str:
+    """Hash the dataset the record describes, file names included.
+
+    A path is not an identity: regenerating SF0.1 with a different generator
+    version (or a different SF rounding) produces the same names and different
+    numbers, and the two records would compare as if nothing had changed.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(p for p in data.iterdir() if p.is_file()):
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def csv_flags(data: pathlib.Path, *names: str) -> list[str]:
     return [arg for name in names for arg in ("--csv", str(data / name))]
 
@@ -221,6 +236,7 @@ def case_specs(data: pathlib.Path) -> list[dict]:
             "id": id_,
             "family": family,
             "what": what,
+            "sql": sql,
             # the CLI takes the SQL as ONE argument, newlines and all
             "argv": [*csv_flags(data, *tables), sql],
             "extra": extra or {},
@@ -246,6 +262,7 @@ def case_specs(data: pathlib.Path) -> list[dict]:
             "id": "scan/parquet_count",
             "family": "scan",
             "what": "count(*) over lineitem.parquet: footer only, no column chunk read",
+            "sql": "SELECT count(*) FROM lineitem",
             "argv": [
                 "--parquet",
                 str(data / "lineitem.parquet"),
@@ -257,6 +274,7 @@ def case_specs(data: pathlib.Path) -> list[dict]:
             "id": "scan/parquet_sum",
             "family": "scan",
             "what": "sum(l_quantity) over lineitem.parquet: one column chunk per group",
+            "sql": "SELECT sum(l_quantity) FROM lineitem",
             "argv": [
                 "--parquet",
                 str(data / "lineitem.parquet"),
@@ -312,7 +330,7 @@ def case_specs(data: pathlib.Path) -> list[dict]:
                 "SELECT l_orderkey, l_extendedprice FROM lineitem "
                 "ORDER BY l_extendedprice DESC, l_orderkey LIMIT 3",
             ],
-            "extra": {"budget": "2M", "require_spill_files": 1},
+            "extra": {"budget": "2M"},
         },
     ]
 
@@ -399,6 +417,18 @@ def run_cases(
         if spec["id"].startswith("spill/"):
             spill_dir.mkdir(parents=True, exist_ok=True)
         cmd = [str(binary), "exec", *argv]
+        if spec["id"].startswith("spill/"):
+            # The engine removes its run files when the query ends (it used to
+            # leak them, which is how this case first "proved" a spill: by
+            # counting leftovers). Ask ANALYZE instead, once, before timing.
+            probe = [str(binary), "exec", "--analyze", *argv]
+            probe_out = subprocess.run(probe, capture_output=True, text=True)
+            if "spill files:" not in probe_out.stdout:
+                raise SystemExit(
+                    f"{spec['id']}: ANALYZE reports no spill under this budget, so the "
+                    "case no longer measures the out-of-core path; the workload or the "
+                    "budget has drifted"
+                )
         try:
             measured = measure(cmd, runs, scratch)
         except SystemExit:
@@ -407,16 +437,21 @@ def run_cases(
             "id": spec["id"],
             "family": spec["family"],
             "what": spec["what"],
+            # the workload itself, so a number can be traced back to a query
+            # rather than to a prose description of one
+            "sql": spec.get("sql"),
             **measured,
             "extra": dict(spec["extra"]),
         }
         if spec["id"].startswith("spill/"):
+            # the query is over, so its files must be gone: that is the
+            # lifecycle guarantee, and leftovers mean the cleanup regressed
             files = len(list(spill_dir.glob("*")))
-            record["extra"]["spill_files"] = files
-            if files < spec["extra"]["require_spill_files"]:
+            record["extra"]["leftover_files"] = files
+            if files != 0:
                 raise SystemExit(
-                    f"{spec['id']}: budget did not force a spill (no files in {spill_dir}); "
-                    "the workload or the budget has drifted"
+                    f"{spec['id']}: {files} file(s) left in {spill_dir} after the query; "
+                    "the spill cleanup regressed"
                 )
         results.append(record)
         median = (
@@ -545,6 +580,7 @@ def main() -> int:
             "statistic": "fastest wall time after the warm-ups",
             "stdout": "drained to a temp file and hashed (SHA-256), not stored",
             "data": str(data.relative_to(REPO)) if data.is_relative_to(REPO) else str(data),
+            "data_sha256": dataset_sha256(data),
             "data_note": "TPC-H SF0.1, tracked in the repository; regenerate "
             "with `python harness/gen_tpch.py 0.1`",
             "build": "native release (`moon build cmd/main --target native --release`)",

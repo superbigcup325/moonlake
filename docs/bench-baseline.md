@@ -13,6 +13,17 @@ measurement, it is a rumour. This baseline pins all four, and hashes each
 case's stdout so a later run can tell "same work, faster" from "different
 work".
 
+Since 2026-10-21 every record also carries `method.data_sha256` (the dataset
+itself, names included — a path is not an identity, and regenerating SF0.1 with
+a different generator produces the same names and different numbers) and each
+case's `sql`, so a timing can be traced back to a query rather than to a prose
+description of one. The `spill/*` cases prove the spill differently now: the
+engine removes its run files when the query ends, so the case asks `ANALYZE`
+for `spill files:` before timing, and separately asserts that nothing is left
+in the spill directory afterwards. Records taken before this change lack the
+two fields; a reader comparing across the boundary should compare `id`s, not
+whole objects.
+
 ## The environment this record belongs to
 
 | | |
