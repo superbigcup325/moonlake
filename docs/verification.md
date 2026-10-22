@@ -860,6 +860,9 @@ Python 3.12 and the exact reference package versions in
 - Native, wasm-gc (also the default) and JS each pass 212 tests.
 - The offline release archive check passes: all version claims agree and
   `moon package --list` contains 148 files, with no forbidden development path.
+  `moon publish --dry-run` also unpacked that archive and passed its own
+  `moon check`. The server-side dry run is pending: it uploads the archive to
+  mooncakes.io and that upload has not been authorized.
 - In a disposable checkout, regenerate TPC-H SF0.01, Parquet fixtures and
   multigroup data with the pinned tools, then run `harness/check_all.sh`:
   all 27 golden queries, spill sort/join/aggregate equivalence and the

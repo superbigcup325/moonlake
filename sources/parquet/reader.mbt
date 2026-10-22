@@ -302,7 +302,7 @@ fn[T] decode_values(
       }
     BitPacked | OtherEncoding(_) =>
       raise unsupported(
-        "column \"{name}\": encoding \{encoding_name(enc)} is not supported",
+        "column \"\{name}\": encoding \{encoding_name(enc)} is not supported",
       )
   }
 }

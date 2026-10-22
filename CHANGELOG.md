@@ -25,8 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   in 0.3.1. They now describe the session UI, seven spill checks and the
   development/release boundary; quickstarts refresh the registry first and
   acknowledgements include the colenc dependency
-- 2026-10-22 unsupported Parquet physical-type errors now interpolate the
-  actual column name instead of printing the literal `{el.name}` placeholder
+- 2026-10-22 unsupported Parquet physical-type and encoding errors now
+  interpolate the actual column name instead of printing literal placeholders
 - 2026-10-21 two spilled queries sharing one `--spill-dir` corrupted each
   other: every query wrote `run0.bin`, `run1.bin` … into the directory it was
   given and then removed every `run<n>.bin` it found there, so a concurrent
