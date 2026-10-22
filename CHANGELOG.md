@@ -118,6 +118,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-22 `harness/check_consumer.py`: the packaged library is extracted
+  into a temporary workspace and used by an independent consumer on native,
+  wasm-gc and JS, resolving dependencies from a fresh registry/cache. The
+  version, CSV query, raw/Snappy Parquet round-trips, DATE/NULL values and
+  table removal must agree. Per-PR CI and release provenance run the gate;
+  `--registry-version` checks the published current API after a release, with
+  no workspace override. No credentials or package upload are needed
+- 2026-10-22 browser acceptance now requires the exact engine version from
+  `moon.mod` (or `MOONLAKE_EXPECT_VERSION`), so a stale deployed page cannot
+  pass merely because it loads and reports a version
 - 2026-10-21 `TableEntry::stream(request)` returns the scan a `TableEntry::scan`
   would return, as a `BatchStream` cursor instead of an `Array[DataBatch]`, so a
   caller that consumes batches one at a time never materializes the table. The

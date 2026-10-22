@@ -846,3 +846,22 @@ two payoffs. Scope kept honest by tests instead of prose: the existing writer
 tests are round-trips through the reader, and `check_writer_interop.py` re-read
 the OPTIONAL output with pyarrow and DuckDB on all three paths (raw, snappy,
 DuckDB-written input) without a change.
+
+2026-10-22 — **A release archive needs a caller.** Goal: finish the release
+checks without treating a local source build as evidence for a packaged
+consumer. Added a public-API fixture and `check_consumer.py`: extract the zip,
+build a different module against it, fetch the registry/dependencies into a
+fresh toolchain home, and run native / wasm-gc / js. All three return the same
+CSV and raw/Snappy Parquet results, including DATE/NULLs and table removal.
+The per-PR check and release workflow now run it; the record identifies the zip
+by SHA-256. Quality boundary: this is archive evidence, not a registry install;
+`--registry-version` provides that separate post-publish check and has not been
+run for the unpublished 0.4.0 release. No credentials or package upload are
+needed for the archive gate.
+
+The deployed `4e58b3d` already has green CI, nightly and Pages. Its public page
+passes 15 browser checks, and the version check now compares the exact module
+version. A deliberate wrong-version run fails only that check (14/15, exit 1),
+so a stale but functional page cannot pass as the expected release. Evidence
+and commands are in `verification.md` §16; six new harness regression tests
+bring the Python suite to 13, with 212 MoonBit tests still passing per target.

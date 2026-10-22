@@ -1,7 +1,7 @@
 # Release provenance check: prove that what is about to ship is the thing the
 # repository says it is.
 #
-# Three claims are checked, in the order a reader would check them:
+# The following claims are checked, in the order a reader would check them:
 #
 #   1. every place that carries the version agrees — `moon.mod`, the library's
 #      `VERSION` constant, the newest CHANGELOG heading, and (when the check
@@ -11,12 +11,16 @@
 #      none it should not. Only `moon package --list` answers this:
 #      `.git/info/exclude` and global gitignore are not consulted, and a
 #      `.moonignore` in a directory replaces that tree's `.gitignore`.
-#   3. optionally, `moon publish --dry-run` passes — the gate the project has
+#   3. optionally, a separate consumer uses the archive on native/wasm-gc/JS
+#      with a fresh registry and dependency cache. This downloads public
+#      dependencies but does not need credentials or upload an archive.
+#   4. optionally, `moon publish --dry-run` passes — the gate the project has
 #      always used, which unpacks the archive in a temp directory and checks it
 #      there. It needs credentials (run `moon login` first), so it is opt-in.
 #
 # Usage:
 #   python3 harness/check_release.py                 # offline checks only
+#   python3 harness/check_release.py --check-consumer # fresh dependencies, no upload
 #   python3 harness/check_release.py --publish-dry-run
 #   python3 harness/check_release.py --tag v0.3.1    # explicit tag (CI derives it)
 #   python3 harness/check_release.py --json-out r.json
@@ -47,6 +51,7 @@ FORBIDDEN = (
     "harness/data/",
     "harness/spill_bench/",
     "harness/kernel_bench/",
+    "harness/consumer/",
     "hooks/",
     ".venv/",
     ".env",
@@ -162,6 +167,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", help="release tag being checked (default: none)")
     parser.add_argument("--publish-dry-run", action="store_true")
+    parser.add_argument(
+        "--check-consumer", action="store_true",
+        help="run an archive consumer on all three targets; needs registry access, no upload",
+    )
     parser.add_argument("--json-out")
     args = parser.parse_args()
 
@@ -175,6 +184,10 @@ def main() -> int:
         "archive": check_archive(),
         "git": check_git(),
     }
+    if args.check_consumer:
+        from check_consumer import check_consumer
+
+        record["consumer"] = check_consumer()
     if args.publish_dry_run:
         record["publish"] = check_publish_dry_run()
     else:

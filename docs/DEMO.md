@@ -99,3 +99,17 @@ All three targets run the identical test suite; a bare `moon test` selects
 wasm-gc, the preferred target in `moon.mod`. CI additionally covers formatting,
 generated-interface freshness, the TPC-H chain, spill lifecycle, browser
 acceptance and writer interop.
+
+The pre-publish consumer gate uses the actual archive and fresh public
+dependencies on all three targets, with no package upload:
+
+```bash
+python3 harness/check_release.py --check-consumer
+```
+
+After publishing a new release of the current API, validate the registry copy
+without a workspace override (replace `0.4.0` with the published version):
+
+```bash
+python3 harness/check_consumer.py --registry-version 0.4.0
+```

@@ -890,3 +890,56 @@ remains in §8; a 0.4.0 tag, publication, registry-consumer acceptance and a
 check of the newly deployed public page are separate release steps. Whole-file
 output buffering and reclaiming a killed query's spill directory still require
 filesystem APIs that the current dependency does not expose.
+
+## 16. Archive consumer and deployed-page acceptance (2026-10-22)
+
+An unpacked archive passing `moon check` does not prove that another module
+can import its public API. `harness/check_consumer.py` now packages moonlake,
+extracts that zip into a temporary directory and copies `harness/consumer/`
+into a separate module. The workspace contains only the extracted package and
+the consumer. A fresh `MOON_HOME` links the installed compiler/core and fetches
+its own registry and dependencies; it does not copy credentials, the working
+checkout's dependency cache or a local colenc workspace override.
+
+The consumer uses only the public API: the facade's version and CSV query,
+raw and Snappy Parquet write/read, DATE annotation and NULL handling, and
+`Catalog::drop`. All three targets (native / wasm-gc / js) return the exact
+expected values. `--json-out` records the archive SHA-256, toolchain, source
+mode, version and per-target results. The current archive contains 150 files;
+the consumer fixture is a development driver excluded by `.moonignore` and
+the release gate's forbidden-path check.
+
+```bash
+python3 harness/check_consumer.py
+python3 harness/check_release.py --check-consumer --json-out /tmp/release-provenance.json
+```
+
+The per-PR `check` job and the release workflow now run this gate. It only
+downloads public dependencies: no archive is uploaded and no login is needed.
+Six regression tests check that the version comes from the zip, workspace
+overrides and escaping zip paths are refused, stale versions and wrong values
+fail, and the temporary toolchain home does not copy credentials or registry
+state. Together with the corpus-gate tests, all 13 Python tests pass. Native,
+wasm-gc and JS each still pass the 212 MoonBit tests; public library interfaces
+are unchanged (the new executable fixture has an empty generated interface).
+
+Archive-consumer evidence is deliberately distinct from registry installation.
+After publishing a new release of the current API, the same consumer can run
+with `--registry-version <version>`: no workspace is created, and the package
+must resolve from mooncakes. That post-release path has not been exercised for
+0.4.0, which remains unpublished.
+
+**Remote and browser evidence.** The already-pushed `4e58b3d` passed
+[CI](https://github.com/superbigcup325/moonlake/actions/runs/39762647767),
+[nightly](https://github.com/superbigcup325/moonlake/actions/runs/39763417840)
+and [Pages deployment](https://github.com/superbigcup325/moonlake/actions/runs/39762647802).
+The public page was then driven with real Chromium: it reports `0.4.0-dev`
+and passes all 15 scenarios. The acceptance now requires the exact version in
+`moon.mod`, not merely a version-shaped string. A deliberate
+`MOONLAKE_EXPECT_VERSION=0.0.0-stale` run returns exit 1 with 14/15 checks:
+only the version check fails, while the 14 functional checks still pass. This
+proves that a working page with the wrong release identity is rejected.
+
+These remote runs predate the new consumer and version-gate changes; their
+verification is local until those changes are pushed. The server-side publish
+dry run and actual release remain separate from these checks.

@@ -40,6 +40,8 @@ jobs:
         run: |
           moon info
           git diff --exit-code -- '*.mbti'
+      - name: Packaged consumer (native / wasm-gc / js, fresh dependencies)
+        run: python3 harness/check_consumer.py
       - name: Playground wasm is host-free
         # The browser page instantiates with no imports beyond the JS string
         # builtins, so any other Wasm import (e.g. the wasm host's filesystem

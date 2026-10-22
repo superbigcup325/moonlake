@@ -5,6 +5,8 @@
 # the local moon home); this job only refuses to call a tag releasable when the
 # claims disagree. `moon publish --dry-run` is documented as the local gate in
 # `harness/check_release.py --publish-dry-run` because it needs credentials.
+# The archive consumer resolves fresh public dependencies on all three targets;
+# that check needs network access, but no credentials and no package upload.
 name: release
 
 on:
@@ -32,7 +34,7 @@ jobs:
       - name: Update registry index
         run: moon update
       - name: Provenance (version claims, archive contents, clean tree)
-        run: python3 harness/check_release.py --json-out release-provenance.json
+        run: python3 harness/check_release.py --check-consumer --json-out release-provenance.json
       - name: Record the provenance check
         uses: actions/upload-artifact@v4
         with:

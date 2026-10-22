@@ -125,6 +125,14 @@ You can browse and install extra skills here:
   `moon publish --dry-run`. Note that after a successful dry run the CLI may still
   exit non-zero and print `Error: moon publish failed` — treat the
   `Server status: 202 ... Dry run completed successfully` line as the verdict.
+- Before publishing, run `python3 harness/check_release.py --check-consumer`:
+  the packaged library must work from a separate consumer on native/wasm-gc/js,
+  with fresh registry/dependency caches and no local colenc override. This
+  downloads public dependencies, with no upload or credentials. After a new
+  version is published, `python3 harness/check_consumer.py --registry-version
+  <version>` exercises the same consumer without any workspace override.
+  Playground acceptance defaults to the exact version in `moon.mod`; override
+  `MOONLAKE_EXPECT_VERSION` only when intentionally checking another release.
 - The file set in a release archive is decided **only** by `.gitignore` /
   `.moonignore`. Git's `.git/info/exclude` and the global git ignore config are
   never consulted (files kept out of git solely via `info/exclude` will be packed

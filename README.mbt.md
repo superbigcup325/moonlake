@@ -197,8 +197,11 @@ git config core.hooksPath hooks   # once per clone: pre-commit gate
 The pre-commit hook runs a fast local subset of CI: interface freshness
 (`moon info`), formatting, `moon check --deny-warn` and native tests. CI also
 runs the wasm-gc / js test matrix, regenerates TPC-H goldens, and checks the
-spill lifecycle, the real browser page and Parquet writer interop. Reference
-tools are pinned in [harness/requirements.txt](harness/requirements.txt).
+spill lifecycle, the real browser page and Parquet writer interop. A separate
+consumer runs the packaged library on native / wasm-gc / js with freshly
+resolved dependencies; it checks CSV queries, Parquet raw/Snappy round-trips,
+DATE/NULL values and table removal. Reference tools are pinned in
+[harness/requirements.txt](harness/requirements.txt).
 
 ## Acknowledgements
 

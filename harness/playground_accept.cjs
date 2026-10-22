@@ -21,6 +21,7 @@
 //   PLAYWRIGHT_MODULE=/path/to/node_modules/playwright
 //   CHROME_PATH=/path/to/chrome      (default: a cached playwright chromium)
 //   MOONLAKE_DATA=/path/to/sf001     (default: harness/data/sf001)
+//   MOONLAKE_EXPECT_VERSION=0.4.0-dev (default: version in this checkout's moon.mod)
 
 const path = require("path");
 const fs = require("fs");
@@ -55,6 +56,10 @@ let url = process.argv[2] && !process.argv[2].startsWith("--")
   ? process.argv[2]
   : "http://127.0.0.1:8971/index.html";
 const root = path.resolve(__dirname, "..");
+const manifestVersion = fs.readFileSync(path.join(root, "moon.mod"), "utf8")
+  .match(/^version\s*=\s*"([^"]+)"/m);
+if (!manifestVersion) throw new Error("moon.mod has no version to verify");
+const expectedVersion = process.env.MOONLAKE_EXPECT_VERSION || manifestVersion[1];
 const data = process.env.MOONLAKE_DATA
   ? path.resolve(process.env.MOONLAKE_DATA)
   : path.join(root, "harness", "data", "sf001");
@@ -128,7 +133,8 @@ async function tableNames() {
   // 1. the wasm loads and reports its version
   await waitForEngine();
   const version = await page.evaluate(() => document.body.dataset.engine);
-  check("wasm loads and reports the engine version", /^\d+\.\d+\.\d+/.test(version), version);
+  check("wasm loads and reports the expected engine version", version === expectedVersion,
+    `${version} (expected ${expectedVersion})`);
 
   // 2. two CSV files uploaded at once become two tables with their schema
   await upload([

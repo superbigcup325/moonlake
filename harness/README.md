@@ -137,6 +137,7 @@ noise).
 
 ```bash
 python3 harness/check_release.py                  # offline: versions, archive, clean tree
+python3 harness/check_release.py --check-consumer  # fresh dependencies, three targets; no upload
 python3 harness/check_release.py --publish-dry-run  # also the publish gate (needs `moon login`)
 ```
 
@@ -144,8 +145,32 @@ Run on every `v*` tag by the `release` workflow. It refuses a tag when the
 version claims disagree (`moon.mod` / `moonlake.mbt` `VERSION` / the newest
 CHANGELOG heading / the tag), when `moon package --list` carries a dev-only path
 (`.internal/`, `moon.work`, `harness/data/`, the bench drivers, `hooks/`, …) or
-when the tree is dirty. Note that `moon package --list` prints its list to
-stderr, below the `moon check` it runs first.
+when the tree is dirty. The release workflow also runs `--check-consumer`.
+Note that `moon package --list` prints its list to stderr, below the
+`moon check` it runs first.
+
+## Packaged and published consumers (`check_consumer.py`)
+
+```bash
+python3 harness/check_consumer.py                         # package this checkout, test its archive
+python3 harness/check_consumer.py --archive /path/to/moonlake.zip
+python3 harness/check_consumer.py --registry-version 0.4.0  # only after publishing the current API
+```
+
+The default gate builds `moon package`, extracts the zip into a temporary
+directory and copies `harness/consumer/` into a separate downstream module.
+Only the extracted package and the consumer become workspace members. A fresh
+`MOON_HOME` reuses the installed compiler/core but fetches its own registry and
+dependency graph: no login credentials, existing `.mooncakes`, local colenc
+checkout or source checkout can satisfy the package import. The archive hash,
+toolchain and results can be recorded with `--json-out`.
+
+On native / wasm-gc / js, the public API must report the expected version and
+return identical CSV and raw/Snappy Parquet query results, including DATE and
+NULLs; dropping a table must remove it. The per-PR `check` job runs this gate.
+It does not upload an archive. `--registry-version` removes the workspace
+override and checks the published current API after an authorized release; an
+archive-consumer pass is not registry-install evidence.
 
 ## Kernel benchmark (`kernel_bench/`)
 
@@ -204,6 +229,9 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
 ```
 
 Runs on every PR (job `playground`, which installs Playwright and Chromium).
+The first check requires the exact version in this checkout's `moon.mod`, so
+a stale page cannot pass just because it prints some version. To check a
+different release intentionally, set `MOONLAKE_EXPECT_VERSION=<version>`.
 
 Drives the real page in headless Chromium with 15 checks: several files
 registered in one session, schema listing, cross-file JOINs, the physical plan,
