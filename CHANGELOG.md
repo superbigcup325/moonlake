@@ -4,13 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0-dev] - Unreleased
 
-> Ongoing 0.4.0 work. Only what is on `main`; a release note is written when
-> the version is cut.
+> Ongoing 0.4.0 work, not published to mooncakes. The source and browser
+> playground report `0.4.0-dev`; the latest stable release is still 0.3.1.
 
 ### Fixed
 
+- 2026-10-22 DuckDB 2.0 removed `fetchone()` from its relation API, breaking
+  Parquet fixture generation and writer interop. Single-row reads now use the
+  connection cursor API. The corpus gate only skips DuckDB read errors, lets
+  Python/API errors fail, and refuses success when a recorded file was not
+  verified; an all-skipped run could previously pass. CI uses Python 3.12 and
+  the DuckDB/PyArrow versions in `harness/requirements.txt`
+- 2026-10-22 the nightly and pre-commit hook labelled a bare `moon test` as
+  native, but the module had no preferred target and it ran wasm. Both now
+  select native explicitly, and `moon.mod` sets wasm-gc as the default target
+- 2026-10-22 the README and harness guide still described the old single-table
+  playground and five spill checks, and claimed all current features shipped
+  in 0.3.1. They now describe the session UI, seven spill checks and the
+  development/release boundary; quickstarts refresh the registry first and
+  acknowledgements include the colenc dependency
+- 2026-10-22 unsupported Parquet physical-type errors now interpolate the
+  actual column name instead of printing the literal `{el.name}` placeholder
 - 2026-10-21 two spilled queries sharing one `--spill-dir` corrupted each
   other: every query wrote `run0.bin`, `run1.bin` … into the directory it was
   given and then removed every `run<n>.bin` it found there, so a concurrent
@@ -166,10 +182,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 2026-10-21 grace aggregation pulls a partition one spill file at a time
   instead of materializing it (`BatchSeq`), so a hot group key no longer puts
   a whole partition in memory on top of the budget
-- 2026-10-21 `harness/spill_accept.sh`: five checks over the spill lifecycle —
+- 2026-10-21 `harness/spill_accept.sh`: seven checks over the spill lifecycle —
   no directory after a successful sort, none after a failed query, `--spill-dir`
   keeps files moonlake did not write, `ANALYZE` reports the counters, and an
-  in-memory `ANALYZE` stays silent
+  in-memory `ANALYZE` stays silent; concurrent queries sharing a directory do
+  not collide, and a new query leaves an interrupted query's directory alone
 
 ## [0.3.1] - 2026-10-20
 

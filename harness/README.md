@@ -10,9 +10,13 @@ sanctioned WITH form — see `queries/q15.sql`). CI (and local
 
 ## Usage
 
+CI uses Python 3.12 with DuckDB/PyArrow pinned in `harness/requirements.txt`.
+The `uv` commands below use the same versions; alternatively install that file
+in a Python 3.12 virtual environment and run the scripts with its `python`.
+
 ```bash
-uv run --with duckdb python harness/gen_tpch.py          # SF 0.01
-uv run --with duckdb python harness/gen_tpch.py 0.01     # explicit SF
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_tpch.py       # SF 0.01
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_tpch.py 0.01  # explicit SF
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh  # validate at SF 0.1
 ```
 
@@ -58,8 +62,8 @@ the data from scratch (job `tpch`).
 Two more generators feed the in-house Parquet reader's gates:
 
 ```bash
-uv run --with duckdb python harness/gen_parquet_fixtures.py   # fixtures + goldens
-python3 harness/check_parquet_corpus.py                       # nightly: third-party files
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_parquet_fixtures.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/check_parquet_corpus.py
 ```
 
 `gen_parquet_fixtures.py` writes `harness/data/parquet/<shape>/<variant>/t.parquet`
@@ -72,10 +76,15 @@ variants cover plain/uncompressed, plain/snappy, dictionary/snappy,
 dictionary/uncompressed and two row groups. `check_all.sh` diffs all of them.
 
 `check_parquet_corpus.py` downloads apache/parquet-testing (cached in
-`~/.cache/moonlake-parquet-corpus`) and requires two things of every file: in
-scope, the row count must equal duckdb's; out of scope, the reader must refuse
-it *by name*. It runs in the nightly workflow — the corpus is third-party data,
-so it is fetched rather than committed.
+`~/.cache/moonlake-parquet-corpus`). In scope, every column must decode, row
+counts must agree and a five-row sample from up to three columns must match
+DuckDB cell for cell. Out of scope, the reader must refuse *by name*. Each
+file's class is recorded in `parquet_corpus_expected.json`; a class change,
+Python/API error or recorded file missing from the verified results fails the
+gate, including a run where DuckDB skips everything. New files are reported
+for review. `test_parquet_corpus.py` checks the gate's success and failure paths
+on every PR. The full corpus runs nightly; third-party data is fetched rather
+than committed.
 
 ## Scan benchmark (lazy scan / pushdown A/B)
 
@@ -83,7 +92,7 @@ so it is fetched rather than committed.
 moon build cmd/main --target native
 python3 harness/bench_scan.py                                   # current build
 python3 harness/bench_scan.py --base <old-binary>                    # A/B
-uv run --with pyarrow python harness/bench_scan.py --big --base <old-binary>
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_scan.py --big --base <old-binary>
 ```
 
 `bench_scan.py` times the queries that exercise the scan layer (CSV column
@@ -156,7 +165,7 @@ noise caveat are in [`docs/bench-baseline.md`](../docs/bench-baseline.md).
 ## Writer interop (`check_writer_interop.py`)
 
 ```bash
-uv run --with duckdb --with pyarrow python harness/check_writer_interop.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/check_writer_interop.py
 ```
 
 The writer's acceptance: it writes a four-row table (int32/int64/double/string/
@@ -173,11 +182,15 @@ header. Runs on every PR (job `writer`).
 bash harness/spill_accept.sh
 ```
 
-Five checks over what a spilled query leaves behind: no directory after a
-successful sort, none after a failed query, `--spill-dir` keeps files moonlake
-did not write (only `run<n>.bin` is removed), `ANALYZE` under a budget reports
-`spill files` / `spill bytes written` / `spill bytes read`, and an in-memory
-`ANALYZE` stays silent about spilling.
+Seven checks over what a spilled query leaves behind: no directory after a
+successful sort, none after a failed query, a shared `--spill-dir` keeps the
+caller's files, `ANALYZE` under a budget reports `spill files` / `spill bytes
+written` / `spill bytes read`, an in-memory `ANALYZE` stays silent, concurrent
+queries sharing a directory do not collide, and a new query leaves an
+interrupted run's files alone. Every query owns its own `moonlake-spill-<n>`
+subdirectory; normal cleanup removes only that query's runs. SIGKILL leaves
+the subdirectory behind because the current filesystem API cannot establish
+that its owner is dead.
 
 ## Playground acceptance (`playground_accept.cjs`)
 
@@ -192,10 +205,10 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
 
 Runs on every PR (job `playground`, which installs Playwright and Chromium).
 
-Drives the real page in headless Chromium: CSV upload, Parquet upload with
-DATE columns, two error paths, a cross-file JOIN (refused by name — the page
-holds one table), a same-file self-join, and a no-uncaught-JS-error check.
-Playwright is not a project dependency; a real browser is the manual step
-release acceptance needs, and this script is that step written down. CI only
-guards the wasm's import list (the `Playground wasm is host-free` step), which
-is what silently broke the 0.3.0 page.
+Drives the real page in headless Chromium with 15 checks: several files
+registered in one session, schema listing, cross-file JOINs, the physical plan,
+duplicate-name refusal, dropping a table, clearing the session, CSV and Parquet
+agreeing cell for cell (including DATE columns), visible query errors and no
+uncaught JS errors. The `playground` CI job runs this browser acceptance in
+addition to the `Playground wasm is host-free` import gate, which catches the
+class of failure that broke the 0.3.0 page. Playwright remains a dev-only tool.

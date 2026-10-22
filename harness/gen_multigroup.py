@@ -8,7 +8,7 @@
 # dependency was replaced by the in-house reader on 2026-10-15, and this
 # fixture still covers the multi-row-group path it needed.
 #
-# Usage: uv run --with duckdb python harness/gen_multigroup.py
+# Usage: uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_multigroup.py
 
 import pathlib
 

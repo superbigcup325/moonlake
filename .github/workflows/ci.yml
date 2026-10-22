@@ -72,6 +72,8 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Toolchain version
+        run: moon version --all
       - name: Update registry index
         run: |
           moon update
@@ -103,8 +105,16 @@ jobs:
           # a SOURCE, so it is no longer a dependency fetch. A dependency that
           # still ships the legacy moon.mod.json fails loudly during the graph
           # resolution there.
-      - name: Install duckdb
-        run: python3 -m pip install --quiet duckdb
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: harness/requirements.txt
+      - name: Install reference tools (pinned)
+        run: |
+          python3 -m pip install --quiet -r harness/requirements.txt
+          python3 -c 'import sys, duckdb, pyarrow; print(sys.version); print(f"DuckDB {duckdb.__version__}, PyArrow {pyarrow.__version__}")'
       - name: Generate TPC-H data and golden answers
         run: |
           python3 harness/gen_tpch.py
@@ -127,6 +137,8 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Toolchain version
+        run: moon version --all
       - name: Update registry index
         run: moon update
       - name: Build the playground wasm
@@ -161,9 +173,20 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Toolchain version
+        run: moon version --all
       - name: Update registry index
         run: moon update
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: harness/requirements.txt
+      - name: Install reference tools (pinned)
+        run: |
+          python3 -m pip install --quiet -r harness/requirements.txt
+          python3 -c 'import sys, duckdb, pyarrow; print(sys.version); print(f"DuckDB {duckdb.__version__}, PyArrow {pyarrow.__version__}")'
+      - name: Corpus gate self-tests
+        run: python3 -m unittest discover -s harness -p 'test_*.py'
       - name: Writer interop (pyarrow + duckdb, both directions)
-        run: uv run --with duckdb --with pyarrow python harness/check_writer_interop.py
+        run: python3 harness/check_writer_interop.py

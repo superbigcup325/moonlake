@@ -1,0 +1,4 @@
+# Reference tools used by CI (Python 3.12). Update together with the golden,
+# Parquet corpus and writer interop checks, not independently in each job.
+duckdb==2.0.0
+pyarrow==26.0.0

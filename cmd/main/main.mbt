@@ -394,8 +394,8 @@ priv struct SpillRun {
 /// guessing wrong would delete a running query's run files. The leak is
 /// therefore bounded to one directory per interrupted query under TMPDIR, and
 /// every completed query removes its directory on both the success and the
-/// error path. Making it reclaimable needs a native syscall surface, which is
-/// a decision rather than an oversight (the project advertises no FFI).
+/// error path. Making it reclaimable needs native OS APIs beyond the current
+/// moonbitlang/x filesystem surface.
 fn spill_run_dir(spill_dir : String?) -> SpillRun raise @types.SqlError {
   let base = match spill_dir {
     Some(d) => d

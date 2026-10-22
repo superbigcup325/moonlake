@@ -2,13 +2,17 @@
 
 Everything below runs from a fresh clone on Linux/macOS with
 [MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20261016 or newer — CI
-installs `latest`), Python 3, and either `uv` or `pip` for the DuckDB
-dependency. Nothing else — no FFI, no database processes.
+installs `latest`), and `uv` (which can supply Python 3.12). Reference tools are
+pinned in `harness/requirements.txt`; a Python 3.12 virtual environment with
+`pip install -r harness/requirements.txt` works too. The engine needs no
+external database process or database FFI binding; filesystem access uses
+`moonbitlang/x`'s system bindings.
 
 ## 1. Run the engine
 
 ```bash
 git clone https://github.com/superbigcup325/moonlake && cd moonlake
+moon update
 moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
   "SELECT l_returnflag, sum(l_extendedprice) AS total FROM lineitem \
    WHERE l_shipdate <= date '1998-09-02' GROUP BY l_returnflag ORDER BY l_returnflag"
@@ -47,14 +51,16 @@ NULL as `null`).
 ## 2. Cross-validate against DuckDB (the correctness claim)
 
 ```bash
-uv run --with duckdb python harness/gen_tpch.py   # or: pip install duckdb
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_tpch.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_parquet_fixtures.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_multigroup.py
 bash harness/check_all.sh
 ```
 
 `gen_tpch.py` generates TPC-H SF0.01 with DuckDB's dbgen, exports eight
 tables plus a Parquet file, and stores DuckDB's own answers as golden
 files. `check_all.sh` then runs all 27 golden queries through the CLI
-(22 TPC-H, the `q6p` Parquet variant and three multi-row-group Parquet
+(22 TPC-H, the `q6p` Parquet variant and four multi-row-group Parquet
 fixtures) and diffs each against its golden (1e-9 relative tolerance on
 floats):
 
@@ -73,7 +79,7 @@ the data from scratch.
 ```bash
 moon build cmd/main --target native   # the module's preferred target is
                                       # wasm-gc; the benchmark wants native
-uv run --with duckdb python harness/bench.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench.py
 ```
 
 Prints the moonlake-native vs DuckDB table from the README (best of 3
@@ -84,10 +90,12 @@ demonstrated, not superiority.
 
 ```bash
 moon check --deny-warn            # type check, warnings denied
-moon test                         # native test suite
+moon test --target native         # native test suite
 moon test --target wasm-gc        # same suite on wasm-gc
 moon test --target js             # same suite on js
 ```
 
-All three targets run the identical test suite. CI additionally
-covers formatting, generated-interface freshness, and the TPC-H chain.
+All three targets run the identical test suite; a bare `moon test` selects
+wasm-gc, the preferred target in `moon.mod`. CI additionally covers formatting,
+generated-interface freshness, the TPC-H chain, spill lifecycle, browser
+acceptance and writer interop.

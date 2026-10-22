@@ -42,6 +42,6 @@ fi
 moon check --deny-warn >/dev/null
 
 # 4. tests (native; wasm-gc / js and the golden chain run in CI)
-moon test >/dev/null
+moon test --target native >/dev/null
 
 echo "pre-commit: ok (info fresh, formatted, check clean, tests pass)"

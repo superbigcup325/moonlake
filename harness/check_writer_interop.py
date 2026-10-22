@@ -11,7 +11,7 @@
 # DuckDB), which no count can see.
 #
 # Usage:
-#   uv run --with duckdb --with pyarrow python harness/check_writer_interop.py
+#   uv run --python 3.12 --with-requirements harness/requirements.txt python harness/check_writer_interop.py
 #   MOONLAKE_BIN=_build/native/release/build/cmd/main/main.exe \
 #     python harness/check_writer_interop.py
 #
@@ -122,10 +122,10 @@ def check_duckdb(path: pathlib.Path, label: str) -> None:
             got = types.get(name)
             if got != expected:
                 fail(f"{label}: duckdb reads {name} as {got}, expected {expected}")
-        row = con.sql(
+        row = con.execute(
             f"select count(*), min(d), max(s), count(*) filter (where s is null) "
             f"from read_parquet('{path}')"
-        ).fetchone()
+        ).fetchall()[0]
         if row[0] != 4 or str(row[1]) != "1970-01-01" or row[2] != "é-accent" or row[3] != 1:
             fail(f"{label}: duckdb values differ: {row}")
     finally:

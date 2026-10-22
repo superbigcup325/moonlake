@@ -3,7 +3,7 @@
 # LEFT). Pushdown, residual placement, OR-implied keys and NULL
 # semantics are exercised by construction; duckdb is the referee.
 #
-# Usage: uv run --with duckdb python harness/fuzz_pushdown.py [N] [seed]
+# Usage: uv run --python 3.12 --with-requirements harness/requirements.txt python harness/fuzz_pushdown.py [N] [seed]
 #
 # The synthetic schema (generated once per seed, written to a temp dir):
 #   a(id, k1, k2, v, s, d, f)   b(id, k1, w, s, d)   c(id, k2, u, s)

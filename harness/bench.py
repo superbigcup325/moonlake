@@ -5,8 +5,8 @@
 # Usage:
 #   moon build cmd/main --target native     # compile first: the module's
 #                                           # preferred target is wasm-gc
-#   uv run --with duckdb python harness/bench.py          # SF0.01
-#   uv run --with duckdb python harness/bench.py 0.1      # SF0.1
+#   uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench.py      # SF0.01
+#   uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench.py 0.1  # SF0.1
 
 import pathlib
 import re

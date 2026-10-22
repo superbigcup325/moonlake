@@ -666,7 +666,7 @@ def main() -> int:
         if not (data / needed).exists():
             raise SystemExit(
                 f"missing {data / needed}; generate the data with "
-                "`uv run --with duckdb python harness/gen_tpch.py`"
+                "`uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_tpch.py`"
             )
 
     moon = find_moon()

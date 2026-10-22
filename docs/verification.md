@@ -317,7 +317,7 @@ refused, and a CSV column outside the projection is never parsed — a value tha
 would fail its inferred type is only an error when a query actually reads it.
 
 **2. End to end**: all 27 golden queries (`harness/check_all.sh`: 22 TPC-H
-texts + the Parquet variant + three multi-row-group Parquet queries, plus the
+texts + the Parquet variant + four multi-row-group Parquet queries, plus the
 external-sort / grace-join / grace-aggregation equivalence checks) still match
 DuckDB byte for byte, including `mgfilter`, whose predicate `v >= 200000 AND
 v < 300047` reads 2 of the 4 row groups; `--explain` names both pushdowns:
@@ -470,6 +470,10 @@ the harness scripts (~1.3 MB). `.moonignore` deliberately keeps out only the
 test data, the local hook directory and the spill driver.
 
 ## 9. Browser playground acceptance (2026-10-20)
+
+Historical 0.3.x acceptance. The single-table limitation below was removed by
+the session playground; see [§13](#13-playground-session-2026-10-21)
+for its later browser acceptance.
 
 The playground is the release's only "try it without installing" surface, and
 its file-upload path had never been checked except by hand. Method: build
@@ -782,8 +786,9 @@ Playwright + Chromium in the working tree):
 | 10 | DATE renders as `yyyy-mm-dd` on both paths |
 | 11 | a JOIN across the two uploaded copies runs (301,389 rows) |
 | 12 | an unknown column surfaces and marks the run failed |
-| 13 | a syntax error surfaces |
-| 14 | no uncaught JS error across the run |
+| 13 | a failed query sets the status to `failed` |
+| 14 | a syntax error surfaces |
+| 15 | no uncaught JS error across the run |
 
 The wasm still imports nothing but the JS-string builtins (the PR gate asserts
 it), so the page needs no server-side anything.
@@ -824,3 +829,61 @@ Two staging details, both learned the hard way in this change: `moon package
 --list` writes its file list to **stderr**, mixed with the `moon check` progress
 lines it runs first; and the archive's last stderr line is `Package to
 …/publish/<module>-<version>.zip`, which is not a file in the archive.
+
+## 15. Development verification fixes (2026-10-22)
+
+Current source reports `0.4.0-dev`, while the latest published stable package
+is 0.3.1. The development version agrees in `moon.mod`, the library constant,
+the generated interface and the newest CHANGELOG heading; it does not claim
+that the session playground or the subsequent writer/spill changes have been
+published. `preferred_target = "wasm-gc"` is now explicit. The native nightly
+and pre-commit hook both use `moon test --target native`.
+
+**Reference tool drift.** DuckDB 2.0.0 removed relation `fetchone()`. The writer
+check and Parquet fixture generator failed on that call, while the corpus
+gate caught its `AttributeError` and could skip every file with a zero exit.
+Single-row queries now use `execute(...).fetchall()[0]`: the complete fetch
+also matters because 2.0 rejects a relation query while an earlier cursor
+result is unfinished. Only `duckdb.Error` becomes a referee refusal; a Python
+error fails the check. A recorded file missing from verified results fails
+too, and an empty `--update` cannot erase the record. Seven Python regression
+tests cover real Parquet input, invalid input, an API failure, a successful
+gate, all-skipped and missing-input gates, and an empty update.
+
+**Environment and results.** Local validation used `moon 0.1.20261016`,
+`moonc v0.10.16`, Python 3.12.14, DuckDB 2.0.0 and PyArrow 26.0.0. CI uses
+Python 3.12 and the exact reference package versions in
+`harness/requirements.txt`, and prints their versions before checking data.
+
+- `moon check --deny-warn`, interface regeneration and formatting pass;
+  the only `.mbti` change is the development version constant.
+- Native, wasm-gc (also the default) and JS each pass 212 tests.
+- The offline release archive check passes: all version claims agree and
+  `moon package --list` contains 148 files, with no forbidden development path.
+- In a disposable checkout, regenerate TPC-H SF0.01, Parquet fixtures and
+  multigroup data with the pinned tools, then run `harness/check_all.sh`:
+  all 27 golden queries, spill sort/join/aggregate equivalence and the
+  Parquet fixtures pass. The working checkout's tracked data is unchanged.
+- `harness/check_writer_interop.py` passes raw/Snappy reads by PyArrow and
+  DuckDB, moonlake readback, DuckDB-written input, row-count plans and the
+  compression check (140,290 to 24,340 bytes for 4,000 rows).
+- The cached 71-file apache/parquet-testing snapshot yields 17 decoded by
+  value, 51 refused by design, 0 failing, and 3 files DuckDB cannot read.
+  Unsupported physical-type errors now name the actual column rather than
+  printing `{el.name}`.
+- All 7 spill lifecycle checks and all 15 real Chromium playground checks
+  pass. The browser reports `0.4.0-dev`, including after the session changes.
+
+Reproduce the Python checks with:
+
+```bash
+uv run --python 3.12 --with-requirements harness/requirements.txt python -m unittest discover -s harness -p 'test_*.py'
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/check_writer_interop.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/check_parquet_corpus.py
+```
+
+These are local development results. The previous published-package evidence
+remains in §8; a 0.4.0 tag, publication, registry-consumer acceptance and a
+check of the newly deployed public page are separate release steps. Whole-file
+output buffering and reclaiming a killed query's spill directory still require
+filesystem APIs that the current dependency does not expose.

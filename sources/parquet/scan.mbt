@@ -128,15 +128,18 @@ fn column_dtype(
         Some(ByteArrayT) => @types.Str
         Some(Int96T) =>
           raise unsupported(
-            "column \"{el.name}\": INT96 timestamps are not supported",
+            "column \"\{el.name}\": INT96 timestamps are not supported",
           )
         Some(FixedLenByteArrayT) =>
           raise unsupported(
-            "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported",
+            "column \"\{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported",
           )
         Some(UnknownPhysical(id)) =>
-          raise unsupported("column \"{el.name}\": unknown physical type \{id}")
-        None => raise unsupported("column \"{el.name}\": missing physical type")
+          raise unsupported(
+            "column \"\{el.name}\": unknown physical type \{id}",
+          )
+        None =>
+          raise unsupported("column \"\{el.name}\": missing physical type")
       }
   }
 }

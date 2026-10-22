@@ -134,8 +134,10 @@ def duckdb_count(path: pathlib.Path) -> int | str:
 
     con = duckdb.connect()
     try:
-        return con.sql(f"select count(*) from read_parquet('{path}')").fetchone()[0]
-    except Exception as e:  # noqa: BLE001 - duckdb cannot read it either
+        return con.execute(f"select count(*) from read_parquet('{path}')").fetchall()[0][0]
+    except duckdb.Error as e:
+        # Only a DuckDB read error makes a file unjudgeable. A Python/API error
+        # must fail the gate, not silently turn every file into a successful skip.
         return f"duckdb: {str(e).splitlines()[0][:90]}"
     finally:
         con.close()
@@ -342,6 +344,14 @@ def main() -> int:
         print("class changed for files in the record:")
         for line in changed:
             print(f"  {line}")
+    missing = sorted(expected.keys() - seen.keys())
+    if missing:
+        print("recorded files not verified (download missing or DuckDB skipped):")
+        for name in missing:
+            print(f"  {name}")
+    if not seen:
+        print("no files were verified")
+        return 1
 
     if args.json_out:
         pathlib.Path(args.json_out).write_text(
@@ -352,6 +362,8 @@ def main() -> int:
         write_expected(seen, toolchain)
         return 0
 
+    if missing:
+        return 1
     if counts["failing"]:
         return 1
     if not expected:

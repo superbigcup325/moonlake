@@ -91,12 +91,20 @@ You can browse and install extra skills here:
   the colenc checkout — and that workspace shadows the registry version, so
   remove it (or resolve with a scratch `MOON_HOME`) before judging what a
   consumer or `moon publish --dry-run` actually gets.
-- Local `moon test` runs the `preferred target` from `moon.mod` (wasm-gc) and does
+- Local `moon test` runs the explicit `preferred_target` in `moon.mod` (wasm-gc) and does
   not cover native; CI runs `test (native)` separately. Anything touching
   backends that differ (fs, CSV) must be self-tested with
   `moon test --target native`. (2026-10-09: a `scan_files` fixture built a nested
   `target/` with non-recursive `fs.create_dir`; local, JS and wasm-gc were green
   while CI native failed.)
+- Python reference tools are pinned in `harness/requirements.txt`; CI uses
+  Python 3.12 and prints the DuckDB/PyArrow versions. Use
+  `uv run --python 3.12 --with-requirements harness/requirements.txt python ...`
+  locally. DuckDB 2.0 removed relation `fetchone()`; use
+  `con.execute(sql).fetchall()[0]` for a single-row result. Fully consume cursor
+  results before a relation query: 2.0 rejects an unfinished result. The corpus
+  gate must fail on Python/API errors or missing recorded files, not count
+  them as successful skips.
 - Recent `moon` (since 0.1.20261012) rejects dependencies that still ship the old
   `moon.mod.json` manifest: graph resolution (now run by
   `moon check`/`moon build`/`moon test`, since a bare `moon install` no longer

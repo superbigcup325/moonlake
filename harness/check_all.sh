@@ -97,6 +97,6 @@ check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/d
 check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/dict_types/dict/t.parquet
 check_in harness/data/parquet/dict_types pqdictagg --parquet harness/data/parquet/dict_types/dict/t.parquet
 check_in harness/data/parquet/multigroup pqgroups --parquet harness/data/parquet/multigroup/two_groups/t.parquet
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 3 multi-row-group parquet)"
+echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 4 multi-row-group parquet)"
 echo "plus the external-sort / grace-join / grace-aggregation equivalence checks"
 echo "and the in-house parquet reader fixture checks"

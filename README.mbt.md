@@ -17,7 +17,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool, date, string) — out-of-range values widen, never wrap.
 - Parquet decoding is in-house (`sources/parquet`) and scoped on purpose: flat schemas, v1 data pages, PLAIN, dictionary, the DELTA family and BYTE_STREAM_SPLIT page encodings (the last five through colenc), RLE boolean values, `UNCOMPRESSED` and `SNAPPY`. Nested fields, INT96 timestamps, v2 pages, DECIMAL, UINT_32/UINT_64 and the other codecs are refused with a pointed error rather than guessed at (a decimal byte array read as text, or a UINT taken as signed, would be a wrong answer rather than a refusal). Writing is the same scope and now speaks the format rather than merely the encoding: `write_bytes` / `write_file` emit one row group per batch with v1 pages, PLAIN values, `STRING`/`DATE` annotations, and per-column-chunk statistics (`min_value`/`max_value`/`null_count`), so moonlake's own output is prunable by its own reader; `--snappy` (library: `write_bytes_with`) stores pages compressed, and `moonlake write --csv in.csv --out out.parquet` is the CLI path. Every column is written OPTIONAL with RLE definition levels (about one bit per value on disk, and what pyarrow does by default): that is what lets the input stream through one batch at a time instead of being materialized, since a REQUIRED schema would have to be decided before the first page is written. `harness/check_writer_interop.py` reads the result with pyarrow and DuckDB and reads a DuckDB-written file back.
 - Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
-- No FFI, no external database process, no storage engine — moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
+- No external database process or database FFI binding, no storage engine — the query engine is MoonBit; filesystem access uses `moonbitlang/x` (including its native system bindings). moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
 
 ### SQL surface
 
@@ -41,7 +41,7 @@ SQL correctness is validated by differential testing against DuckDB over the TPC
 
 ```bash
 uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
-bash harness/check_all.sh                         # 27 goldens: all PASS (22 TPC-H + parquet + 3 multi-row-group)
+bash harness/check_all.sh                         # 27 goldens: all PASS (22 TPC-H + parquet + 4 multi-row-group)
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (regenerate first: gen_tpch.py 0.1)
 ```
 
@@ -90,6 +90,7 @@ Parquet table with 8 row groups, a selective predicate drops from ~430 ms to
 
 ```bash
 git clone https://github.com/superbigcup325/moonlake && cd moonlake
+moon update
 moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
   "SELECT l_returnflag, sum(l_extendedprice) FROM lineitem WHERE l_shipdate <= date '1998-09-02' GROUP BY l_returnflag ORDER BY l_returnflag"
 # l_returnflag|sum_2
@@ -113,8 +114,10 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-> `moon add` gives you the latest release from mooncakes (0.3.1). Everything
-> this README describes is in it.
+> This README and the browser playground track `main` (`0.4.0-dev`). `moon add`
+> gives you the latest stable release from mooncakes (0.3.1), which does not
+> include the session playground, new Parquet writer or subsequent spill fixes.
+> See [CHANGELOG.md](CHANGELOG.md) for the development changes.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
@@ -158,7 +161,7 @@ fn main raise {
 
 ## Docs
 
-- **Playground** ([open](https://superbigcup325.github.io/moonlake/)): drag in one CSV/Parquet file, write SQL, and see the result table — the whole engine as wasm-gc, all client-side. (One uploaded table at a time, so cross-file joins are a CLI/library feature; the physical plan is `--explain` on the CLI.)
+- **Playground** ([open](https://superbigcup325.github.io/moonlake/)): register several CSV/Parquet files in a visible session, run cross-file joins, inspect the physical plan, and drop tables or clear the session — the whole engine as wasm-gc, all client-side.
 - **[docs/DEMO.md](docs/DEMO.md)**: the reproducible demo, from running the engine to the DuckDB cross-check and the benchmark.
 - **[docs/verification.md](docs/verification.md)**: the correctness and performance report (differential and property testing, pushdown fuzzing, memory and spill numbers).
 - **[docs/bench-baseline.md](docs/bench-baseline.md)**: the release performance baseline (scan/join/gather/spill) and the machine it belongs to, with a committed JSON record and a `--compare` mode.
@@ -184,16 +187,18 @@ sit next to, not on top of, its neighbours:
 
 ```bash
 moon check           # type-check
-moon test            # run tests
+moon test            # run tests on the preferred target (wasm-gc)
+moon test --target native  # filesystem/native backend tests
 moon fmt             # format
 moon run cmd/main    # run the CLI
 git config core.hooksPath hooks   # once per clone: pre-commit gate
 ```
 
-The pre-commit hook re-runs interface freshness (`moon info`),
-formatting, `moon check --deny-warn` and the tests before every
-commit — the same gates CI runs. CI covers native / wasm-gc / js test
-matrices plus the TPC-H cross-validation job.
+The pre-commit hook runs a fast local subset of CI: interface freshness
+(`moon info`), formatting, `moon check --deny-warn` and native tests. CI also
+runs the wasm-gc / js test matrix, regenerates TPC-H goldens, and checks the
+spill lifecycle, the real browser page and Parquet writer interop. Reference
+tools are pinned in [harness/requirements.txt](harness/requirements.txt).
 
 ## Acknowledgements
 
@@ -201,6 +206,7 @@ moonlake is being built on top of these open-source packages:
 
 - [moonbitlang/x](https://github.com/moonbitlang/x) (Apache-2.0) — filesystem, argument parsing and encoding utilities
 - [moonbitlang/quickcheck](https://github.com/moonbitlang/quickcheck) (Apache-2.0) — property-based testing
+- [superbigcup325/colenc](https://github.com/superbigcup325/colenc) (Apache-2.0) — Parquet DELTA, BYTE_STREAM_SPLIT and RLE encoding/decoding primitives
 - [apache/parquet-format](https://github.com/apache/parquet-format) (Apache-2.0) — the Parquet format and encoding specifications that `sources/parquet` implements; its [parquet-testing](https://github.com/apache/parquet-testing) corpus supplies the files the reader is verified against
 
 ## License

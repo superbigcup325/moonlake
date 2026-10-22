@@ -87,10 +87,14 @@ for shape, variant, options in VARIANTS:
     d.mkdir(parents=True, exist_ok=True)
     path = d / "t.parquet"
     con.execute(f"COPY {table} TO '{path}' (FORMAT PARQUET, {options})")
-    groups, got_rows = con.sql(
+    # Consume the complete result: DuckDB 2.0 rejects a relation query while a
+    # connection cursor still has an unfinished result, even after fetchone().
+    groups, got_rows = con.execute(
         f"select num_row_groups, num_rows from parquet_file_metadata('{path}')"
-    ).fetchone()
-    codec = con.sql(f"select distinct compression from parquet_metadata('{path}')").fetchone()[0]
+    ).fetchall()[0]
+    codec = con.execute(
+        f"select distinct compression from parquet_metadata('{path}')"
+    ).fetchall()[0][0]
     encodings = sorted(
         {e for (e,) in con.sql(f"select distinct encodings from parquet_metadata('{path}')").fetchall()}
     )

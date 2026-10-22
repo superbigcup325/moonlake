@@ -1,7 +1,7 @@
 # Generate TPC-H data via duckdb's built-in dbgen and store duckdb's
 # answers as golden files for moonlake to diff against.
 #
-# Usage: uv run --with duckdb python harness/gen_tpch.py [sf]
+# Usage: uv run --python 3.12 --with-requirements harness/requirements.txt python harness/gen_tpch.py [sf]
 
 import pathlib
 import re

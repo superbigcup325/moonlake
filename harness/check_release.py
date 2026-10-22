@@ -8,8 +8,8 @@
 #      runs on a tag) the tag name itself. 0.3.0 shipped after a manual review
 #      that found three of these four; nothing made them agree by construction.
 #   2. the archive `moon publish` would upload holds the files it should and
-#      none it should not. Only `moon package --list` answers this: `.gitignore`
-#      and `.git/info/exclude` are not consulted for packaging, and a
+#      none it should not. Only `moon package --list` answers this:
+#      `.git/info/exclude` and global gitignore are not consulted, and a
 #      `.moonignore` in a directory replaces that tree's `.gitignore`.
 #   3. optionally, `moon publish --dry-run` passes — the gate the project has
 #      always used, which unpacks the archive in a temp directory and checks it
