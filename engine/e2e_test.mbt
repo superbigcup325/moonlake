@@ -2489,6 +2489,49 @@ test "external sort under a tiny budget matches the in-memory result" {
 }
 
 ///|
+/// A fixture large enough that one run accumulates several sorted batches: the
+/// run writer flushes at budget/4, so a ~480 KB table at a ~400 KB budget puts
+/// four 4096-row sorted batches into one run file. At smaller budgets the runs
+/// happen to hold a single batch and the old bug stayed invisible.
+fn multi_chunk_spill_catalog(rows : Int32) -> @catalog.Catalog {
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<rows {
+    sb.write_string("g\{i % 5},\{(i * 37) % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat
+}
+
+///|
+/// Regression: a run file used to be a concatenation of independently sorted
+/// chunks, while the k-way merge reads it as one sorted stream. With SF0.1 and
+/// a 1 MB budget the spilled ORDER BY returned a top-3 whose maximum was below
+/// the true maximum; small budgets kept one chunk per run and stayed green.
+test "a run holding several sorted chunks still merges in order" {
+  let cat = multi_chunk_spill_catalog(60000)
+  let top = "SELECT k, v FROM t ORDER BY v DESC, k LIMIT 5"
+  let want_top = run(top, cat)
+  let whole = "SELECT k, v FROM t ORDER BY v, k"
+  let want_whole = run(whole, cat)
+  for budget in [200_000, 300_000, 400_000] {
+    assert_same_result(
+      want_top,
+      run_opts(top, cat, { budget, spill: Some(mem_store()), }),
+    )
+    assert_same_result(
+      want_whole,
+      run_opts(whole, cat, { budget, spill: Some(mem_store()), }),
+    )
+  }
+}
+
+///|
 test "external sort honors DISTINCT and desc/asc mixes" {
   let cat = spill_catalog()
   let q = "SELECT DISTINCT k FROM t ORDER BY k"

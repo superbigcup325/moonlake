@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- 2026-10-23 a spilled `ORDER BY` could return a wrong answer: the run writer
+  accumulated several independently sorted chunks and wrote them back to back,
+  while the final k-way merge reads each run file as one sorted stream. A run
+  that held pieces of more than one sorted batch was only piecewise sorted, so
+  the merge leaked chunk heads into the result — over SF0.1 at `--memory 1M`,
+  `ORDER BY l_extendedprice DESC LIMIT 3` reported 95799.5 as its maximum
+  instead of 95949.5. A 200 KB budget happened to keep one chunk per run, which
+  is why the acceptance check stayed green; the regression came from the new
+  benchmark oracle that compares answers, not stdout hashes. A run is now
+  sorted before it is written (bounded by `budget/4`), and join/aggregation
+  partition writers keep their unsorted runs. Recorded spill timings taken
+  before this fix are not comparable
 - 2026-10-23 `--json` (and the playground, whose `JSON.parse` runs on the same
   string) emitted a non-finite DOUBLE as a bare `Infinity`, `-Infinity` or
   `NaN` token, so one such value made the whole line invalid JSON — a division

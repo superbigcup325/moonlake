@@ -186,8 +186,8 @@ fn join_partitions(
   let wl : Array[RunWriter] = []
   let wr : Array[RunWriter] = []
   for _ in 0..<p {
-    wl.push({ store, budget, acc: [], acc_bytes: 0, ids: [], })
-    wr.push({ store, budget, acc: [], acc_bytes: 0, ids: [], })
+    wl.push({ store, budget, sort_keys: [], acc: [], acc_bytes: 0, ids: [], })
+    wr.push({ store, budget, sort_keys: [], acc: [], acc_bytes: 0, ids: [], })
   }
   for batch in left {
     partition_side(batch, step.keys_l, wl)

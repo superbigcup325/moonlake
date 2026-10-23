@@ -165,6 +165,7 @@ fn chunk_of(
 priv struct RunWriter {
   store : SpillStore
   budget : Int32
+  sort_keys : Array[(PhysExpr, Bool, Bool?)] // empty: partitions (join/agg), not sorted runs
   mut acc : Array[@types.DataBatch]
   mut acc_bytes : Int32
   ids : Array[Int32] // spill file ids in run order
@@ -190,7 +191,25 @@ fn RunWriter::flush(self : RunWriter) -> Unit raise @types.SqlError {
   if self.acc.length() == 0 {
     return
   }
-  let id = (self.store.write)(@types.DataBatch::to_spill_bytes(self.acc))
+  // A run file is read back as ONE sorted stream (RunReader assumes that), but
+  // the accumulator holds several independently sorted chunks/batches. Writing
+  // them back to back made every multi-chunk run only piecewise sorted, and the
+  // k-way merge then leaked chunk heads into the result: with a 1 MB budget the
+  // spilled ORDER BY over SF0.1 returned a top-3 whose maximum was below the
+  // true maximum (a smaller budget happened to hold one chunk per run, which is
+  // why the 200 KB acceptance check stayed green). Sort the run before writing;
+  // the accumulator is bounded by budget/4, which is the same bound the merge
+  // passes work under.
+  let payload = if self.sort_keys.length() > 0 {
+    let dts : Array[@types.DataType] = []
+    for col in self.acc[0].columns() {
+      dts.push(col.dtype())
+    }
+    [sort_exprs(concat_batches(self.acc, dts), self.sort_keys, None, None)]
+  } else {
+    self.acc
+  }
+  let id = (self.store.write)(@types.DataBatch::to_spill_bytes(payload))
   self.ids.push(id)
   self.acc = []
   self.acc_bytes = 0
@@ -213,7 +232,14 @@ fn external_sort_project(
   store : SpillStore,
   stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
-  let writer : RunWriter = { store, budget, acc: [], acc_bytes: 0, ids: [], }
+  let writer : RunWriter = {
+    store,
+    budget,
+    sort_keys: keys,
+    acc: [],
+    acc_bytes: 0,
+    ids: [],
+  }
   for batch in kept {
     if keys.length() > 0 && batch.row_count() > 1 {
       let sorted = sort_exprs(batch, keys, None, None)

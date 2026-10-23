@@ -73,7 +73,14 @@ fn grace_agg(
   }
   let writers : Array[RunWriter] = []
   for _ in 0..<p {
-    writers.push({ store, budget, acc: [], acc_bytes: 0, ids: [], })
+    writers.push({
+      store,
+      budget,
+      sort_keys: [],
+      acc: [],
+      acc_bytes: 0,
+      ids: [],
+    })
   }
   for batch in joined {
     partition_side(batch, group_exprs, writers)

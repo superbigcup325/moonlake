@@ -194,6 +194,27 @@ Verification:
   materialization (scan laziness is a separate item), and not the final result
   when there is no LIMIT
 
+**A wrong-answer bug found by the benchmark oracle (2026-10-23).** The release
+benchmark's spill case was timing a query whose answer was wrong above a
+certain budget. A run file is read back as one sorted stream, but the writer
+appended independently sorted chunks without merging them: a run that held
+pieces of more than one 4096-row batch was only piecewise sorted, and the k-way
+merge then emitted chunk heads out of order. Over SF0.1 at `--memory 1M`,
+`SELECT l_orderkey, l_extendedprice FROM lineitem ORDER BY l_extendedprice DESC,
+l_orderkey LIMIT 3` returned 95799.5 / 95749.5 / 95549.5 instead of 95949.5 /
+95899.5 / 95899.5. Every budget from 800 KB to 8 MB was affected; 100–400 KB and
+1.5 MB were not, which is exactly why the 200 KB equivalence check in
+`check_all.sh` and every engine test (one batch per run) stayed green. `RunWriter::flush`
+now sorts the accumulated run before writing it (`budget/4`, the same bound the
+merge passes work under); join and aggregation partition writers keep the old
+unsorted behaviour through an explicit empty key list. Evidence: the top row
+now matches in-memory at 100 KB / 200 KB / 400 KB / 800 KB / 1 MB / 1.5 MB /
+2 MB / 4 MB / 8 MB; a new engine test over a 60k-row fixture at 200–400 KB
+budgets fails (`Str("g0") != Str("g3")`) when the run sort is removed and
+passes with it; `spill_accept.sh` is 7/7 and the golden spill equivalence still
+matches. Timings recorded in `harness/baseline/` before this fix measured the
+same amount of I/O on a wrong ordering and are not comparable with later ones.
+
 CLI: `exec --memory <n>[K|M|G]` (with `--spill-dir <dir>`, defaulting to a
 per-run directory probed by suffix under TMPDIR, removed when the query ends).
 Library form: `execute_with(sql, catalog, opts)`.
