@@ -1174,3 +1174,107 @@ read the streamed files raw and Snappy); `moon package --list` ships
 
 Not done here: the 2 GiB page-offset limit still refuses larger files, and the
 sources still read a whole file because the fs API has no range reads (N2a).
+
+## 20. Parquet range reads (2026-10-23)
+
+Registration used to read the whole file even though it kept none of it: the
+reader's input was `() -> Bytes`, so "open a Parquet table" allocated a buffer
+the size of the archive, and the footer parse, the row-group statistics and the
+first decoded chunk all worked off that copy. Peak memory was therefore the file
+plus the decode working set, and the fs API in use (`moonbitlang/x/fs`) has no
+range read at all.
+
+**Mechanism.** `platform/io` — the native-only binding introduced for the write
+path — gained a read side: `open_read` (`O_RDONLY`), `size` (`fstat`) and
+`pread` (positioned, EINTR-retried, returns the byte count). `FileReader` wraps
+them as `open` / `size` / `read_at(offset, length)` / `close`, and `read_at`
+refuses a range that does not fit the file instead of returning a short read.
+The reader's input became `ParquetInput { size, read_at }`: an in-memory input
+slices, a native file input does one `pread` per range, and the wasm/js input
+keeps the whole-file read those hosts require. Because `read_at` is a function
+field rather than an enum with a `File` arm, a build that only scans in-memory
+content (the browser playground) still does not link the fs module, and
+`scan_bytes` is unchanged.
+
+Two reads replace the whole-file parse:
+
+- `read_footer` reads the last 8 bytes, checks the `PAR1` magic and the
+  little-endian footer length, then reads exactly the footer body and parses it.
+  A length whose top bit is set reads back negative and is rejected as such
+  rather than turned into an offset.
+- `decode_chunk` asks for one column chunk at a time (`chunk_range` keeps
+  `Int64` offsets, since a footer stores them that way) and decodes it from a
+  buffer that starts at 0, so every page offset inside the chunk is unchanged
+  and the decoder never learns where the chunk lives. A chunk larger than 2 GiB
+  is refused by column name instead of being narrowed silently.
+
+**Nothing is read twice per query, but the footer is parsed more than once.**
+`scan_file` parses it at registration, and `open` parses it again for each
+query. On a 287 MB archive that is ~2 KB of reads per parse — the flat
+`count(*)` peak below is that cost made visible.
+
+**Peak memory and wall time** (native release, one isolated child per run so
+`ru_maxrss` is that run's own high-water mark; SF0.1 `lineitem` multiplied 4× and
+8×, written by this build so both sides read the same file):
+
+| query | before | after |
+|---|---|---|
+| `count(*)`, 287 MB raw | 295.1 MB / 0.169 s | **12.3 MB** / 0.023 s |
+| `sum(l_quantity)`, 287 MB raw | 323.1 MB / 0.196 s | **37.2 MB** / 0.056 s |
+| `count(*)`, 574 MB raw | 584.6 MB / 0.450 s | **12.2 MB** / 0.044 s |
+| `sum(l_quantity)`, 574 MB raw | 629.9 MB / 0.531 s | **67.0 MB** / 0.115 s |
+| `count(*)`, 132 MB Snappy | 139.1 MB / 0.101 s | **12.2 MB** / 0.024 s |
+| `sum(l_quantity)`, 132 MB Snappy | 169.1 MB / 0.145 s | **37.2 MB** / 0.079 s |
+| `count(*) WHERE` 3 columns, 287 MB raw | 297.2 MB / 0.447 s | **12.2 MB** / 0.351 s |
+
+Three repeats of `sum(l_quantity)` on the 287 MB file: 323.0 / 322.7 / 323.0 MB
+before, 37.1 / 37.2 / 37.2 MB after. The before numbers track the input size
+(295 MB peak for a 287 MB file, 585 MB for 574 MB, 139 MB for the 132 MB Snappy
+file), which is the point: they were the file. The after numbers do not — a
+metadata-only query is flat at ~12 MB at both sizes, and a one-column aggregate
+is bounded by the row-group columns in flight (37 MB at 4×, 67 MB at 8×), not by
+the file — which is why the three-column `count(*) WHERE` row stays under the
+one-column aggregate: it reads its predicate columns, but keeps only a row mask
+instead of a column to aggregate. Wall time fell with the removed copy-and-touch pass, most visibly on
+`count(*)` where the old path paid a full read to answer from the footer.
+
+**Same answers.** Over the 2.4 M-row 287 MB archive, results match DuckDB
+exactly for row counts (`2402288`; `3604` for the three-column predicate; `342756`
+for the ship-mode filter) and within floating-point summation order for the
+sums (`sum(l_quantity)` = `61339208` on both; `sum(l_extendedprice)` differs in
+the last four digits, `86463717120.96204` vs `…95938`, as the two engines add the
+same values in different orders).
+
+**What the tests pin**, because no round-trip test can tell a range reader from a
+whole-file reader — both are correct:
+
+- a whitebox test installs an input that records every range. Registration is
+  exactly two reads (the 8-byte tail, then a body ending where the tail starts),
+  a one-column scan is exactly one chunk starting at byte 4, and a two-column
+  scan is two ranges in file order (the second begins where the first ended, so
+  the reader seeks rather than streams). The fixture is 256 rows so the bytes
+  read stay a small fraction of the file.
+- the two guards are exercised directly: a 2,000,000,001-byte chunk is refused
+  before any read is attempted and names the column, and a read past the end of
+  the input names the column and the byte range.
+- footer failures are covered from files on disk on every backend: a truncated
+  trailer (`missing PAR1 magic at the end of the file`), a `0xFFFFFFFF` footer
+  length (`footer length … does not fit`), a 4-byte file (`too short to be
+  Parquet`), and a path that does not exist (the message names it).
+- `FileReader` itself has its own tests in `platform/io`: exact ranges at head,
+  middle and tail of a written file, two reads in a row that must not disturb
+  each other (positioned reads, not a seek and a read), the past-the-end refusal,
+  a closed reader, and a missing path.
+
+**Gates.** `moon check --deny-warn` on native, wasm-gc and js; 236 / 227 / 227
+tests; 27 golden queries; spill 7/7; `check_writer_interop.py`. The release archive
+gains exactly the four new `sources/parquet` files and still ships the one C
+file, `platform/io/io_native.c`, which the write path already required. The published
+interface gained nothing: `platform/io` is native-only, so its generated
+interface stays empty on the default target, and `sources/parquet`'s public
+signatures are unchanged.
+
+Not done here: the writer's 2 GiB page-offset limit still refuses larger files
+(a reader no longer needs the relaxation, a writer still does), CSV scans still
+read whole files (N2b — the remaining memory term), and wasm-gc/js scans still
+read the whole file because their fs module cannot do better.

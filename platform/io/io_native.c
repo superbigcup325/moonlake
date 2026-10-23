@@ -1,7 +1,8 @@
-// Native file primitives for the Parquet writer and, later, the range reader.
+// Native file primitives for the Parquet writer and the Parquet range reader.
 //
-// Deliberately small: an fd sink (create/write/fsync/close), rename/unlink for
-// atomic replace, and process identity for temporary names. `moonbitlang/x`
+// Deliberately small: an fd sink (create/write/fsync/close), a positioned read
+// handle (open/size/pread/close), rename/unlink for atomic replace, and process
+// identity for temporary names. `moonbitlang/x`
 // 0.5.6 exposes only whole-file reads and writes, and a published native-only
 // dependency cannot be linked into a module that also builds for wasm-gc/js
 // (the build plan rejects it before any file is selected), so the binding lives
@@ -10,6 +11,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "moonbit.h"
@@ -43,6 +45,38 @@ MOONBIT_FFI_EXPORT int64_t moonlake_io_write(uint64_t handle,
 // returns 0. A failed fsync is reported, because it means the bytes may not be.
 MOONBIT_FFI_EXPORT int32_t moonlake_io_sync(uint64_t handle) {
   return fsync((int)handle - 1) == 0 ? 0 : -1;
+}
+
+// Read side. A separate handle keeps "written so far" out of the picture: a
+// reader never has to know how the file was produced, only where it is.
+MOONBIT_FFI_EXPORT uint64_t moonlake_io_open_read(moonbit_bytes_t path) {
+  int fd = open((const char *)path, O_RDONLY);
+  if (fd < 0) return 0;
+  return (uint64_t)(fd + 1);
+}
+
+// File size, or -1 on failure. A 0-byte file is a legal file, not an error, so
+// the failure value cannot be 0.
+MOONBIT_FFI_EXPORT int64_t moonlake_io_size(uint64_t handle) {
+  struct stat st;
+  if (fstat((int)handle - 1, &st) != 0) return -1;
+  return (int64_t)st.st_size;
+}
+
+// Positioned read into bytes[off..off+len): bytes read (a short read means the
+// caller asked for more than the file holds) or -1. Positioned reads keep the
+// descriptor's own offset free, so two ranges can be in flight without a seek.
+MOONBIT_FFI_EXPORT int64_t moonlake_io_pread(uint64_t handle, int64_t position,
+                                             moonbit_bytes_t bytes, int32_t off,
+                                             int32_t len) {
+  int fd = (int)handle - 1;
+  if (len <= 0) return 0;
+  ssize_t n;
+  do {
+    n = pread(fd, (char *)bytes + off, (size_t)len, (off_t)position);
+  } while (n < 0 && errno == EINTR);
+  if (n < 0) return -1;
+  return (int64_t)n;
 }
 
 MOONBIT_FFI_EXPORT int32_t moonlake_io_close(uint64_t handle) {

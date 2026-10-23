@@ -174,3 +174,113 @@ pub fn FileSink::abort(self : FileSink) -> Unit {
   ignore(close_ffi(self.handle))
   ignore(unlink_ffi(cstr(self.tmp_path)))
 }
+
+///|
+#borrow(path)
+extern "C" fn open_read_ffi(path : Bytes) -> UInt64 = "moonlake_io_open_read"
+
+///|
+extern "C" fn size_ffi(handle : UInt64) -> Int64 = "moonlake_io_size"
+
+///|
+#borrow(bytes)
+extern "C" fn pread_ffi(
+  handle : UInt64,
+  position : Int64,
+  bytes : Bytes,
+  off : Int32,
+  len : Int32,
+) -> Int64 = "moonlake_io_pread"
+
+///|
+/// Positioned reader over an existing file.
+///
+/// The read side of the same boundary as `FileSink`, and deliberately the same
+/// shape: a caller asks for a byte range and gets exactly that range or an
+/// error. Nothing here caches or seeks, so a Parquet reader can fetch a footer,
+/// then one column chunk at a time, without holding the file.
+pub struct FileReader {
+  handle : UInt64
+  size : Int64
+  mut closed : Bool
+}
+
+///|
+/// Open an existing file for reading. The size is captured here, once, so a
+/// later `read_at` can tell "past the end" from "the file changed under me"
+/// without a second `stat`.
+pub fn FileReader::open(path : String) -> FileReader raise IOFailure {
+  let handle = open_read_ffi(cstr(path))
+  if handle == 0 {
+    raise IOFailure("cannot open \{path}: \{last_error()}")
+  }
+  let size = size_ffi(handle)
+  if size < 0L {
+    let detail = last_error()
+    ignore(close_ffi(handle))
+    raise IOFailure("cannot size \{path}: \{detail}")
+  }
+  { handle, size, closed: false, }
+}
+
+///|
+/// Bytes in the file when it was opened.
+pub fn FileReader::size(self : FileReader) -> Int64 {
+  self.size
+}
+
+///|
+/// Read exactly `length` bytes starting at `offset`.
+///
+/// A short read is an error, not a shorter result: in a Parquet file a chunk
+/// that ends early means the footer lied, and silently decoding fewer pages
+/// would turn that into a wrong answer.
+pub fn FileReader::read_at(
+  self : FileReader,
+  offset : Int64,
+  length : Int32,
+) -> Bytes raise IOFailure {
+  if self.closed {
+    raise IOFailure("reader is already closed")
+  }
+  if offset < 0L || length < 0 {
+    raise IOFailure("cannot read \{length} bytes at \{offset}")
+  }
+  let end = offset + length.to_int64()
+  if end > self.size {
+    raise IOFailure(
+      "cannot read \{length} bytes at \{offset}: the file is \{self.size} bytes",
+    )
+  }
+  let out = Bytes::make(length, 0)
+  let mut done = 0
+  while done < length {
+    let n = pread_ffi(
+      self.handle,
+      offset + done.to_int64(),
+      out,
+      done,
+      length - done,
+    )
+    if n <= 0 {
+      raise IOFailure(
+        "short read at byte \{offset + done.to_int64()}: \{last_error()}",
+      )
+    }
+    done += n.to_int()
+  }
+  out
+}
+
+///|
+/// Release the handle. Idempotent, and a failure here does not invalidate bytes
+/// already read.
+pub fn FileReader::close(self : FileReader) -> Unit raise IOFailure {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  if close_ffi(self.handle) != 0 {
+    raise IOFailure("close failed: \{last_error()}")
+  }
+}

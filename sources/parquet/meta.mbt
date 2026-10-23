@@ -195,31 +195,32 @@ priv struct FileMeta {
 }
 
 ///|
-/// Parse the footer of a Parquet file: the structures after the column data,
-/// addressed by the little-endian footer length in the last 8 bytes.
-fn parse_footer(data : Bytes) -> FileMeta raise @types.SqlError {
-  let len = data.length()
-  if len < 12 {
-    raise parquet_error("file is \{len} bytes, too short to be Parquet")
+/// Read the footer of a Parquet file: the last 8 bytes carry the little-endian
+/// length of the structures that follow the column data, and only those bytes
+/// are read. Registration therefore costs a few KiB whatever the file size, and
+/// reading the rest of the file is a separate decision the caller makes.
+fn read_footer(input : ParquetInput) -> FileMeta raise @types.SqlError {
+  let size = (input.size)()
+  if size < 12L {
+    raise parquet_error("file is \{size} bytes, too short to be Parquet")
   }
-  if !(data[len - 4] == b'P' &&
-    data[len - 3] == b'A' &&
-    data[len - 2] == b'R' &&
-    data[len - 1] == b'1') {
+  let tail = (input.read_at)(size - 8L, 8)
+  if !(tail[4] == b'P' && tail[5] == b'A' && tail[6] == b'R' && tail[7] == b'1') {
     raise parquet_error("missing PAR1 magic at the end of the file")
   }
   let mut footer_len : Int32 = 0
   for i in 0..<4 {
-    footer_len = footer_len | (data[len - 8 + i].to_int() << (8 * i))
+    footer_len = footer_len | (tail[i].to_int() << (8 * i))
   }
-  if footer_len + 8 > len - 4 {
+  // a length whose top bit is set reads back negative, and "negative + 8" would
+  // slip past a "does it fit" test that only looks at the upper bound
+  if footer_len < 0 || footer_len.to_int64() + 8L > size - 4L {
     raise parquet_error(
-      "footer length \{footer_len} does not fit in a \{len} byte file",
+      "footer length \{footer_len} does not fit in a \{size} byte file",
     )
   }
-  let tr = Tr::new(data[:])
-  tr.pos = len - 8 - footer_len
-  parse_file_metadata(tr)
+  let footer = (input.read_at)(size - 8L - footer_len.to_int64(), footer_len)
+  parse_file_metadata(Tr::new(footer))
 }
 
 ///|

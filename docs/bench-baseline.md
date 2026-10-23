@@ -347,3 +347,24 @@ number that looks like a win.
 condition: `moon version` prints the path of the binary, which differs when a
 record is taken through a scratch `MOON_HOME` (needed because the default home
 is not writable here). The fingerprint now compares version and build hash.
+
+## Parquet reads after range reads (2026-10-23)
+
+The 0.4.0 numbers above include a reader that loaded each whole Parquet file.
+`sort/order_by` and the scan cases therefore carried the archive in memory as a
+fixed term; that term is gone (N2a, `verification.md` §20). This is an
+interleaved A/B of two binaries on this machine, one isolated child per run, both
+reading files written by the newer build so the bytes are identical:
+
+| query (4× SF0.1 `lineitem`) | 0.4.0 reader | range reader |
+|---|---|---|
+| `count(*)`, 287 MB raw | 295 MB / 169 ms | 12 MB / 23 ms |
+| `sum(l_quantity)`, 287 MB raw | 323 MB / 196 ms | 37 MB / 56 ms |
+| `count(*)`, 574 MB raw | 585 MB / 450 ms | 12 MB / 44 ms |
+| `sum(l_quantity)`, 574 MB raw | 630 MB / 531 ms | 67 MB / 115 ms |
+| `sum(l_quantity)`, 132 MB Snappy | 169 MB / 145 ms | 37 MB / 79 ms |
+
+The rule to carry forward: a Parquet case no longer scales its memory with the
+input file, so any future regression in these cases is scan or operator memory,
+not input size. The `parquet/*` cases in the records above were taken with the
+old reader and are comparable on answers, not on peak memory.

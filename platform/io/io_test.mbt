@@ -138,3 +138,94 @@ test "open in a missing directory fails and names the path" {
   let message = open_failure("target/io_sink_test/no-such-dir/x.bin")
   assert_true(message.contains("cannot create"))
 }
+
+///|
+fn must_read(path : String) -> @io.FileReader {
+  @io.FileReader::open(path) catch {
+    @io.IOFailure(message) => abort(message)
+  }
+}
+
+///|
+test "a reader returns exactly the requested range and the file size" {
+  let dir = test_dir()
+  let path = dir + "/range.bin"
+  @fs.write_bytes_to_file(path, b"0123456789")
+  let reader = must_read(path)
+  assert_eq(reader.size(), 10L)
+  let head = reader.read_at(0L, 4) catch {
+    @io.IOFailure(message) => abort(message)
+  }
+  assert_eq(@utf8.decode_lossy(head), "0123")
+  let middle = reader.read_at(3L, 4) catch {
+    @io.IOFailure(message) => abort(message)
+  }
+  assert_eq(@utf8.decode_lossy(middle), "3456")
+  let tail = reader.read_at(8L, 2) catch {
+    @io.IOFailure(message) => abort(message)
+  }
+  assert_eq(@utf8.decode_lossy(tail), "89")
+  // two ranges in a row must not disturb each other: positioned reads, not a
+  // seek and a read
+  let again = reader.read_at(0L, 2) catch {
+    @io.IOFailure(message) => abort(message)
+  }
+  assert_eq(@utf8.decode_lossy(again), "01")
+  reader.close() catch {
+    @io.IOFailure(message) => abort(message)
+  }
+}
+
+///|
+test "a range that runs past the end is an error, not a short read" {
+  let dir = test_dir()
+  let path = dir + "/short.bin"
+  @fs.write_bytes_to_file(path, b"abc")
+  let reader = must_read(path)
+  let mut raised = false
+  ignore(
+    reader.read_at(2L, 4) catch {
+      @io.IOFailure(message) => {
+        assert_true(message.contains("cannot read 4 bytes at 2"))
+        raised = true
+        b""
+      }
+    },
+  )
+  assert_true(raised)
+  reader.close() catch {
+    @io.IOFailure(message) => abort(message)
+  }
+}
+
+///|
+test "a reader refuses to work after it is closed" {
+  let dir = test_dir()
+  let path = dir + "/closed-read.bin"
+  @fs.write_bytes_to_file(path, b"abc")
+  let reader = must_read(path)
+  reader.close() catch {
+    @io.IOFailure(message) => abort(message)
+  }
+  let mut raised = false
+  ignore(
+    reader.read_at(0L, 1) catch {
+      @io.IOFailure(message) => {
+        assert_true(message.contains("already closed"))
+        raised = true
+        b""
+      }
+    },
+  )
+  assert_true(raised)
+}
+
+///|
+test "opening a path that does not exist fails and names it" {
+  let message = @io.FileReader::open("target/io_sink_test/no-such-file.bin") catch {
+    @io.IOFailure(message) =>
+      return assert_true(message.contains("cannot open"))
+  }
+  ignore(message)
+  abort("opening a missing file should have failed")
+}

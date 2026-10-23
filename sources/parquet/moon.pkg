@@ -24,5 +24,7 @@ options(
   targets: {
     "write_file_native.mbt": [ "native", "llvm" ],
     "write_file_other.mbt": [ "wasm", "wasm-gc", "js" ],
+    "scan_file_native.mbt": [ "native", "llvm" ],
+    "scan_file_other.mbt": [ "wasm", "wasm-gc", "js" ],
   },
 )

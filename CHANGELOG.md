@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- 2026-10-23 Parquet files are read in byte ranges instead of whole: the native
+  `platform/io` binding gained positioned reads (`pread` plus a size from
+  `fstat`) and a `FileReader`, and `scan_file` now reads the 8-byte trailer and
+  the footer at registration and one column chunk per projected column per row
+  group when a query runs. Peak RSS for a scan no longer grows with the file —
+  `count(*)` over a 287 MB archive drops from 295 MB to 12 MB (585 → 12 MB at
+  574 MB) and a one-column aggregate from 323 MB to 37 MB — and wall time falls
+  with the removed copy pass. Memory inputs (`scan_bytes`) and the wasm-gc/js
+  builds keep their existing behaviour behind the same signatures, so the public
+  interface is unchanged. Measured numbers and the range-level tests are in
+  `docs/verification.md` §20
+
 ### Added
 
 - 2026-10-23 native Parquet file output streams instead of buffering: a new

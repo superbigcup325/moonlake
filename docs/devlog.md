@@ -922,3 +922,41 @@ ships the C file. Two things this does not claim: the 2 GiB page-offset limit is
 still enforced, and a CSV input still costs memory in the scan, which is why the
 `--csv` numbers improve by the archive size instead of collapsing to the
 Parquet-input plateau.
+
+2026-10-23 (reader) — **The reader stops holding its input.** Goal: remove the
+same term from the read side, where it was even more visible — a scan of a 287 MB
+archive peaked at 295 MB before decoding anything, and `count(*)`, a query whose
+answer is in the footer, paid for the file. Registration read the whole thing to
+parse the footer and then kept it alive for the row groups.
+
+The native binding built for the writer already had the syscalls needed for the
+other half of the job, so the read side is one more C entry point and a
+`FileReader` in `platform/io`: positioned reads (`pread`) with a size from
+`fstat`, and a refusal when a range does not fit. The reader's input became
+`ParquetInput { size, read_at }` — a memory slice for `scan_bytes`, one `pread`
+per range on native, and the whole-file read every wasm/js host still requires,
+behind a target-split file. `read_footer` reads 8 tail bytes and then the footer
+body; `decode_chunk` reads one column chunk into a buffer that starts at 0, so
+page offsets inside a chunk are untouched and the decoder stays ignorant of file
+layout. Chunk offsets stay `Int64` because footers store them that way, and a
+chunk over 2 GiB is refused by column name instead of being narrowed.
+
+Quality boundary: this is a *reader* change, so the evidence has to be about
+reads, not answers — a whole-file reader returns the same rows. Two things hold
+it down. First, results: 2.4 M rows over a 287 MB archive match DuckDB on counts
+exactly and on sums within summation order. Second, ranges: a whitebox test
+installs an input that logs every range and asserts that registration is exactly
+two reads, that a one-column scan is exactly one chunk starting at byte 4, and
+that a two-column scan fetches two non-overlapping ranges in file order; the
+guards (2 GiB chunk, read past the end) and the footer failures (truncated
+trailer, negative footer length, four-byte file, missing path) are tested
+directly, and `FileReader` has its own tests including two positioned reads that
+must not disturb each other. 236/227/227 tests across native, wasm-gc and js with
+`--deny-warn`, 27 golden queries, 7 spill checks, writer interop unchanged.
+
+Peak RSS: 295 → 12 MB for `count(*)` on 287 MB, 585 → 12 MB on 574 MB, and
+one-column aggregates are now bounded by the row-group columns in flight
+(37 → 67 MB as input doubles) rather than by the file. What this does not claim:
+CSV scans still read whole files (that is the remaining memory term and N2b's
+subject), the writer's 2 GiB page-offset limit is untouched, and the browser
+build still pays a whole-file read because its fs module cannot do better.

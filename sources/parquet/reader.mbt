@@ -60,7 +60,11 @@ fn encoding_name(e : Encoding) -> String {
 }
 
 ///|
-fn chunk_range(cm : ColumnMeta) -> (Int32, Int32) raise @types.SqlError {
+/// Where one column chunk lives in the file: `(offset, length)` in absolute
+/// bytes. Offsets stay `Int64` because they are `Int64` in the footer and a
+/// `2 GiB` file is a legal Parquet file; only the length is narrowed, and only
+/// where a `Bytes` needs an `Int32` index.
+fn chunk_range(cm : ColumnMeta) -> (Int64, Int64) raise @types.SqlError {
   // a dictionary_page_offset of 0 is the deprecated "not set" spelling some
   // writers emit (the file starts with PAR1, so no page can live at 0)
   let start = match cm.dictionary_page_offset {
@@ -71,12 +75,37 @@ fn chunk_range(cm : ColumnMeta) -> (Int32, Int32) raise @types.SqlError {
   if start < 0L {
     raise unsupported("negative page offset")
   }
-  let start = start.to_int()
-  let size = cm.total_compressed_size.to_int()
-  if size < 0 || start + size < start {
+  let size = cm.total_compressed_size
+  if size < 0L || start + size < start {
     raise unsupported("column chunk size \{size} at \{start} overflows")
   }
-  (start, start + size)
+  (start, size)
+}
+
+///|
+/// Fetch one column chunk as its own buffer, so page offsets inside it start at
+/// 0 and the decoder never needs to know where the chunk lives in the file.
+///
+/// A chunk that does not fit in memory is refused by column name rather than
+/// failing somewhere inside the decoder: `Bytes` is `Int32`-indexed, and a
+/// silently truncated chunk would decode into a wrong answer.
+fn read_chunk(
+  input : ParquetInput,
+  offset : Int64,
+  length : Int64,
+  name : String,
+) -> Bytes raise @types.SqlError {
+  if length > 2000000000L {
+    raise unsupported(
+      "column \"\{name}\": column chunk of \{length} bytes exceeds the 2 GiB in-memory limit",
+    )
+  }
+  (input.read_at)(offset, length.to_int()) catch {
+    e =>
+      raise unsupported(
+        "column \"\{name}\": cannot read \{length} bytes at \{offset} (\{e})",
+      )
+  }
 }
 
 ///|
@@ -309,14 +338,18 @@ fn[T] decode_values(
 
 ///|
 fn decode_chunk(
-  data : Bytes,
+  input : ParquetInput,
   cm : ColumnMeta,
   max_def : Int32,
   el : SchemaElement,
 ) -> ColumnValues raise @types.SqlError {
   let name = el.name
   check_codec(cm, name)
-  let (start, end) = chunk_range(cm)
+  let (chunk_offset, chunk_length) = chunk_range(cm)
+  let data = read_chunk(input, chunk_offset, chunk_length, name)
+  // page offsets inside the chunk are now relative to this buffer
+  let start = 0
+  let end = data.length()
   let valid : Array[Bool] = []
   match el.physical {
     Some(BooleanT) => {

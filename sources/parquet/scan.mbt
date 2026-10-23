@@ -8,8 +8,9 @@
 // cannot match anything inside it (stats.mbt). Both are safe because the
 // engine still runs the predicate itself.
 //
-// Registration reads the file (the fs API has no range reads) but keeps no
-// bytes when the table came from a path; `open` re-reads it. FLOAT upcasts to
+// Nothing reads a whole file: registration fetches the footer (8 bytes plus the
+// footer), and each row group decodes one column chunk at a time, so peak memory
+// is one chunk per projected column rather than one file. FLOAT upcasts to
 // float64; a column named in `date_columns` lifts its INT32 payload to DATE,
 // which keeps DATE semantics in the catalog rather than in the decoder.
 
@@ -18,13 +19,18 @@
 const BATCH_SIZE : Int32 = @catalog.SCAN_BATCH_ROWS
 
 ///|
-/// Where the file's bytes live: in hand (playground, tests) or on disk. The
-/// reader is a function field, not an enum with a `File` arm: an enum arm
+/// Where the file's bytes live: in hand (playground, tests) or on disk, and in
+/// both cases read by byte range.
+///
+/// `read_at` is a function field, not an enum with a `File` arm: an enum arm
 /// would keep the filesystem call reachable from `scan_bytes`, and a wasm-gc
 /// build that only scans in-memory content (the browser playground) must not
-/// import the host's fs module at all.
+/// import the host's fs module at all. `size` is a plain call because the length
+/// is read from the current file each time it is asked for, and every offset
+/// decision (footer length, chunk range) is checked against it before a read.
 priv struct ParquetInput {
-  read : () -> Bytes raise @types.SqlError
+  size : () -> Int64 raise @types.SqlError
+  read_at : (Int64, Int32) -> Bytes raise @types.SqlError
 }
 
 ///|
@@ -35,28 +41,27 @@ priv struct ParquetSource {
 }
 
 ///|
-/// In-memory input: the bytes are already in hand, no filesystem involved.
+/// In-memory input: the bytes are already in hand, no filesystem involved. A
+/// range is a copy of the slice, which is what the playground pays for having
+/// the whole file in a JS string already.
 fn memory_input(content : Bytes) -> ParquetInput {
-  { read: fn() { content }, }
-}
-
-///|
-/// File-backed input: reads the bytes back on every open. Defined next to
-/// the only caller that needs it so a program holding just `scan_bytes`
-/// never links `@fs`.
-fn file_input(path : String) -> ParquetInput {
+  let length = content.length()
+  let total = length.to_int64()
   {
-    read: fn() raise @types.SqlError {
-      @fs.read_file_to_bytes(path) catch {
-        _ => raise @types.SqlError::Scan("cannot read file at \{path}")
+    size: fn() { total },
+    read_at: (offset, count) => {
+      let end = offset + count.to_int64()
+      if offset < 0L || count < 0 || end > total {
+        raise @types.SqlError::Scan(
+          "cannot read \{count} bytes at \{offset} of a \{length} byte buffer",
+        )
       }
+      let start = offset.to_int()
+      let out = Buffer(size_hint=count)
+      out.write_bytes(content[start:start + count])
+      out.to_bytes()
     },
   }
-}
-
-///|
-fn read_input(input : ParquetInput) -> Bytes raise @types.SqlError {
-  (input.read)()
 }
 
 ///|
@@ -156,9 +161,10 @@ pub fn scan_bytes(
 }
 
 ///|
-/// Scan a Parquet file from disk (native target; wasm targets load the bytes
-/// via the playground bridge and call scan_bytes). Registration reads the
-/// file for its footer and keeps only the path.
+/// Scan a Parquet file from disk. Registration reads the footer through a byte
+/// range (8 bytes of tail, then the footer itself) and keeps only the path;
+/// native targets read each column chunk when a query needs it, while wasm
+/// targets read the whole file once per open as their fs module requires.
 pub fn scan_file(
   path : String,
   table_name : String,
@@ -173,8 +179,7 @@ fn scan_input(
   table_name : String,
   date_columns : Array[String],
 ) -> @catalog.TableEntry raise @types.SqlError {
-  let content = read_input(input)
-  let meta = parse_footer(content)
+  let meta = read_footer(input)
   check_version(meta)
   // The schema gate runs first: it answers "can this reader represent the
   // file at all", and a file that is both out of scope and internally
@@ -210,7 +215,7 @@ fn scan_input(
 /// One scan: the surviving row groups, decoded one at a time and sliced into
 /// batches. Memory holds one row group's projected columns, never the table.
 priv struct ParquetStream {
-  data : Bytes
+  input : ParquetInput
   meta : FileMeta
   leaves : Array[(SchemaElement, Int32)]
   columns : Array[Int32] // projected, original column indexes
@@ -265,7 +270,7 @@ impl @catalog.BatchStream for ParquetStream with fn next(self) -> @types.DataBat
     let cols : Array[ColumnValues] = []
     for c in self.columns {
       let (el, max_def) = self.leaves[c]
-      let decoded = decode_chunk(self.data, rg.columns[c], max_def, el)
+      let decoded = decode_chunk(self.input, rg.columns[c], max_def, el)
       // the group's row count is the contract every slice relies on
       let got = match decoded {
         Bools(_, v) => v.length()
@@ -295,8 +300,7 @@ impl @catalog.ScanSource for ParquetSource with fn open(
   self,
   request : @catalog.ScanRequest,
 ) -> &@catalog.BatchStream raise @types.SqlError {
-  let data = read_input(self.input)
-  let meta = parse_footer(data)
+  let meta = read_footer(self.input)
   check_version(meta)
   let leaves = leaf_elements(meta)
   let columns : Array[Int32] = []
@@ -317,7 +321,7 @@ impl @catalog.ScanSource for ParquetSource with fn open(
     }
   }
   let stream : ParquetStream = {
-    data,
+    input: self.input,
     meta,
     leaves,
     columns,
@@ -339,8 +343,7 @@ impl @catalog.ScanSource for ParquetSource with fn plan(
   self,
   request : @catalog.ScanRequest,
 ) -> @catalog.ScanPlan raise @types.SqlError {
-  let data = read_input(self.input)
-  let meta = parse_footer(data)
+  let meta = read_footer(self.input)
   check_version(meta)
   let leaves = leaf_elements(meta)
   let mut skipped = 0
