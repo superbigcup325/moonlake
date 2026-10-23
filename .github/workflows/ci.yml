@@ -133,6 +133,10 @@ jobs:
           # one CLI run per case; the binary is already built above
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
         run: python3 harness/check_windows.py
+      - name: Parquet encoding evidence (page level)
+        env:
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
+        run: python3 harness/check_colenc_fixtures.py
 
   playground:
     # The page is the artifact candidates click first, and 0.3.0 shipped a wasm

@@ -278,6 +278,35 @@ different reasons now: they carry v2 data pages or ZSTD/GZIP compression. The
 colenc-backed paths are covered by embedded fixture tests in
 `sources/parquet/colenc_integration_test.mbt` instead.
 
+**5. Encoding evidence by source (2026-10-23).** A support matrix is only as
+good as the thing that can fail, so the three sources are named separately:
+**embedded fixtures** (hex constants in `colenc_integration_test.mbt`, the only
+source that runs on wasm-gc/js) — now checked *outside* MoonBit as well: the
+generator that wrote them was never recorded, so `check_colenc_fixtures.py`
+pins each constant's SHA-256, parses its page headers, and decodes its values
+with PyArrow rather than trusting the `.mbt` assertions; **regenerable set**
+(`harness/gen_colenc_fixtures.py` → `harness/data/parquet/colenc/`, manifest
+`harness/colenc_fixtures.json` with PyArrow version, exact `write_table`
+arguments, digests, observed pages and expected values) covering
+DELTA_BINARY_PACKED int32/int64 (nulls, int32/int64 boundaries), both DELTA
+string encodings (empty string and NULL in the same column), BYTE_STREAM_SPLIT
+float/double (nulls, −0.0, −1e300), SNAPPY + DELTA, four row groups and three
+data pages in one row group; **upstream corpus** (unchanged, nightly) — the only
+source whose bytes we do not control. Combinations that cannot be generated are
+not claimed: the generator refuses to write a case whose pages do not carry the
+claimed encoding, and PyArrow produces no v1-page DELTA file with a dictionary
+page, so "dictionary + DELTA" is not in the matrix.
+
+This closed the gap the audit found in the footer-only evidence: the gate reads
+`DATA_PAGE`/`DATA_PAGE_V2` headers (page type, version, encoding, `num_values`),
+not `ColumnChunkMetaData.encodings`, so a v2 page or a different encoding fails
+even if the footer still lists the claimed one. Negatives checked: replacing a
+fixture with a PLAIN-encoded file fails on its digest; editing the manifest's
+encoding claim fails on the observed pages; temporarily removing the
+DELTA_BYTE_ARRAY decoder makes the CLI comparison fail with the reader's own
+scan error. The 17 committed cases (8 embedded, 9 regenerable) verify 17/17,
+and the Python suite grew to 36 tests.
+
 **Write path**: `write_bytes` / `write_file` (same package) emit the scope the
 reader accepts — one row group per batch, one PLAIN data page per column,
 UNCOMPRESSED — with page bodies produced by colenc. A column that holds a NULL

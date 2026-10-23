@@ -212,6 +212,27 @@ refused by both. `--fixture <csv>` replays your own data (copied in as `t.csv`).
 Exit codes: 0 matched, 1 mismatch or gate failure, 2 environment/referee
 problem — there is no skip path.
 
+## Parquet encoding evidence (`check_colenc_fixtures.py`)
+
+```bash
+moon build cmd/main --target native
+MOONLAKE_BIN=_build/native/debug/build/cmd/main/main.exe \
+  uv run --python 3.12 --with-requirements harness/requirements.txt \
+  python harness/check_colenc_fixtures.py
+```
+
+Three kinds of evidence, kept apart: the **embedded** hex fixtures in
+`sources/parquet/colenc_integration_test.mbt` (they run on every target with no
+file system), the **regenerable** set under `harness/data/parquet/colenc/`
+(built by `gen_colenc_fixtures.py`, pinned in `harness/colenc_fixtures.json`),
+and the **upstream corpus** in `check_parquet_corpus.py`. For the first two the
+gate reads the actual page headers (`harness/parquet_pages.py`), so a file whose
+data pages are v2 or a different encoding fails instead of hiding behind the
+footer's encoding list; values are then decoded by PyArrow and by the CLI and
+compared cell for cell. Regenerate only with the versions in
+`harness/requirements.txt`; a fixture that stops demonstrating its encoding, or
+a disabled decoder, fails the gate.
+
 ## Writer interop (`check_writer_interop.py`)
 
 ```bash

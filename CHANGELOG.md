@@ -125,6 +125,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-23 the Parquet encoding evidence is now rebuildable and page-level:
+  `harness/gen_colenc_fixtures.py` writes the DELTA int32/int64, DELTA length and
+  byte-array, BYTE_STREAM_SPLIT float/double cases (nulls, empty strings,
+  boundaries, −0.0, SNAPPY, four row groups, three pages per group) and records
+  the PyArrow version, the exact write arguments and the digests in
+  `harness/colenc_fixtures.json`; `harness/check_colenc_fixtures.py` reads the
+  actual page headers of both those files and the embedded `colenc_integration_test`
+  fixtures, then compares values from PyArrow and from the CLI. A v2 page or a
+  different encoding fails even when the footer still lists the claimed one. The
+  `tpch` CI job and nightly run the gate
 - 2026-10-23 `harness/check_windows.py` replays the window-function differential
   that `docs/verification.md` §5.1 had only as history: a fixed nine-row fixture
   plus a 22-case list, DuckDB-refereed. Total-order results compare in sequence,
