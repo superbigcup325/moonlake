@@ -1064,3 +1064,52 @@ builtins, so the host-free gate is unaffected.
 
 These are local results for an unpublished development version; the pushed
 `4e58b3d` CI/nightly/Pages evidence in §16 does not cover this commit.
+
+## 18. 0.4.0 release (2026-10-23)
+
+Tag `v0.4.0` (annotated, on `ba039f3`) and
+[the GitHub release](https://github.com/superbigcup325/moonlake/releases/tag/v0.4.0)
+were created only after the same SHA passed CI, nightly and Pages, and after
+`moon publish --dry-run` returned `Server status: 202 Accepted`.
+
+**Publish.** `moon publish` (run through a scratch `MOON_HOME`, because the
+default toolchain home is not writable here) unpacked the archive, passed its
+own `moon check` on the extracted package and reported **`Server status: 200
+OK`** against mooncakes.io. `moon view superbigcup325/moonlake` now reports
+`Latest: 0.4.0`, published `2026-10-23T11:47:30Z`, four versions total.
+
+**Registry consumer.** `harness/check_consumer.py --registry-version 0.4.0`
+resolved the package from mooncakes with a fresh registry and dependency cache
+and no workspace override; native, wasm-gc and JS all return the expected
+version, CSV query, raw/Snappy Parquet round-trips, DATE/NULL values and table
+removal. Record: `.internal/registry-consumer-0.4.0.json` (local, not
+committed). Evidence boundary: this is a registry install of a **released**
+artifact, not the archive gate of §16.
+
+**Tag-triggered release workflow, first run ever.** `release.yml` had never
+executed through its tag trigger (0 runs before this release). On the tag push
+it ran green and checked the version claims including the tag
+(`moon.mod` / `moonlake.mbt` / CHANGELOG), the archive contents (163 files, no
+forbidden path) and the archive consumer on all three targets
+([run](https://github.com/superbigcup325/moonlake/actions/runs/39948442827)).
+The pre-tag CI and the dispatched nightly on `ba039f3` were green
+([CI](https://github.com/superbigcup325/moonlake/actions/runs/39947476168),
+[nightly](https://github.com/superbigcup325/moonlake/actions/runs/39947618462)),
+and Pages deployed that SHA
+([pages](https://github.com/superbigcup325/moonlake/actions/runs/39947476021)).
+
+**Deployed page.** The public page was driven in real Chromium with
+`MOONLAKE_EXPECT_VERSION=0.4.0`: 16/16 checks pass, including the exact version
+and the new non-finite-double row (`Infinity` / `NaN` render, status stays a row
+count). The page and the tag therefore agree on the release identity.
+
+**Performance.** Two records were taken on this machine for the release
+(`harness/baseline/2026-10-23-0.4.0.json` and a same-session 0.3.1 re-record
+from tag `v0.3.1`). The comparison refuses the spill case by design (0.3.1's
+output is wrong) and shows the sort fix costs ~16% CPU on that case; the
+scan/join deltas in that pair did not survive an interleaved A/B control
+(~5%), and `docs/bench-baseline.md` says so with numbers.
+
+Release limitations, unchanged: the writer still buffers its whole output, a
+SIGKILLed query's spill directory is not reclaimed (both wait on a native I/O
+decision), and non-finite doubles are strings rather than DuckDB's bare tokens.
