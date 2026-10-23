@@ -125,6 +125,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-23 `harness/check_windows.py` replays the window-function differential
+  that `docs/verification.md` §5.1 had only as history: a fixed nine-row fixture
+  plus a 22-case list, DuckDB-refereed. Total-order results compare in sequence,
+  unordered ones as a multiset with duplicate counts, an order-free `string_agg`
+  is row count only, and refusals are counted apart — valid SQL we refuse must
+  run in DuckDB, SQL the standard forbids must be refused by both. No skip path:
+  a referee error, a missing fixture or zero executed value cases fail the gate.
+  The `tpch` CI job runs the fixed list and nightly runs `--random 400`
 - 2026-10-22 `harness/check_consumer.py`: the packaged library is extracted
   into a temporary workspace and used by an independent consumer on native,
   wasm-gc and JS, resolving dependencies from a fresh registry/cache. The

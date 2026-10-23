@@ -117,6 +117,8 @@ jobs:
         run: |
           python3 -m pip install --quiet -r harness/requirements.txt
           python3 -c 'import sys, duckdb, pyarrow; print(sys.version); print(f"DuckDB {duckdb.__version__}, PyArrow {pyarrow.__version__}")'
+      - name: Build the native CLI
+        run: moon build cmd/main --target native
       - name: Generate TPC-H data and golden answers
         run: |
           python3 harness/gen_tpch.py
@@ -126,6 +128,11 @@ jobs:
         run: bash harness/check_all.sh
       - name: Spill lifecycle
         run: bash harness/spill_accept.sh
+      - name: Window differential (fixed cases, duckdb-refereed)
+        env:
+          # one CLI run per case; the binary is already built above
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
+        run: python3 harness/check_windows.py
 
   playground:
     # The page is the artifact candidates click first, and 0.3.0 shipped a wasm

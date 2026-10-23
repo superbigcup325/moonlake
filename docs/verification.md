@@ -143,6 +143,23 @@ GROUP BY constraints) each give a deterministic error. Reproduce: data and
 script are in the commit (`t.csv`, 8 rows + a 29-query list); e2e expected values
 are hand-computed and pinned in the window section of `engine/e2e_test.mbt`.
 
+**Re-runnable replacement (2026-10-23).** The 2026-10-04 record is history:
+its fixture and script are not on disk, so nobody could re-run it and the claim
+aged without evidence. `harness/check_windows.py` is the replacement, and it is
+deliberately a *new* case list, not a recovered one — the numbers below are not
+the old 29/29. It uses a fixed nine-row fixture (tied values, NULL sort keys, a
+NULL partition key) and 22 cases: 13 value comparisons (12 with a total order,
+compared in sequence; 1 without one, compared as a multiset with duplicate
+counts), 1 legality-only `string_agg` (a partition has no order contract, so
+the string itself is not pinned), and 8 refusal cases. Of those refusals, 2 are
+valid SQL this engine does not implement (an explicit frame clause, a window in
+`ORDER BY`) and 6 are window misuse the standard forbids — DuckDB must reject
+them too, so a refusal cannot pass by being invalid SQL. Runs: 13/13 value
+cases match DuckDB, `--random 400 --seed 20261023` matches 8/8. The gate has no
+skip path: a referee error, a missing fixture, or zero executed value cases all
+fail it, and a wrapper that returns a stable wrong answer exits 1 (checked). CI
+runs the fixed list in the `tpch` job and the seeded fixture in `nightly`.
+
 ## 5.2 ORDER BY external sort (2026-10-04)
 
 Mechanism: `ExecOptions { budget, spill }` injects a budget and a spill store

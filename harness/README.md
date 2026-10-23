@@ -187,6 +187,31 @@ string key, narrow vs wide vs nullable gather. It is how the packed two-key
 join (`69 ms → 14 ms` on 100k rows) was found and accepted; the numbers and the
 noise caveat are in [`docs/bench-baseline.md`](../docs/bench-baseline.md).
 
+## Window differential (`check_windows.py`)
+
+```bash
+moon build cmd/main --target native
+MOONLAKE_BIN=_build/native/debug/build/cmd/main/main.exe \
+  uv run --python 3.12 --with-requirements harness/requirements.txt \
+  python harness/check_windows.py
+# nightly uses a seeded 400-row fixture instead of the fixed nine rows:
+python harness/check_windows.py --random 400 --seed 20261023
+```
+
+This replays the window battery that `docs/verification.md` §5.1 only records
+as history: a fixed nine-row fixture (tied values, NULL sort keys, a NULL
+partition key) and 22 cases over the three ranking functions, whole-partition
+and running frames, `DISTINCT` aggregates, two windows in one select list,
+windows after aggregation, window values inside row expressions, and the
+documented refusals. A total order means rows compare in sequence through
+`compare.py`; without one they compare as a multiset with duplicate counts, so
+ties cannot fake a mismatch. An order-free `string_agg` is asserted for row
+count only, and refusals are counted apart from matches: valid SQL we refuse
+must run in DuckDB (a documented limit), SQL the standard forbids must be
+refused by both. `--fixture <csv>` replays your own data (copied in as `t.csv`).
+Exit codes: 0 matched, 1 mismatch or gate failure, 2 environment/referee
+problem — there is no skip path.
+
 ## Writer interop (`check_writer_interop.py`)
 
 ```bash
