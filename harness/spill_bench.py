@@ -11,8 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
+import pathlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -78,6 +80,30 @@ def measure(args: list[str]) -> tuple[float, int, str]:
     return float(wall), int(rss), "\n".join(lines[1:])
 
 
+def csv_fingerprint(path: pathlib.Path) -> tuple[int, str]:
+    """Rows and the first column's text checksum, read without the engine.
+
+    The driver checksums the spill format's write against its own read, which
+    only proves the format round-trips — the same encoder and decoder could be
+    wrong together. This is the outside view: the CSV's own first-field text,
+    hashed with the same FNV-1a 64 the driver uses (mix the bytes, then a 0
+    separator after every value).
+    """
+    rows = 0
+    h = 14695981039346656037
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        next(handle, None)  # header
+        for line in handle:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            rows += 1
+            for byte in line.split(",", 1)[0].encode("utf-8"):
+                h = ((h ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+            h = ((h ^ 0) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return rows, format(h, "x")
+
+
 def checksum(output: str, tag: str) -> str:
     for line in output.splitlines():
         if line.startswith(tag) and "checksum=" in line:
@@ -125,8 +151,23 @@ def main() -> int:
     r_sum = checksum(read_out, "read")
     if w_sum != r_sum:
         raise SystemExit(f"checksum mismatch: write {w_sum} read {r_sum}")
+    write_rows = int(write_out.split("rows=")[1].split()[0])
+    csv_rows, csv_col0 = csv_fingerprint(pathlib.Path(args.csv))
+    driver_col0 = {}
+    for tag, text in (("write", write_out), ("read", read_out)):
+        match = re.search(r"col0=([0-9a-f]+)", text)
+        if not match:
+            raise SystemExit(f"driver did not report the {tag} col0 text checksum: {text}")
+        driver_col0[tag] = match.group(1)
+    if write_rows != csv_rows:
+        raise SystemExit(f"row count: driver {write_rows}, CSV has {csv_rows} data rows")
+    if driver_col0["write"] != csv_col0 or driver_col0["read"] != csv_col0:
+        raise SystemExit(
+            "first column does not match the CSV: "
+            f"csv {csv_col0}, write {driver_col0['write']}, read {driver_col0['read']}"
+        )
 
-    print(f"rows     {write_out.split('rows=')[1].split()[0]}")
+    print(f"rows     {write_rows} (CSV data rows {csv_rows}, first column verified)")
     print(f"bytes    {size} ({size / (1 << 20):.2f} MiB)")
     print(f"write    {w_wall * 1000:.1f} ms   peak RSS {w_rss / 1024:.1f} MiB")
     print(f"read     {r_wall * 1000:.1f} ms   peak RSS {r_rss / 1024:.1f} MiB")

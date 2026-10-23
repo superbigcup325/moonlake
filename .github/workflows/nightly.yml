@@ -46,6 +46,12 @@ jobs:
         env:
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
         run: python3 harness/check_colenc_fixtures.py
+      - name: Benchmark answers agree with duckdb
+        env:
+          # no release build in this job: the oracle only needs a CLI, not a
+          # timed binary, so correctness runs on the debug binary
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
+        run: python3 harness/bench_release.py --check-oracles --no-build --binary _build/native/debug/build/cmd/main/main.exe
       - name: Window differential (seeded random fixture)
         env:
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe

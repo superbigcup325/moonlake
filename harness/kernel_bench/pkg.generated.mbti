@@ -8,6 +8,8 @@ package "superbigcup325/moonlake/harness/kernel_bench"
 // Types and methods
 type Case
 
+type Expect
+
 // Type aliases
 
 // Traits

@@ -63,6 +63,24 @@ fn checksum(batches : Array[@types.DataBatch]) -> UInt64 {
 }
 
 ///|
+/// FNV-1a 64 over the *text* of one column, one value per row with a 0
+/// separator. The Python wrapper recomputes it from the CSV's own field text,
+/// so this is content evidence that does not trust the format's own checksum.
+fn text_checksum(batches : Array[@types.DataBatch], col : Int32) -> UInt64 {
+  let mut h = 14695981039346656037UL
+  for batch in batches {
+    let column = batch.columns()[col]
+    for r in 0..<batch.row_count() {
+      for b in @utf8.encode(column.get(r).to_string()) {
+        h = mix(h, b.to_int().to_uint64())
+      }
+      h = mix(h, 0UL)
+    }
+  }
+  h
+}
+
+///|
 fn rows(batches : Array[@types.DataBatch]) -> Int64 {
   let mut n = 0L
   for batch in batches {
@@ -119,7 +137,7 @@ fn main raise {
     @fs.write_bytes_to_file(out, bytes)
     write_sum = checksum(batches)
     println(
-      "write bytes=\{bytes.length()} rows=\{rows(batches)} checksum=\{write_sum.to_string(radix=16)}",
+      "write bytes=\{bytes.length()} rows=\{rows(batches)} checksum=\{write_sum.to_string(radix=16)} col0=\{text_checksum(batches, 0).to_string(radix=16)}",
     )
   }
   let source = if input != "" { input } else { out }
@@ -128,7 +146,7 @@ fn main raise {
     let batches = @types.DataBatch::from_spill_bytes(bytes)
     read_sum = checksum(batches)
     println(
-      "read rows=\{rows(batches)} checksum=\{read_sum.to_string(radix=16)}",
+      "read rows=\{rows(batches)} checksum=\{read_sum.to_string(radix=16)} col0=\{text_checksum(batches, 0).to_string(radix=16)}",
     )
   }
   if mode == "both" && write_sum != read_sum {

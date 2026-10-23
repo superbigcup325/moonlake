@@ -1,8 +1,10 @@
 import {
   "superbigcup325/moonlake",
   "superbigcup325/moonlake/types",
+  "superbigcup325/moonlake/engine",
   "superbigcup325/moonlake/catalog",
   "moonbitlang/core/bench",
+  "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/string",
 }

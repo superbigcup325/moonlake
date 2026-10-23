@@ -137,6 +137,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- 2026-10-23 the release benchmark verifies answers instead of only hashing
+  stdout: every timed case is compared against DuckDB over the same files
+  outside the timed region (`--check-oracles` runs just that check, `--no-oracle`
+  opts out), `kernel_bench` checks each case against the table it built and
+  `spill_bench.py` recomputes the first column's checksum from the CSV. A
+  mismatch aborts the record. Comparator behaviour gained 14 self-tests
+  (environment/data refusal, output change and instability, missing fields,
+  added/removed cases, spread band); the check immediately found the wrong
+  spilled-sort answer fixed above
 - 2026-10-23 the Parquet encoding evidence is now rebuildable and page-level:
   `harness/gen_colenc_fixtures.py` writes the DELTA int32/int64, DELTA length and
   byte-array, BYTE_STREAM_SPLIT float/double cases (nulls, empty strings,

@@ -27,6 +27,137 @@
 struct Case {
   name : String
   sql : String
+  expect : Expect
+}
+
+///|
+/// What the case must return, so a stable wrong answer cannot be timed and
+/// reported as a kernel cost. `Count` cases emit one row with one Int64; the
+/// gather cases must return exactly the registered table's columns.
+enum Expect {
+  Count
+  Rows(String, Int32)
+}
+
+///|
+/// FNV-1a 64 over every scalar of a row, dtype tag mixed in so a schema
+/// mix-up cannot pass. Per-row hashes are summed (order-independent) and the
+/// row count is kept, so duplicates and drops both change the bag.
+fn mix(h : UInt64, v : UInt64) -> UInt64 {
+  (h ^ v) * 1099511628211UL
+}
+
+///|
+fn dtype_tag(dt : @types.DataType) -> UInt64 {
+  match dt {
+    Int32 => 0x11UL
+    Int64 => 0x12UL
+    Float64 => 0x13UL
+    Str => 0x14UL
+    Bool => 0x15UL
+    Date => 0x16UL
+  }
+}
+
+///|
+fn mix_scalar(h : UInt64, s : @types.Scalar) -> UInt64 {
+  match s {
+    Null => mix(h, 0xFFUL)
+    Boolean(v) => mix(h, if v { 2UL } else { 1UL })
+    Int32(v) => mix(h, v.to_int64().reinterpret_as_uint64())
+    Int64(v) => mix(h, v.reinterpret_as_uint64())
+    Float64(v) => mix(h, v.reinterpret_as_uint64())
+    Date(v) => mix(h, v.to_int64().reinterpret_as_uint64())
+    Str(v) => {
+      let mut x = h
+      for b in @utf8.encode(v) {
+        x = mix(x, b.to_int().to_uint64())
+      }
+      mix(x, 0xFEUL)
+    }
+  }
+}
+
+///|
+/// (row count, sum of per-row hashes) over the first `cols` columns.
+fn bag_of_batches(
+  batches : Array[@types.DataBatch],
+  cols : Int32,
+) -> (Int64, UInt64) {
+  let mut rows = 0L
+  let mut sum = 0UL
+  for batch in batches {
+    for r in 0..<batch.row_count() {
+      let mut h = 14695981039346656037UL
+      for c in 0..<cols {
+        let column = batch.columns()[c]
+        h = mix(h, dtype_tag(column.dtype()))
+        h = mix_scalar(h, column.get(r))
+      }
+      sum = sum + h
+    }
+    rows += batch.row_count().to_int64()
+  }
+  (rows, sum)
+}
+
+///|
+fn entry_bag(
+  entry : @catalog.TableEntry,
+  cols : Int32,
+) -> (Int64, UInt64) raise {
+  let batches = entry.scan(@catalog.ScanRequest::all(cols))
+  bag_of_batches(batches, cols)
+}
+
+///|
+fn result_bag(result : @engine.SelectResult) -> (Int64, UInt64) {
+  bag_of_batches([result.batch()], result.types().length())
+}
+
+///|
+/// Check one case's answer and return its output row count.
+fn verify(
+  case : Case,
+  result : @engine.SelectResult,
+  w : @catalog.TableEntry,
+  wn : @catalog.TableEntry,
+  rows : Int32,
+) -> Int64 raise {
+  match case.expect {
+    Count => {
+      if result.row_count() != 1 || result.types().length() != 1 {
+        let msg = "kernel_bench \{case.name}: expected one row of one column, got \{result.row_count()}x\{result.types().length()}"
+        eprintln(msg)
+        abort(msg)
+      }
+      if result.get(0, 0) != @types.Scalar::Int64(rows.to_int64()) {
+        let msg = "kernel_bench \{case.name}: count is \{result.get(0, 0).to_string()}, expected \{rows}"
+        eprintln(msg)
+        abort(msg)
+      }
+      result.row_count().to_int64()
+    }
+    Rows(table, cols) => {
+      let entry = match table {
+        "w" => w
+        "wn" => wn
+        _ => {
+          let msg = "kernel_bench \{case.name}: no such table \{table}"
+          eprintln(msg)
+          abort(msg)
+        }
+      }
+      let (want_rows, want_sum) = entry_bag(entry, cols)
+      let (got_rows, got_sum) = result_bag(result)
+      if got_rows != want_rows || got_sum != want_sum {
+        let msg = "kernel_bench \{case.name}: output does not match the source table (\{got_rows} rows vs \{want_rows}, hash \{got_sum.to_string(radix=16)} vs \{want_sum.to_string(radix=16)})"
+        eprintln(msg)
+        abort(msg)
+      }
+      got_rows
+    }
+  }
 }
 
 ///|
@@ -194,31 +325,37 @@ fn main raise {
   cat.register(int_table("b2", rows, 2))
   cat.register(str_key_table("sa", rows))
   cat.register(str_key_table("sb", rows))
-  cat.register(wide_table("w", rows, false))
-  cat.register(wide_table("wn", rows, true))
+  let w = wide_table("w", rows, false)
+  let wn = wide_table("wn", rows, true)
+  cat.register(w)
+  cat.register(wn)
 
   let cases : Array[Case] = [
-    { name: "scan/count", sql: "SELECT count(*) FROM w", },
-    { name: "scan/count_a", sql: "SELECT count(*) FROM a", },
+    { name: "scan/count", sql: "SELECT count(*) FROM w", expect: Count, },
+    { name: "scan/count_a", sql: "SELECT count(*) FROM a", expect: Count, },
     {
       name: "join/comma_where",
       sql: "SELECT count(*) FROM a, b WHERE a.k0 = b.k0",
+      expect: Count,
     },
     {
       name: "join/int_key",
       sql: "SELECT count(*) FROM a JOIN b ON a.k0 = b.k0",
+      expect: Count,
     },
     {
       name: "join/two_key",
       sql: "SELECT count(*) FROM a2 JOIN b2 ON a2.k0 = b2.k0 AND a2.k1 = b2.k1",
+      expect: Count,
     },
     {
       name: "join/str_key",
       sql: "SELECT count(*) FROM sa JOIN sb ON sa.s = sb.s",
+      expect: Count,
     },
-    { name: "gather/narrow", sql: "SELECT c0 FROM w", },
-    { name: "gather/wide", sql: "SELECT * FROM w", },
-    { name: "gather/nullable", sql: "SELECT * FROM wn", },
+    { name: "gather/narrow", sql: "SELECT c0 FROM w", expect: Rows("w", 1), },
+    { name: "gather/wide", sql: "SELECT * FROM w", expect: Rows("w", 8), },
+    { name: "gather/nullable", sql: "SELECT * FROM wn", expect: Rows("wn", 8), },
   ]
   println("# kernel bench: \{rows} rows, best of \{runs}, native release")
   println("case\tbest_ms\trows_out")
@@ -232,8 +369,13 @@ fn main raise {
         continue
       }
     }
-    let n = @moonlake.execute(c.sql, cat) catch { _ => abort("") }
+    // The answer is checked outside the timed region against the table the
+    // driver built, so a stable wrong answer cannot be reported as a cost.
+    let result = @moonlake.execute(c.sql, cat) catch {
+      e => abort("kernel_bench \{c.name}: \{e}")
+    }
+    let out_rows = verify(c, result, w, wn, rows)
     let rounded = (best * 1000.0).round() / 1000.0
-    println("\{c.name}\t\{rounded}\t\{n.row_count()}")
+    println("\{c.name}\t\{rounded}\t\{out_rows}")
   }
 }

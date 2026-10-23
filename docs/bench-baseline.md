@@ -265,3 +265,26 @@ hold. The rest is not the writer: the CSV source reads the whole file into
 anything, and `write_bytes` still accumulates the archive because the fs API has
 no incremental write. Writing from `lineitem.parquet` (84.8 MB, no CSV parse)
 shows the split more cleanly: 407 → 328 MB raw and 286 → 203 MB with Snappy.
+
+## Answers are checked before numbers are recorded (2026-10-23)
+
+`--compare` has always refused to print deltas across different machines, data
+or builds, and it flags a changed stdout hash. Neither can tell a stable wrong
+answer from a right one: a query that returns the same incorrect rows every run
+hashes just as consistently as a correct one. `bench_release.py` now also checks
+each timed case's answer against DuckDB, outside the timed region, with views
+over the same files (`read_csv_auto` / `read_parquet`) — the reference has its
+own parser and its own plan. Q3's top-10 compares as a multiset because revenue
+ties leave no total order; the golden chain already pins its exact order. A
+mismatch aborts the run instead of writing a record (`--check-oracles` runs only
+this check, `--no-oracle` opts out and says so in the record's conditions).
+
+The check paid for itself immediately: it found that a spilled `ORDER BY` was
+returning a wrong answer at budgets between 800 KB and 8 MB (see
+`verification.md` §5.2). Every spill number recorded before that fix timed an
+incorrect sort and must not be compared with later ones. The kernel and spill
+format drivers now check their own answers too: `kernel_bench` verifies each
+case against the table it built (count value, or an order-independent row bag
+over the projected columns) and `spill_bench.py` recomputes the first column's
+text checksum from the CSV, so the format's write/read checksum pair is not the
+only evidence.

@@ -133,6 +133,16 @@ binary). Numbers are only comparable on the same machine and data (TPC-H
 SF0.1, tracked in `harness/data/sf01`; SF0.01 was too short to survive host
 noise).
 
+Answers are checked, not just hashed: after the timed runs each case's output
+is compared against DuckDB over the same files, outside the timed region, and a
+mismatch aborts the record. `--check-oracles` runs only that check (nightly
+uses it on the debug binary), `--no-oracle` skips it and says so — a stable
+wrong answer used to hash exactly as consistently as a right one, and that is
+how a broken spilled sort was recorded as a baseline. Comparator behaviour is
+covered by `test_bench_release.py` (environment/data mismatch refusal, changed
+or unstable output, missing fields, added/removed cases, the run-spread band),
+which runs with the other Python tests and needs no data or timings.
+
 ## Release provenance (`check_release.py`)
 
 ```bash
@@ -186,6 +196,13 @@ two of them isolates one structural cost — one int key vs two int keys vs a
 string key, narrow vs wide vs nullable gather. It is how the packed two-key
 join (`69 ms → 14 ms` on 100k rows) was found and accepted; the numbers and the
 noise caveat are in [`docs/bench-baseline.md`](../docs/bench-baseline.md).
+Every case now verifies its answer outside the timed region before printing a
+number: the count cases must return the built row count, and the gather cases
+must match an order-independent row bag (count plus the sum of per-row hashes)
+over the source table they select from. A wrong answer aborts the run. The same
+rule applies to `spill_bench.py`, which recomputes the first column's text
+checksum from the CSV instead of trusting the format's write/read checksum
+pair.
 
 ## Window differential (`check_windows.py`)
 

@@ -415,6 +415,177 @@ def spill_format_cases(
     return cases, numbers
 
 
+def _compare_module():
+    """harness/compare.py is the one cell-comparison rule set in this repo."""
+    sys.path.insert(0, str(REPO / "harness"))
+    import compare
+
+    return compare
+
+
+def _fmt(value) -> str:
+    """A DuckDB cell as the CLI would spell it."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+# An answer the timing cases must agree with, evaluated outside the timed
+# region. stdout's SHA-256 already says "this case always does the same work";
+# it cannot say the work is right — a runner that returns a stable wrong answer
+# hashes just as consistently. These are read_csv_auto/read_parquet views over
+# the same files, so the reference has its own parser and its own plan.
+ORACLES: dict[str, dict] = {
+    "scan/count_csv": {
+        "sql": "SELECT count(*) FROM lineitem",
+        "tables": {"lineitem": ("csv", "lineitem.csv")},
+    },
+    "scan/filtered_count_csv": {
+        "sql": "SELECT count(*) FROM lineitem WHERE l_quantity < 24",
+        "tables": {"lineitem": ("csv", "lineitem.csv")},
+    },
+    "scan/parquet_count": {
+        "sql": "SELECT count(*) FROM lineitem",
+        "tables": {"lineitem": ("parquet", "lineitem.parquet")},
+    },
+    "scan/parquet_sum": {
+        "sql": "SELECT sum(l_quantity) FROM lineitem",
+        "tables": {"lineitem": ("parquet", "lineitem.parquet")},
+    },
+    "join/two_table_count": {
+        "sql": "SELECT count(*) FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey",
+        "tables": {
+            "lineitem": ("csv", "lineitem.csv"),
+            "orders": ("csv", "orders.csv"),
+        },
+    },
+    "gather/wide_projection": {
+        "sql": "SELECT sum(l_extendedprice) FROM (SELECT * FROM lineitem WHERE l_tax > 0.0) t",
+        "tables": {"lineitem": ("csv", "lineitem.csv")},
+    },
+    "gather/self_join_fanout": {
+        "sql": "SELECT count(*) FROM lineitem a JOIN lineitem b ON a.l_orderkey = b.l_orderkey AND b.l_linenumber = 1",
+        "tables": {"lineitem": ("csv", "lineitem.csv")},
+    },
+    "spill/order_by_wide": {
+        "sql": "SELECT l_orderkey, l_extendedprice FROM lineitem ORDER BY l_extendedprice DESC, l_orderkey LIMIT 3",
+        "tables": {"lineitem": ("csv", "lineitem.csv")},
+    },
+    # Q3's top-10 has no total order (revenue ties), so it compares as a
+    # multiset; the golden chain already pins the exact order.
+    "join/q3": {
+        "sql": (QUERIES / "q3.sql").read_text().strip(),
+        "tables": {
+            "customer": ("csv", "customer.csv"),
+            "orders": ("csv", "orders.csv"),
+            "lineitem": ("csv", "lineitem.csv"),
+        },
+        "mode": "multiset",
+    },
+}
+
+
+def duckdb_answer(case_id: str, data: pathlib.Path) -> list[list[str]]:
+    import duckdb
+
+    spec = ORACLES[case_id]
+    con = duckdb.connect()
+    try:
+        for name, (kind, filename) in spec["tables"].items():
+            path = (data / filename).as_posix()
+            source = (
+                f"read_csv_auto('{path}', header=true)"
+                if kind == "csv"
+                else f"read_parquet('{path}')"
+            )
+            con.execute(f"CREATE VIEW {name} AS SELECT * FROM {source}")
+        rows = con.execute(spec["sql"]).fetchall()
+    finally:
+        con.close()
+    return [[_fmt(value) for value in row] for row in rows]
+
+
+def cli_answer(cmd: list[str], cwd: pathlib.Path) -> list[list[str]]:
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"oracle run failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stderr[-2000:]}"
+        )
+    lines = proc.stdout.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if not lines:
+        raise SystemExit(f"oracle run printed no header: {' '.join(cmd)}")
+    return [line.split("|") for line in lines[1:]]
+
+
+def _multiset_equal(got: list[list[str]], want: list[list[str]], cell_eq) -> bool:
+    """Greedy tolerance-aware multiset equality; the answer sets are tiny."""
+    if len(got) != len(want):
+        return False
+    remaining = list(want)
+    for row in got:
+        for i, candidate in enumerate(remaining):
+            if len(candidate) == len(row) and all(
+                cell_eq(a, b) for a, b in zip(row, candidate)
+            ):
+                remaining.pop(i)
+                break
+        else:
+            return False
+    return not remaining
+
+
+def check_oracles(
+    cases: list[dict], specs: list[dict], binary: pathlib.Path, data: pathlib.Path
+) -> list[str]:
+    """Verify each timed case's answer outside the timed region.
+
+    Mutates every matched case record with `oracle: {rows, matched}` and returns
+    the failures; the caller aborts on a non-empty list, so a stable wrong answer
+    cannot be recorded as a baseline.
+    """
+    compare = _compare_module()
+    by_id = {spec["id"]: spec for spec in specs}
+    failures: list[str] = []
+    for case in cases:
+        case_id = case["id"]
+        if case_id not in ORACLES:
+            continue
+        spec = by_id[case_id]
+        argv = [
+            arg.format(spill_dir=str(pathlib.Path(tempfile.mkdtemp(prefix="moonlake-oracle-"))))
+            if isinstance(arg, str)
+            else str(arg)
+            for arg in spec["argv"]
+        ]
+        want = duckdb_answer(case_id, data)  # referee errors propagate: no skip
+        got = cli_answer([str(binary), "exec", *argv], REPO)
+        mode = ORACLES[case_id].get("mode", "ordered")
+        if mode == "multiset":
+            matched = _multiset_equal(got, want, compare.cell_eq)
+        else:
+            matched = len(got) == len(want) and all(
+                len(g) == len(w)
+                and all(compare.cell_eq(a, b) for a, b in zip(g, w))
+                for g, w in zip(got, want)
+            )
+        case["oracle"] = {"referee": "duckdb", "rows": len(want), "mode": mode, "matched": matched}
+        if not matched:
+            failures.append(
+                f"{case_id}: the timed answer disagrees with duckdb "
+                f"(moonlake {got[:2]} vs duckdb {want[:2]})"
+            )
+        print(
+            f"  oracle {case_id:<28} {'ok' if matched else 'MISMATCH'} "
+            f"({len(want)} row(s), {mode})",
+            flush=True,
+        )
+    return failures
+
+
 def run_cases(
     specs: list[dict], binary: pathlib.Path, runs: int, scratch: pathlib.Path
 ) -> list[dict]:
@@ -658,6 +829,16 @@ def main() -> int:
         help="print deltas even when machine/data/build differ (they mix conditions)",
     )
     parser.add_argument("--no-build", action="store_true", help="reuse existing binaries")
+    parser.add_argument(
+        "--no-oracle",
+        action="store_true",
+        help="skip the DuckDB answer check (timings only; see the README's caveat)",
+    )
+    parser.add_argument(
+        "--check-oracles",
+        action="store_true",
+        help="verify the cases' answers against DuckDB and exit (no timings, no record)",
+    )
     parser.add_argument("--data", default=str(DATA), help="TPC-H SF0.1 data directory")
     args = parser.parse_args()
 
@@ -681,6 +862,18 @@ def main() -> int:
     binary = pathlib.Path(args.binary) if args.binary else release_binary()
     if not binary.exists():
         raise SystemExit(f"missing binary {binary}")
+
+    if args.check_oracles:
+        specs = case_specs(data)
+        failures = check_oracles(
+            [{"id": spec["id"]} for spec in specs], specs, binary, data
+        )
+        if failures:
+            for failure in failures:
+                print(f"FAIL  {failure}")
+            return 1
+        print("oracles: every timed case agrees with duckdb")
+        return 0
 
     metrics = machine()
     git = git_state()
@@ -733,6 +926,15 @@ def main() -> int:
         scratch = pathlib.Path(tmp)
         specs = case_specs(data)
         cases = run_cases(specs, binary, args.runs, scratch)
+        if not args.no_oracle:
+            print("verifying the timed answers against duckdb (outside the timed region) ...")
+            failures = check_oracles(cases, specs, binary, data)
+            if failures:
+                for failure in failures:
+                    print(f"FAIL  {failure}")
+                raise SystemExit(
+                    "refusing to record a baseline whose answers disagree with duckdb"
+                )
         format_cases, _ = spill_format_cases(args.runs, moon, scratch, args.no_build, data)
         cases.extend(format_cases)
         record["cases"] = cases
