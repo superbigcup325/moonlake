@@ -1,0 +1,22 @@
+// Native-only platform binding: everything here is compiled for native targets
+// only. A partially gated package would change its own interface per target (a
+// wasm consumer would see "value not found" for a function that exists on
+// native), so the whole package stays out of the other backends; -29 is the
+// "import not used on this target" warning that follows from that.
+import {
+  "moonbitlang/core/encoding/utf8",
+}
+
+import {
+  "moonbitlang/x/fs",
+} for "test"
+
+warnings = "-29"
+
+options(
+  "native-stub": [ "io_native.c" ],
+  targets: {
+    "io_native.mbt": [ "native", "llvm" ],
+    "io_test.mbt": [ "native", "llvm" ],
+  },
+)

@@ -891,3 +891,34 @@ the page's status stays a row count rather than falling into its error path.
 What this does not do: change `/` semantics, add a JSON serialization option,
 match DuckDB's relaxed output byte for byte, or claim a partner's readers
 interpret the strings the same way.
+
+2026-10-23 — **The writer stops holding its own output.** Goal: make Parquet
+file output cost memory proportional to the batches in flight rather than to
+the archive, without changing a byte of the format and without splitting the
+public interface per backend. The starting point was measured, not assumed:
+`write_file_with` built the whole archive in a `Buffer` and then handed that
+one `Bytes` to a whole-file write, so a 75 MB output kept roughly two copies of
+it alive and a 301 MB output kept about 1.4 GB of peak RSS. `moonbitlang/x`
+offers no incremental write handle and its file functions are private, so the
+transport had to come from somewhere else. Two rejected routes are recorded in
+`.internal/native-io-decision.md`: a native-only dependency poisons the wasm-gc
+build plan outright, and target-filtered public functions make the interface
+differ per backend (a wasm consumer gets `Value … not found` for a function that
+exists on native).
+
+What shipped is a native-only `platform/io` package (a small C stub behind
+`native-stub`, gated so wasm-gc/js build an empty package) plus a shared writer
+flow: `write_with(entry, codec, emit)` emits pages, `write_bytes_with` emits into
+a buffer, and `write_file_with` is one shared signature over a target-split
+private impl. The writer keeps owning offsets — a sink that miscounts bytes is
+how a footer ends up pointing past its data — and it publishes by renaming a
+temporary file, so a failure leaves the previous file in place.
+
+Quality boundary: the archive is byte-identical to what 0.4.0 wrote (md5 compared
+for both codecs at three input sizes), 223/218/218 tests pass across native,
+wasm-gc and js with `--deny-warn`, the 27 golden queries and 7 spill checks are
+unchanged, pyarrow and DuckDB read the streamed files, and `moon package --list`
+ships the C file. Two things this does not claim: the 2 GiB page-offset limit is
+still enforced, and a CSV input still costs memory in the scan, which is why the
+`--csv` numbers improve by the archive size instead of collapsing to the
+Parquet-input plateau.

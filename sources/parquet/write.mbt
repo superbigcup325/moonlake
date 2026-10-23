@@ -134,14 +134,6 @@ fn w_field_binary(
 // ----------------------------------------------------------- parquet metadata
 
 ///|
-fn w_magic(out : Buffer) -> Unit {
-  out.write_byte(b'P')
-  out.write_byte(b'A')
-  out.write_byte(b'R')
-  out.write_byte(b'1')
-}
-
-///|
 /// The compression a written file uses. UNCOMPRESSED stays the default: a
 /// written file is meant to be readable by anything, and Snappy is a choice
 /// the caller makes knowing the size/CPU trade-off.
@@ -708,22 +700,24 @@ fn w_column_body(
 }
 
 ///|
-/// Write a table entry as Parquet bytes: one row group per non-empty batch,
-/// one data page per column. Every column is written OPTIONAL with definition
-/// levels per page (see the file header), which lets the input stream instead of
-/// being materialized.
-pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
-  write_bytes_with(entry, ParquetCodec::Raw)
-}
+/// The byte sink the writer pushes into. The writer counts the bytes it emits
+/// itself, so an emitter never reports a position: a sink that lies about how
+/// many bytes it took is exactly how a Parquet footer ends up pointing past the
+/// data it describes.
+pub type Emit = (Bytes) -> Unit raise @types.SqlError
 
 ///|
-/// Write a table entry as Parquet bytes with an explicit codec.
-pub fn write_bytes_with(
+/// Write a table entry into an arbitrary byte sink: one row group per non-empty
+/// batch, one data page per column, offsets counted as bytes leave the writer.
+/// Every column is written OPTIONAL with definition levels per page (see the
+/// file header), which lets the input stream instead of being materialized.
+fn write_with(
   entry : @catalog.TableEntry,
   codec : ParquetCodec,
-) -> Bytes raise @types.SqlError {
-  let file = Buffer()
-  w_magic(file)
+  emit : Emit,
+) -> Unit raise @types.SqlError {
+  emit(b"PAR1")
+  let mut position : Int64 = 4L
   let groups : Array[Bytes] = []
   let mut total_rows : Int64 = 0L
   let width = entry.schema.columns.length()
@@ -753,12 +747,13 @@ pub fn write_bytes_with(
         Snappy => snappy_compress(body)
       }
       let header = w_page_header(body.length(), stored.length(), rows)
-      if file.length() > 2000000000 {
+      if position > 2000000000L {
         raise write_error("file would exceed the 2 GiB page offset limit")
       }
-      let offset = file.length()
-      file.write_bytes(header)
-      file.write_bytes(stored)
+      let offset = position.to_int()
+      emit(header)
+      emit(stored)
+      position += (header.length() + stored.length()).to_int64()
       // the row group's size is what the reader will hold, the column chunk
       // records both so a reader can size its buffer before decompressing
       group_size += header.length() + body.length()
@@ -785,14 +780,32 @@ pub fn write_bytes_with(
     )
   }
   let footer = w_file_meta_data(schema, total_rows, groups)
-  file.write_bytes(footer)
-  file.write_int_le(footer.length())
-  w_magic(file)
-  file.to_bytes()
+  emit(footer)
+  let footer_length = Buffer()
+  footer_length.write_int_le(footer.length())
+  emit(footer_length.to_bytes())
+  emit(b"PAR1")
 }
 
 ///|
-/// Write a table entry to a file (native target).
+/// Write a table entry as Parquet bytes: the in-memory sink.
+pub fn write_bytes(entry : @catalog.TableEntry) -> Bytes raise @types.SqlError {
+  write_bytes_with(entry, ParquetCodec::Raw)
+}
+
+///|
+/// Write a table entry as Parquet bytes with an explicit codec.
+pub fn write_bytes_with(
+  entry : @catalog.TableEntry,
+  codec : ParquetCodec,
+) -> Bytes raise @types.SqlError {
+  let out = Buffer()
+  write_with(entry, codec, chunk => out.write_bytes(chunk))
+  out.to_bytes()
+}
+
+///|
+/// Write a table entry to a file.
 pub fn write_file(
   path : String,
   entry : @catalog.TableEntry,
@@ -801,14 +814,18 @@ pub fn write_file(
 }
 
 ///|
-/// Write a table entry to a file with an explicit codec (native target).
+/// Write a table entry to a file with an explicit codec.
+///
+/// The signature is the same on every backend; only the transport differs
+/// (`write_file_native.mbt` streams into a file sink, `write_file_other.mbt`
+/// keeps the whole-file write of the wasm/js backends, where the host has no
+/// file handle to stream into). Keeping the shared signature is deliberate: a
+/// target-filtered public function would make the published interface differ
+/// per target, and a consumer on another backend would see "value not found".
 pub fn write_file_with(
   path : String,
   entry : @catalog.TableEntry,
   codec : ParquetCodec,
 ) -> Unit raise @types.SqlError {
-  let bytes = write_bytes_with(entry, codec)
-  @fs.write_bytes_to_file(path, bytes) catch {
-    _ => raise write_error("cannot write file at \{path}")
-  }
+  write_file_impl(path, entry, codec)
 }

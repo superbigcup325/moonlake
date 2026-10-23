@@ -79,3 +79,31 @@ test "statistics omit bounds they cannot prove" {
   assert_true(st2.max is Some(_))
   assert_eq(st2.nulls, 1L)
 }
+
+///|
+/// The writer pushes bytes out as it encodes them, so a sink that fails stops
+/// the archive where it failed instead of after the whole table was built.
+test "an emit failure stops the writer and propagates" {
+  let entry = wbt_entry("a", @types.Int32, [
+    @types.Int32(1),
+    @types.Int32(2),
+    @types.Int32(3),
+  ])
+  let mut calls = 0
+  let mut raised = false
+  write_with(entry, ParquetCodec::Raw, chunk => {
+    calls += 1
+    if calls == 3 {
+      raise write_error("sink exploded")
+    }
+    ignore(chunk)
+  }) catch {
+    e => {
+      assert_true(e.to_string().contains("sink exploded"))
+      raised = true
+    }
+  }
+  assert_true(raised)
+  // the first two chunks (magic + page header) were emitted, then it stopped
+  assert_eq(calls, 3)
+}

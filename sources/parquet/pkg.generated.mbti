@@ -28,5 +28,6 @@ pub(all) enum ParquetCodec {
 }
 
 // Type aliases
+pub type Emit = (Bytes) -> Unit raise @types.SqlError
 
 // Traits

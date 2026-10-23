@@ -266,6 +266,26 @@ anything, and `write_bytes` still accumulates the archive because the fs API has
 no incremental write. Writing from `lineitem.parquet` (84.8 MB, no CSV parse)
 shows the split more cleanly: 407 → 328 MB raw and 286 → 203 MB with Snappy.
 
+**After the archive copy went away (2026-10-23).** `write_file_with` streams on
+native targets now (`verification.md` §19): the whole-archive buffer and the copy
+handed to the file write are gone, and the output is published by renaming a
+temporary file. Same table, same machine, one isolated child per run:
+
+| input | before | after |
+|---|---|---|
+| `--csv` (SF0.1, 75 MB → 75 MB) | 427.7 MB / 1.02 s | 336.9 MB / 0.91 s |
+| `--csv` ×2 (151 MB → 150 MB) | 799.3 MB / 1.97 s | 547.6 MB / 1.75 s |
+| `--csv` ×4 (302 MB → 301 MB) | 1411.1 MB / 4.13 s | 1066.5 MB / 3.92 s |
+| `--parquet` raw | 326.3 MB / 0.75 s | 100.8 MB / 0.70 s |
+| `--parquet --snappy` | 199.4 MB / 0.86 s | 100.8 MB / 0.89 s |
+
+Two conclusions the table supports and one it does not. Supported: the removed
+term is exactly the archive (the delta tracks output size at 1×/2×/4×), and with a
+Parquet input the writer's contribution is now flat — 101 MB whatever the codec
+and output size. Not supported by these numbers: that a CSV input is likewise
+flat. It is not — the scan itself grows with the file (4× still costs 1066 MB),
+which is why CSV chunking is the next memory item rather than a writer one.
+
 ## Answers are checked before numbers are recorded (2026-10-23)
 
 `--compare` has always refused to print deltas across different machines, data

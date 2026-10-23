@@ -775,13 +775,12 @@ of ones to a few bytes. Measured peak RSS on the same data (native release):
 | `--parquet` (raw, 84.8 MB) | 407 MB | 328 MB |
 | `--parquet --snappy` | 286 MB | 203 MB |
 
-What is left is not the writer's own buffering and is not fixable here: the
-sources read a whole file into `Bytes` (75 MB CSV, 84.8 MB Parquet) because the
-fs API has no range reads, and `write_bytes` still accumulates the whole archive
-before handing it to `write_bytes_to_file` (the CLI path needs an incremental
-write handle for that, which `moonbitlang/x/fs` does not expose). The CSV path
-in particular is now dominated by the scan itself: `count(*)` over the same CSV
-costs 341 MB on its own.
+What was left in that pass was not the writer's own buffering: the sources read a
+whole file into `Bytes` (75 MB CSV, 84.8 MB Parquet) because the fs API has no
+range reads, and `write_bytes` still accumulated the whole archive before handing
+it to `write_bytes_to_file`. The CSV path was already dominated by the scan
+itself (`count(*)` over the same CSV costs 341 MB on its own). The archive copy
+is gone since §19: `write_file_with` streams on native targets.
 
 ## 12. EXPLAIN row reporting (2026-10-21)
 
@@ -1110,6 +1109,68 @@ output is wrong) and shows the sort fix costs ~16% CPU on that case; the
 scan/join deltas in that pair did not survive an interleaved A/B control
 (~5%), and `docs/bench-baseline.md` says so with numbers.
 
-Release limitations, unchanged: the writer still buffers its whole output, a
-SIGKILLed query's spill directory is not reclaimed (both wait on a native I/O
-decision), and non-finite doubles are strings rather than DuckDB's bare tokens.
+Release limitations, unchanged at the time: the writer still buffered its whole
+output, a SIGKILLed query's spill directory was not reclaimed (both waited on a
+native I/O decision), and non-finite doubles are strings rather than DuckDB's bare
+tokens. The first of these is resolved since §19 on native targets; the spill
+reclamation is N3.
+
+## 19. Incremental Parquet output (2026-10-23)
+
+The writer accumulated its whole archive in a `Buffer` and then handed that one
+`Bytes` to `write_bytes_to_file`, so peak memory grew with output size — the
+larger the file, the more copies of it were alive. `write_file_with` now streams
+on native targets: pages go to a file handle as they are encoded, a temporary
+name is renamed over the target on success, and the signature is identical on
+every backend. The decision record (route, rejected routes, contract) is
+`.internal/native-io-decision.md`; this section is the evidence for what shipped.
+
+**Mechanism.** `platform/io` is a whole-package native-only binding (`O_WRONLY`
+open, `write` with EINTR retry, `fsync`, `close`, `rename`, `unlink`, `strerror`)
+declared with `native-stub` and target-gated files, so wasm-gc/js build an empty
+package and the published interface stays target-independent. The writer keeps
+owning byte offsets: `write.mbt` exposes `pub type Emit = (Bytes) -> Unit raise
+@types.SqlError` and one `write_with(entry, codec, emit)` flow; `write_bytes_with`
+emits into a `Buffer`, and `write_file_with` is a shared wrapper over a
+target-split private impl (`write_file_native.mbt` streams, `write_file_other.mbt`
+keeps the whole-file write the wasm/js hosts require). A sink never reports a
+position — a transport that miscounts bytes is exactly how a Parquet footer ends
+up pointing past its data — and the 2 GiB page-offset guard still runs on an
+`Int64` writer-side counter.
+
+**Same bytes.** The transport changed, the format did not: for both codecs the
+file produced by the streaming path is byte-identical to `write_bytes_with`
+(`write_file_test.mbt`), and identical to the archive the pre-N1 build wrote
+from the same input (md5 `84a4dfd8…` raw 1×, `7ccb79e3…` from Parquet input raw,
+`938430a5…` snappy; 2× and 4× inputs likewise).
+
+**Failure behaviour.** A write publishes nothing until it succeeds: the target
+keeps its previous contents and the temporary file is gone both when `finish`
+fails (rename onto a directory is the test case) and when the process aborts the
+sink explicitly. A write into a non-existent directory fails naming the path and
+creates nothing. An emit failure stops the writer where it failed (whitebox test)
+instead of after the whole table was encoded.
+
+**Peak memory** (native release, one isolated child per run so `ru_maxrss` is
+that run's own high-water mark; SF0.1 `lineitem`, 75 / 151 / 302 MB inputs):
+
+| input → output | before | after |
+|---|---|---|
+| `--csv` 75 MB → 75 MB | 427.7 MB / 1.02 s | 336.9 MB / 0.91 s |
+| `--csv` 151 MB → 150 MB | 799.3 MB / 1.97 s | 547.6 MB / 1.75 s |
+| `--csv` 302 MB → 301 MB | 1411.1 MB / 4.13 s | 1066.5 MB / 3.92 s |
+| `--parquet` raw (75 MB out) | 326.3 MB / 0.75 s | 100.8 MB / 0.70 s |
+| `--parquet --snappy` (34 MB out) | 199.4 MB / 0.86 s | 100.8 MB / 0.89 s |
+
+The removed term is the archive-sized second copy. With a Parquet input the new
+peak is flat at ~101 MB regardless of codec and output size; the remaining CSV
+growth is the scan's own memory, which is N2b's subject, not the writer's.
+
+**Gates.** `moon check --deny-warn` on native, wasm-gc and js; 223 / 218 / 218
+tests; 27 golden queries; spill 7/7; `check_writer_interop.py` (pyarrow and DuckDB
+read the streamed files raw and Snappy); `moon package --list` ships
+`platform/io/io_native.c`. The interface gained exactly one line
+(`pub type Emit = (Bytes) -> Unit raise @types.SqlError`).
+
+Not done here: the 2 GiB page-offset limit still refuses larger files, and the
+sources still read a whole file because the fs API has no range reads (N2a).

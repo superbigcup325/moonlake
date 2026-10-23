@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- 2026-10-23 native Parquet file output streams instead of buffering: a new
+  native-only `platform/io` package (C stub, `FileSink`) writes pages as they are
+  encoded and renames a temporary file over the target on success, so a failed or
+  interrupted write leaves the previous file intact. `write_file_with` keeps one
+  signature on all three backends (wasm-gc/js keep the whole-file write their
+  hosts require) and the public interface gains only `pub type Emit`. Measured
+  peak RSS on a Parquet input drops 326 → 101 MB raw and 199 → 101 MB Snappy, and
+  the produced archives are byte-identical to 0.4.0's; with a CSV input the
+  archive-sized copy is likewise gone (427 → 337 MB at 75 MB of output). The
+  remaining CSV growth is the scan, tracked separately
+
 ## [0.4.0] - 2026-10-23
 
 > First release since 0.3.1. It carries everything that landed on `main` in
