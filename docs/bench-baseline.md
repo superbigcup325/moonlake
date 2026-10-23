@@ -288,3 +288,42 @@ case against the table it built (count value, or an order-independent row bag
 over the projected columns) and `spill_bench.py` recomputes the first column's
 text checksum from the CSV, so the format's write/read checksum pair is not the
 only evidence.
+
+## 0.4.0 records, and what a same-session pair actually showed (2026-10-23)
+
+Two records were taken on this machine in one session for the 0.4.0 release:
+
+- [`harness/baseline/2026-10-23-0.4.0.json`](../harness/baseline/2026-10-23-0.4.0.json)
+  — `529dd98`, the release candidate, with the answer oracle green.
+- [`harness/baseline/2026-10-23-0.3.1-rerecord.json`](../harness/baseline/2026-10-23-0.3.1-rerecord.json)
+  — the published 0.3.1, rebuilt from tag `v0.3.1` in a worktree (`fb2a10f`) in
+  the same session, recorded with that tag's own script (it predates
+  `data_sha256`, the run-spread field and the oracle, so `--compare` reports
+  those as "not compared").
+
+`--compare` between them refuses one comparison by design and shows one
+legitimate cost:
+
+- `spill/order_by_wide` reports **output changed — not comparable**, because
+  0.3.1 returns the wrong top-3 (see `verification.md` §5.2). That is the
+  correct answer from the tool: the two sides did different work.
+- The scan, join and gather deltas in that pair (up to ~38%) did **not**
+  survive a control. An interleaved A/B of the two binaries on this machine,
+  five to seven alternated runs each, gives `count(*)` over the SF0.1 CSV at
+  202.6 ms CPU (0.3.1) vs 213.7 ms CPU (0.4.0) best, ~5% — not 38%. The pair
+  was recorded with different clock/load state (`CPU MHz at start` 3200 vs
+  4194, load average 3.45 vs 2.94), which is exactly the cross-record noise the
+  rest of this file warns about. Treat the pair's non-spill deltas as machine
+  state, not code.
+
+The one cost that is real is the sort fix itself. Alternating the two binaries
+on the spilled case (`--memory 2M`, 600,572 rows, same session): 0.3.1 473 ms
+CPU best / 485 ms median, 0.4.0 550 ms CPU best / 555 ms median — about 16%
+more, because every run file is now sorted before it is written. That is the
+price of a correct answer, and it is recorded here rather than hidden inside a
+number that looks like a win.
+
+`bench_release.py` also stopped treating the toolchain's install path as a
+condition: `moon version` prints the path of the binary, which differs when a
+record is taken through a scratch `MOON_HOME` (needed because the default home
+is not writable here). The fingerprint now compares version and build hash.

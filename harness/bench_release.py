@@ -665,6 +665,20 @@ def print_table(cases: list[dict]) -> None:
         )
 
 
+def toolchain_identity(text) -> str:
+    """Compare the toolchain by version, not by where it is installed.
+
+    `moon version` prints `moon 0.1.20261016 (1af328f 2026-10-16) /path/bin/moon`.
+    The path is not a measurement condition — a release recorded through a
+    scratch MOON_HOME (needed when the default home is not writable) is the same
+    toolchain and was being refused as a mismatch.
+    """
+    if not text:
+        return text
+    match = re.match(r"moon\s+(\S+)\s+\(([0-9a-f]+)", str(text))
+    return f"moon {match.group(1)} ({match.group(2)})" if match else str(text)
+
+
 def fingerprint(record: dict) -> dict:
     """The conditions a timing is only meaningful under.
 
@@ -681,7 +695,7 @@ def fingerprint(record: dict) -> dict:
         "cpu": env.get("cpu"),
         "cores": env.get("cores"),
         "kernel": env.get("kernel"),
-        "toolchain": tool.get("moon"),
+        "toolchain": toolchain_identity(tool.get("moon")),
         "data_sha256": method.get("data_sha256"),
         "build": method.get("build"),
         "runs": method.get("runs"),
