@@ -877,13 +877,17 @@ NaN, and the arithmetic path keeps that instead of turning it into an error.
 The encoder was the only thing lying about it. Non-finite doubles now serialize
 as the strings `"Infinity"`, `"-Infinity"` and `"NaN"`: the line is strictly
 parseable, the three values stay distinguishable from each other, and SQL NULL
-is still `null` — collapsing them all to `null`, DuckDB's own JSON spelling,
-would have made a real value indistinguishable from a missing one. Finite
-doubles still print as JSON numbers, and DATE stays a quoted calendar date.
+is still `null`. This deliberately diverges from DuckDB, which was measured
+here rather than assumed: `to_json(1.0::DOUBLE/0.0)::VARCHAR` returns the bare
+token `Infinity` (not a quoted string, and not `to_json('Infinity')`), i.e.
+a document strict parsers reject; collapsing the values to `null` would buy
+compatibility at the price of hiding a real value. Finite doubles still print
+as JSON numbers, and DATE stays a quoted calendar date.
 Quality boundary: the fix is in the one result encoder both the CLI and the
 page use, and the evidence is an exact-string test plus `@json.parse` on the
 same string, a CLI run that `JSON.parse`s to the expected object, and a new
 browser scenario (16/16) that asserts the table shows `Infinity`/`NaN` while
 the page's status stays a row count rather than falling into its error path.
 What this does not do: change `/` semantics, add a JSON serialization option,
-or claim a partner's readers interpret the strings the same way.
+match DuckDB's relaxed output byte for byte, or claim a partner's readers
+interpret the strings the same way.

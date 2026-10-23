@@ -943,3 +943,57 @@ proves that a working page with the wrong release identity is rejected.
 These remote runs predate the new consumer and version-gate changes; their
 verification is local until those changes are pushed. The server-side publish
 dry run and actual release remain separate from these checks.
+
+## 17. Non-finite doubles in JSON (2026-10-23)
+
+`--json` and the browser page share one encoder, `SelectResult::to_json`. It
+printed every other scalar through `to_string`, so a DOUBLE infinity or NaN
+came out as the bare token `Infinity` / `-Infinity` / `NaN`. Those are not JSON:
+a strict parser rejects the whole line, and the page's `JSON.parse` fell into
+its error path instead of rendering the row. The arithmetic was never wrong —
+integer division is DuckDB's true division, so `x / 0` is inf and `0.0/0.0` is
+NaN by design — so the encoder was the defect.
+
+Contract, unchanged for the values that already worked: SQL NULL is `null`,
+DATE is a quoted `YYYY-MM-DD`, a finite DOUBLE is a JSON number, and the three
+non-finite values are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`.
+This diverges from DuckDB on purpose, and that was measured rather than
+assumed: `to_json(1.0::DOUBLE/0.0)::VARCHAR` returns the bare token `Infinity`
+(it is not a quoted string and not equal to `to_json('Infinity')`), so DuckDB's
+own document is the one strict parsers reject. Encoding them as `null` would
+have bought compatibility at the cost of hiding a real value.
+
+**Before**, at `c651e67`:
+
+```bash
+moon run --target native cmd/main -- exec --csv harness/data/sf001/nation.csv --json \
+  "SELECT 1.0/0.0 AS pos_inf, -1.0/0.0 AS neg_inf, 0.0/0.0 AS nan, 1.5 AS ok, NULL AS nil, 'a\"b' AS s, DATE '2024-03-01' AS d LIMIT 1"
+# [{"pos_inf":Infinity,"neg_inf":-Infinity,"nan":NaN,"ok":1.5,"nil":null,"s":"a\"b","d":"2024-03-01"}]
+# node: JSON.parse -> Unexpected token 'I', ..."pos_inf":Infinity,"..." is not valid JSON
+```
+
+**After** the fix, the same command prints
+
+```text
+[{"pos_inf":"Infinity","neg_inf":"-Infinity","nan":"NaN","ok":1.5,"nil":null,"s":"a\"b","d":"2024-03-01"}]
+```
+
+and Node's `JSON.parse` returns an object with `pos_inf === "Infinity"`,
+`nil === null` and `ok === 1.5`. `moon test engine` pins the same line
+(`to_json keeps non-finite floats parseable without hiding them`) and parses it
+with `moonbitlang/core/json`, so parseability is asserted rather than implied.
+`to_json`'s signature and the `/` semantics are unchanged.
+
+**Local evidence at `3022a0a`.** Gates: `moon check --deny-warn`,
+`moon fmt --check`, 213 MoonBit tests on each of native / wasm-gc / js, 13
+Python regression tests, `check_writer_interop.py`, all 7 spill acceptance
+checks, and the offline release provenance (150-file archive, version claims
+agree). The archive consumer runs the public API from that zip on all three
+targets against a fresh registry cache. Browser: `harness/playground_accept.cjs`
+passes 16/16 against the built wasm in real Chromium, the new scenario being a
+`l_quantity / 0` row that must show `Infinity` / `NaN` while the status stays a
+row count. The playground wasm still imports nothing beyond the js-string
+builtins, so the host-free gate is unaffected.
+
+These are local results for an unpublished development version; the pushed
+`4e58b3d` CI/nightly/Pages evidence in §16 does not cover this commit.
