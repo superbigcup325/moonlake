@@ -21,7 +21,7 @@
 //   PLAYWRIGHT_MODULE=/path/to/node_modules/playwright
 //   CHROME_PATH=/path/to/chrome      (default: a cached playwright chromium)
 //   MOONLAKE_DATA=/path/to/sf001     (default: harness/data/sf001)
-//   MOONLAKE_EXPECT_VERSION=0.4.0-dev (default: version in this checkout's moon.mod)
+//   MOONLAKE_EXPECT_VERSION=0.4.0 (default: version in this checkout's moon.mod)
 
 const path = require("path");
 const fs = require("fs");

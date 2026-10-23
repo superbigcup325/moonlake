@@ -4,10 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0-dev] - Unreleased
+## [0.4.0] - 2026-10-23
 
-> Ongoing 0.4.0 work, not published to mooncakes. The source and browser
-> playground report `0.4.0-dev`; the latest stable release is still 0.3.1.
+> First release since 0.3.1. It carries everything that landed on `main` in
+> between: the session playground (several files, cross-file JOIN, plan panel),
+> the in-house Parquet writer (NULLs, STRING/DATE annotations, statistics,
+> SNAPPY, one-pass streaming input), file-level Parquet pruning, the packed
+> two-key join, the spill isolation fixes, the archive-consumer gate, and the
+> correctness fixes below (non-finite JSON, spilled-sort ordering). 0.2.0 was
+> never published on its own.
 
 ### Fixed
 

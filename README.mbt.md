@@ -114,10 +114,10 @@ As a library:
 moon add superbigcup325/moonlake
 ```
 
-> This README and the browser playground track `main` (`0.4.0-dev`). `moon add`
-> gives you the latest stable release from mooncakes (0.3.1), which does not
-> include the session playground, new Parquet writer or subsequent spill fixes.
-> See [CHANGELOG.md](CHANGELOG.md) for the development changes.
+> This README and the browser playground track `main`. `moon add` gives you the
+> latest published release from mooncakes (0.4.0), which includes the session
+> playground, the Parquet writer and the spill/JSON fixes recorded in
+> [CHANGELOG.md](CHANGELOG.md).
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
