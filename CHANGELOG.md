@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- 2026-10-23 `--json` (and the playground, whose `JSON.parse` runs on the same
+  string) emitted a non-finite DOUBLE as a bare `Infinity`, `-Infinity` or
+  `NaN` token, so one such value made the whole line invalid JSON — a division
+  by zero, which this engine deliberately keeps as IEEE inf/NaN, was enough.
+  Those three values now render as strings, keeping the output strictly
+  parseable and still distinct from a finite number and from SQL NULL; finite
+  doubles stay JSON numbers
 - 2026-10-22 DuckDB 2.0 removed `fetchone()` from its relation API, breaking
   Parquet fixture generation and writer interop. Single-row reads now use the
   connection cursor API. The corpus gate only skips DuckDB read errors, lets

@@ -1041,6 +1041,31 @@ test "to_json quotes DATE values instead of emitting bare epoch days" {
 }
 
 ///|
+test "to_json keeps non-finite floats parseable without hiding them" {
+  let cat = q6_catalog()
+  // JSON has no number spelling for an infinity or NaN; the bare tokens made
+  // the whole --json line unparseable and the playground's JSON.parse threw.
+  // Strings stay strictly parseable and keep these values distinct from a
+  // finite number and from SQL NULL.
+  let r = run(
+    "SELECT l_quantity / 0 AS pi, (0.0 - l_quantity) / 0 AS ni, (l_quantity - 10) / (l_quantity - 10) AS nan, l_quantity / 2 AS half, NULL AS nil FROM lineitem WHERE l_quantity = 10",
+    cat,
+  )
+  assert_eq(
+    r.to_json(),
+    "[{\"pi\":\"Infinity\",\"ni\":\"-Infinity\",\"nan\":\"NaN\",\"half\":5,\"nil\":null}]",
+  )
+  // Finite doubles keep their JSON-number spelling.
+  let finite = run("SELECT 1.5 AS a FROM lineitem LIMIT 1", cat)
+  assert_eq(finite.to_json(), "[{\"a\":1.5}]")
+  // The contract that matters is strict parseability.
+  let parsed = @json.parse(r.to_json()) catch {
+    e => fail("to_json is not strict JSON: \{e.to_string()}")
+  }
+  assert_true(parsed is Array(_))
+}
+
+///|
 test "simple CASE compares the base expression" {
   let cat = funcs_catalog()
   let r = run(

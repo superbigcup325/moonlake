@@ -106,7 +106,7 @@ install -m755 _build/native/release/build/cmd/main/main.exe ~/.local/bin/moonlak
 moonlake exec --csv lineitem.csv --file q6.sql     # SQL from a file: no shell quoting
 ```
 
-Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns of an *unannotated* file with `--date-col` — a file that carries the standard DATE annotation needs nothing); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine); `--explain` prints the physical plan; `--json` emits machine-readable output. `moonlake write --csv in.csv --out out.parquet [--snappy]` converts a registered table to Parquet.
+Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns of an *unannotated* file with `--date-col` — a file that carries the standard DATE annotation needs nothing); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine); `--explain` prints the physical plan; `--json` emits machine-readable output — one JSON array line per result, where SQL NULL is `null`, DATE is a quoted calendar date, and the non-finite doubles JSON cannot spell are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`. `moonlake write --csv in.csv --out out.parquet [--snappy]` converts a registered table to Parquet.
 
 As a library:
 

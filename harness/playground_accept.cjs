@@ -216,6 +216,19 @@ async function tableNames() {
     csvRows[0].join(","),
   );
 
+  // 8b. a non-finite double reaches the table as text and does not break the
+  // page's JSON.parse (bare Infinity/NaN used to make the whole line invalid)
+  await runSQL(
+    "SELECT l_quantity / 0 AS pi, (l_quantity - 10) / (l_quantity - 10) AS nan FROM csvrows WHERE l_quantity = 10 LIMIT 1",
+  );
+  const special = await rowTexts();
+  check(
+    "non-finite doubles render without breaking the page",
+    special.length === 1 && special[0].join(",") === "Infinity,NaN" &&
+      (await statusText()).startsWith("1 rows"),
+    `${JSON.stringify(special)} | ${await statusText()}`,
+  );
+
   // 9. a JOIN across the two uploaded copies (the point of the session)
   await runSQL(
     "SELECT count(*) AS n FROM csvrows JOIN pqrows ON csvrows.l_orderkey = pqrows.l_orderkey",

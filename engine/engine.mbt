@@ -742,7 +742,10 @@ pub fn explain(
 ///|
 /// Whole result as one JSON array line. Strings are escaped; SQL NULL
 /// becomes null. DATE renders as a quoted calendar date (DuckDB's own JSON
-/// spelling), not a bare epoch integer.
+/// spelling), not a bare epoch integer. Non-finite FLOAT64 values have no
+/// JSON number spelling, so they render as the strings "Infinity",
+/// "-Infinity" and "NaN"; that keeps the output parseable while staying
+/// distinct from both finite numbers and SQL NULL.
 pub fn SelectResult::to_json(self : SelectResult) -> String {
   let sb = StringBuilder()
   sb.write_char('[')
@@ -770,6 +773,18 @@ pub fn SelectResult::to_json(self : SelectResult) -> String {
           sb.write_string(@types.epoch_to_string(v))
           sb.write_char('"')
         }
+        @types.Float64(v) =>
+          if v.is_nan() {
+            sb.write_string("\"NaN\"")
+          } else if v.is_inf() {
+            if v > 0.0 {
+              sb.write_string("\"Infinity\"")
+            } else {
+              sb.write_string("\"-Infinity\"")
+            }
+          } else {
+            sb.write_string(v.to_string())
+          }
         other => sb.write_string(other.to_string())
       }
     }
