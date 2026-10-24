@@ -1707,7 +1707,25 @@ it when it fits.
 | `harness/check_writer_interop.py` | all checks passed |
 
 Only the encoder's tag choice moved, so the decoded bytes are the ones written
-before. The whitebox test `a short match close behind is a two-byte copy` builds
+before. ### What the two tags cost to run
+
+Same session, same input (the SF1 `lineitem` CSV, 6,001,215 rows), same machine:
+the previous commit's encoder rebuilt against this one, two writes and two read
+queries each, on the files the two encoders produced.
+
+| run | old encoder | new encoder |
+|---|---|---|
+| file size | 333.0 MB | 289.2 MB |
+| `write --csv … --snappy` (two runs) | 10.52 s / 10.18 s | 10.11 s / 10.22 s |
+| `select count(*)` | 0.054 s / 0.057 s | 0.055 s / 0.054 s |
+| `select sum(l_orderkey)` | 0.50 s / 0.16 s | 0.16 s / 0.14 s |
+
+Writing is a wash — the shorter tag pays for the branch that chooses it — and so
+is reading, because a page decompresses to the same bytes either way. The 0.50 s
+entry is the old file's first touch, which had to fill a page cache that the
+second run found warm.
+
+The whitebox test `a short match close behind is a two-byte copy` builds
 the provoking pattern (a four-byte token every eight bytes), walks the tags and
 requires at least 90 `copy1` and no wider copy, so a regression to `copy2` fails
 a test instead of quietly costing 13% of every compressed file.

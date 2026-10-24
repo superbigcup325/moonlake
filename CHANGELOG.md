@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `@spill.run_file_name` and `@spill.is_run_file_name`. The files a spill
+  directory holds are named by the store, and a host that points `--spill-dir`
+  at a directory of its own has to tell them from its own files before removing
+  anything: `run_file_name(id)` is the name a run gets, and
+  `is_run_file_name(name)` answers whether a name is one of them ("run", one or
+  more digits, ".bin"). The CLI's cleanup already asked exactly this question;
+  the rule is public now so a second caller does not have to restate it.
+
 ### Changed
 
 - The Parquet writer no longer refuses files larger than 2 GiB. A column
