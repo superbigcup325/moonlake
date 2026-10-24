@@ -6,7 +6,7 @@ evidence, not by appetite: a limit moves up this page when a real query, a real
 file or a benchmark makes it expensive, and a candidate leaves the hold list
 only when its trigger fires.
 
-## Where 0.5.0 leaves the engine
+## Where 0.6.0 leaves the engine
 
 Parquet and CSV scans read byte ranges on native targets instead of whole
 files, the native Parquet writer streams as it encodes, and a query reclaims a

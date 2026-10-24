@@ -10,7 +10,7 @@ import {
 // Values
 pub const DESCRIPTION : String = "Embeddable analytical query engine for MoonBit"
 
-pub const VERSION : String = "0.5.0"
+pub const VERSION : String = "0.6.0"
 
 pub fn execute(String, @catalog.Catalog) -> @engine.SelectResult raise @types.SqlError
 
