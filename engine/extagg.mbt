@@ -1,3 +1,9 @@
+///|
+/// Cap on how many hash partitions one aggregation may create. The join caps
+/// at 256 and splits an over-budget partition again; aggregation cannot
+/// recurse (a group's state must stay in one partition), so it stays lower.
+const AGG_PARTITION_CAP : Int32 = 64
+
 // Grace hash aggregation: when a GROUP BY's input
 // exceeds the memory budget, the input is partitioned by the hash of
 // its group keys into per-partition spill runs (the same SpillStore the
@@ -63,24 +69,10 @@ fn grace_agg(
   store : SpillStore,
   stats : Array[(String, Int64)],
 ) -> @types.DataBatch raise @types.SqlError {
-  let total = batches_bytes(joined)
-  let mut p = total * 4 / budget + 1
-  if p < 2 {
-    p = 2
-  }
-  if p > 64 {
-    p = 64
-  }
+  let p = partition_count(batches_bytes(joined), budget, AGG_PARTITION_CAP)
   let writers : Array[RunWriter] = []
   for _ in 0..<p {
-    writers.push({
-      store,
-      budget,
-      sort_keys: [],
-      acc: [],
-      acc_bytes: 0,
-      ids: [],
-    })
+    writers.push(RunWriter::partitioned(store, budget))
   }
   for batch in joined {
     partition_side(batch, group_exprs, writers)
@@ -91,11 +83,7 @@ fn grace_agg(
   if stats.length() > 0 {
     stats.push(("spill partitions", p.to_int64()))
   }
-  errdefer (for w in writers {
-    for id in w.ids {
-      let _ = (store.remove)(id)
-    }
-  })
+  errdefer remove_writers(store, writers)
   let out : Array[@types.DataBatch] = []
   let dtypes : Array[@types.DataType] = []
   for k in 0..<p {
@@ -118,10 +106,6 @@ fn grace_agg(
     }
     out.push(grouped)
   }
-  for w in writers {
-    for id in w.ids {
-      let _ = (store.remove)(id)
-    }
-  }
+  remove_writers(store, writers)
   concat_batches(out, dtypes)
 }

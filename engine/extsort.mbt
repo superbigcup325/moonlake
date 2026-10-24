@@ -126,28 +126,6 @@ fn cmp_key_rows(
 }
 
 ///|
-fn estimate_batch_bytes(batch : @types.DataBatch) -> Int32 {
-  let mut total = 16
-  for col in batch.columns() {
-    let n = col.len()
-    total += 4
-    match col.dtype() {
-      @types.Int32 | @types.Date => total += 4 * n
-      @types.Int64 | @types.Float64 => total += 8 * n
-      @types.Bool => total += n
-      @types.Str =>
-        for r in 0..<n {
-          match col.get(r) {
-            @types.Str(s) => total += 4 + s.length() // chars as a byte proxy: budgets stay approximate
-            _ => total += 1
-          }
-        }
-    }
-  }
-  total
-}
-
-///|
 fn chunk_of(
   batch : @types.DataBatch,
   from : Int32,
@@ -158,61 +136,6 @@ fn chunk_of(
     indices.push(r)
   }
   take_rows(batch, indices)
-}
-
-///|
-/// Sorted-run accumulator over the spill store.
-priv struct RunWriter {
-  store : SpillStore
-  budget : Int32
-  sort_keys : Array[(PhysExpr, Bool, Bool?)] // empty: partitions (join/agg), not sorted runs
-  mut acc : Array[@types.DataBatch]
-  mut acc_bytes : Int32
-  ids : Array[Int32] // spill file ids in run order
-}
-
-///|
-fn RunWriter::push(
-  self : RunWriter,
-  batch : @types.DataBatch,
-) -> Unit raise @types.SqlError {
-  let bytes = estimate_batch_bytes(batch)
-  // flush before pushing when the accumulator is full: a run never
-  // grows past ~budget/4 unless a single chunk is larger on its own
-  if self.acc.length() > 0 && self.acc_bytes + bytes > self.budget / 4 {
-    self.flush()
-  }
-  self.acc.push(batch)
-  self.acc_bytes += bytes
-}
-
-///|
-fn RunWriter::flush(self : RunWriter) -> Unit raise @types.SqlError {
-  if self.acc.length() == 0 {
-    return
-  }
-  // A run file is read back as ONE sorted stream (RunReader assumes that), but
-  // the accumulator holds several independently sorted chunks/batches. Writing
-  // them back to back made every multi-chunk run only piecewise sorted, and the
-  // k-way merge then leaked chunk heads into the result: with a 1 MB budget the
-  // spilled ORDER BY over SF0.1 returned a top-3 whose maximum was below the
-  // true maximum (a smaller budget happened to hold one chunk per run, which is
-  // why the 200 KB acceptance check stayed green). Sort the run before writing;
-  // the accumulator is bounded by budget/4, which is the same bound the merge
-  // passes work under.
-  let payload = if self.sort_keys.length() > 0 {
-    let dts : Array[@types.DataType] = []
-    for col in self.acc[0].columns() {
-      dts.push(col.dtype())
-    }
-    [sort_exprs(concat_batches(self.acc, dts), self.sort_keys, None, None)]
-  } else {
-    self.acc
-  }
-  let id = (self.store.write)(@types.DataBatch::to_spill_bytes(payload))
-  self.ids.push(id)
-  self.acc = []
-  self.acc_bytes = 0
 }
 
 ///|
@@ -288,9 +211,7 @@ fn external_sort_project(
   if stats.length() > 0 {
     stats.push(("spill runs", writer.ids.length().to_int64()))
   }
-  errdefer (for id in writer.ids {
-    let _ = (store.remove)(id)
-  })
+  errdefer remove_ids(store, writer.ids)
   let out = reduce_and_merge(
     writer.ids,
     keys,
@@ -325,9 +246,7 @@ fn reduce_and_merge(
   store : SpillStore,
 ) -> @types.DataBatch raise @types.SqlError {
   let created : Array[Int32] = [] // intermediate files this function wrote
-  errdefer (for id in created {
-    let _ = (store.remove)(id)
-  })
+  errdefer remove_ids(store, created)
   fn go(level : Array[Int32]) -> @types.DataBatch raise @types.SqlError {
     let mut cur = level
     while cur.length() > FANIN {
@@ -353,9 +272,7 @@ fn reduce_and_merge(
   // so drop them on the success path too (the errdefer above only fires
   // when `go` raises). Leaving them behind leaked one directory per
   // spilled sort into TMPDIR.
-  for id in created {
-    let _ = (store.remove)(id)
-  }
+  remove_ids(store, created)
   out
 }
 

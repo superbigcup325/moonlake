@@ -9,117 +9,6 @@
 // exit path.
 
 ///|
-/// Total estimated byte size of a batch array.
-fn batches_bytes(batches : Array[@types.DataBatch]) -> Int32 {
-  let mut total = 0
-  for b in batches {
-    total += estimate_batch_bytes(b)
-  }
-  total
-}
-
-///|
-fn mix32(h : Int32, v : Int32) -> Int32 {
-  (h ^ v) * 16777619
-}
-
-///|
-/// Partition id for row `r` of the key vectors: FNV-1a over the key
-/// values (a NULL key component contributes a fixed marker), reduced
-/// modulo `p`. Equal keys land in the same partition; distinct keys may
-/// share one, which the per-partition join resolves.
-fn key_partition(
-  keys : Array[@types.ColumnVector],
-  r : Int32,
-  p : Int32,
-) -> Int32 {
-  // 2166136261 (the FNV offset basis) as a 32-bit two's complement
-  let mut h = -2128831035
-  for kv in keys {
-    match kv.get(r) {
-      @types.Null => h = mix32(h, -2128831035)
-      @types.Boolean(v) => h = mix32(h, if v { 1 } else { 2 })
-      @types.Int32(v) => h = mix32(h, v)
-      @types.Int64(v) => h = mix32(h, v.to_int())
-      @types.Float64(v) => h = mix32(h, v.to_int())
-      @types.Str(s) =>
-        for ch in s {
-          h = mix32(h, ch.to_int())
-        }
-      @types.Date(v) => h = mix32(h, v)
-    }
-  }
-  let m = h % p
-  if m < 0 {
-    m + p
-  } else {
-    m
-  }
-}
-
-///|
-/// Read one partition's spill runs back as batches (each spill file
-/// deserializes to the batch sequence that was written into it).
-fn read_partition(
-  store : SpillStore,
-  ids : Array[Int32],
-) -> Array[@types.DataBatch] raise @types.SqlError {
-  let out : Array[@types.DataBatch] = []
-  for id in ids {
-    let bs = @types.DataBatch::from_spill_bytes((store.read)(id))
-    for b in bs {
-      out.push(b)
-    }
-  }
-  out
-}
-
-///|
-/// Drop every spill file of both sides' partitions.
-fn remove_join_partitions(
-  store : SpillStore,
-  wl : Array[RunWriter],
-  wr : Array[RunWriter],
-) -> Unit raise @types.SqlError {
-  for w in wl {
-    for id in w.ids {
-      let _ = (store.remove)(id)
-    }
-  }
-  for w in wr {
-    for id in w.ids {
-      let _ = (store.remove)(id)
-    }
-  }
-}
-
-///|
-/// Route each row of `batch` into its key-hash partition writer.
-fn partition_side(
-  batch : @types.DataBatch,
-  key_exprs : Array[PhysExpr],
-  writers : Array[RunWriter],
-) -> Unit raise @types.SqlError {
-  let p = writers.length()
-  let key_vecs : Array[@types.ColumnVector] = []
-  for e in key_exprs {
-    key_vecs.push(eval_vec(e, batch))
-  }
-  let idx : Array[Array[Int32]] = []
-  for _ in 0..<p {
-    idx.push([])
-  }
-  for r in 0..<batch.row_count() {
-    idx[key_partition(key_vecs, r, p)].push(r)
-  }
-  for k in 0..<p {
-    if idx[k].length() > 0 {
-      writers[k].push(take_rows(batch, idx[k]))
-    }
-  }
-}
-
-///|
 /// Cap on how many hash partitions one level may create.
 const JOIN_PARTITION_CAP : Int32 = 256
 
@@ -135,14 +24,7 @@ const JOIN_MAX_DEPTH : Int32 = 2
 /// Partition count for `bytes` under `budget`: proportional to the
 /// input, at least two, at most JOIN_PARTITION_CAP.
 fn partitions_for(bytes : Int32, budget : Int32) -> Int32 {
-  let mut p = bytes * 4 / budget + 1
-  if p < 2 {
-    p = 2
-  }
-  if p > JOIN_PARTITION_CAP {
-    p = JOIN_PARTITION_CAP
-  }
-  p
+  partition_count(bytes, budget, JOIN_PARTITION_CAP)
 }
 
 ///|
@@ -186,8 +68,8 @@ fn join_partitions(
   let wl : Array[RunWriter] = []
   let wr : Array[RunWriter] = []
   for _ in 0..<p {
-    wl.push({ store, budget, sort_keys: [], acc: [], acc_bytes: 0, ids: [], })
-    wr.push({ store, budget, sort_keys: [], acc: [], acc_bytes: 0, ids: [], })
+    wl.push(RunWriter::partitioned(store, budget))
+    wr.push(RunWriter::partitioned(store, budget))
   }
   for batch in left {
     partition_side(batch, step.keys_l, wl)
@@ -206,7 +88,7 @@ fn join_partitions(
       stats.push(("spill repartitions", p.to_int64()))
     }
   }
-  errdefer remove_join_partitions(store, wl, wr)
+  errdefer remove_writer_sides(store, wl, wr)
   let out : Array[@types.DataBatch] = []
   for k in 0..<p {
     let left_p = read_partition(store, wl[k].ids)
@@ -234,6 +116,6 @@ fn join_partitions(
       )
     }
   }
-  remove_join_partitions(store, wl, wr)
+  remove_writer_sides(store, wl, wr)
   out
 }
