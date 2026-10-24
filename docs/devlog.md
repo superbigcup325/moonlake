@@ -1068,3 +1068,45 @@ interop; playground 16/16; `moon package --list` at 184 entries.
 What this does not claim: no lease is renewed or expired by time, so an owner
 that hangs forever keeps its directory forever (it is still running, so that is
 the right answer), and the writer's 2 GiB page-offset limit is still its own task.
+
+2026-10-24 (structure) — **Three copies of the same spill machinery became one.**
+Goal: nothing behavioural — a survey of the code after the parquet/CSV range reads
+and the spill reclaim, asking where the same thing is written more than once.
+Four answers, all of them about maintenance rather than speed: the three spill
+consumers each carried the run writer, the key hash and the "remove your run
+files on both exit paths" loop; the CSV and Parquet native inputs carried the
+same four range-reading helpers down to identical bytes; `analyze_query` and
+`run_query` were the same fifteen lines with a different engine call inside; and
+`engine/exec.mbt` mixes aggregation, sorting, joins and batch plumbing in one
+2286-line file.
+
+The first three are done. `engine/spillruns.mbt` now holds what sort, join and
+aggregation share — batch sizing, the writer (with a `partitioned` constructor so
+callers stop assembling its fields by hand), the key hash and row routing, the
+partition reader, and one removal call per exit path. The partition count was one
+formula with two inline caps (256 in the join, 64 in the aggregation), so it is
+`partition_count(bytes, budget, cap)` with each caller passing the cap its own
+recursion requires; that is the one place where "unify the duplication" would
+have changed behaviour if it had been done carelessly. `platform/io` gained
+`file_size`, `read_range` and `close_quietly`, which is where the "one open per
+range, close on the failure path" rule belongs — two copies of a descriptor
+lifetime rule is how one of them gets fixed alone. `with_spill_run` wraps the
+budgeted query in the CLI, so both commands share one purge-on-both-paths
+skeleton; the `errdefer` was the line worth not copying twice.
+
+Left undone on purpose: splitting `engine/exec.mbt` four ways (aggregation,
+sorting, joins, batch utilities) and `cmd/main/main.mbt` (usage text, glob,
+spill directory, commands). Both are mechanical in MoonBit — package-private
+blocks in one package — but they are whole-file moves, so they belong in a commit
+whose diff is only the move. Also left: the `run<n>.bin` naming rule is written
+in `spill/store.mbt` and guessed again by the CLI's purge, which is a real
+encapsulation gap; closing it means giving the published `spill` package a public
+name rule, so it is an interface decision, not a refactor.
+
+Verification: `moon check --deny-warn` on native/wasm-gc/js after each commit,
+`moon fmt --check`, `moon info` with no `.mbti` change, 254/241/241 tests, 27
+golden queries, spill acceptance 10/10, writer interop, playground 16/16, and the
+release archive gained exactly one file (`engine/spillruns.mbt`). One behavioural
+detail was checked on purpose rather than assumed: a missing CSV still reports
+`cannot read file at <path>: cannot open <path>: <errno>`, because the shared
+helper raises the same text the two copies did.
