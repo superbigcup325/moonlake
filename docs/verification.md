@@ -1584,9 +1584,11 @@ footer are genuinely wide rather than coincidentally small. pyarrow reads
 count and sum over the whole file (1.4 s, 227 MB peak RSS) and prunes to 15 MB
 for a predicate on the id range. This is reproducible with
 `harness/check_large_write.py`, which generates the CSV, writes it, checks the
-footer with pyarrow, cross-reads with DuckDB and reads back with moonlake. It is
-not wired into CI: it needs about 5 GB of scratch disk and a few minutes, so it
-is a check to run when the write path changes, not on every push.
+footer with pyarrow, cross-reads with DuckDB and reads back with moonlake. That
+script runs in the nightly workflow's `large-write` job rather than on every
+push: it needs about 5 GB of scratch disk and a few minutes, and a nightly
+cadence notices a regression long before a release does. It reads the Parquet a
+column at a time, so a 16 GB runner is enough for a 2.4 GiB file.
 
 **Unchanged.** No public signature moved (`write_bytes`, `write_bytes_with`,
 `write_file`, `write_file_with` keep theirs, and `pkg.generated.mbti` does not

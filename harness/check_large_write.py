@@ -18,7 +18,9 @@
 #
 # Costs a few minutes and about 5 GB of scratch disk (2.35 GB CSV in, 2.41 GB
 # Parquet out). Exits non-zero on the first divergence and cleans up after
-# itself unless --keep is passed.
+# itself unless --keep is passed. The nightly workflow runs it as the only
+# place where a >2 GiB file is written, so the reads here stay column-at-a-time
+# to fit a 16 GB runner.
 
 from __future__ import annotations
 
@@ -102,10 +104,12 @@ def main() -> int:
     size = parquet.stat().st_size
     print(f"  {size} bytes")
 
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
     import duckdb
 
-    meta = pq.ParquetFile(parquet).metadata
+    reader = pq.ParquetFile(parquet)
+    meta = reader.metadata
     offsets = [
         meta.row_group(group).column(column).data_page_offset
         for group in range(meta.num_row_groups)
@@ -122,14 +126,6 @@ def main() -> int:
     if meta.num_rows != rows:
         fail(f"footer says {meta.num_rows} rows, CSV had {rows}")
 
-    print("cross-reading with pyarrow ...")
-    table = pq.read_table(parquet, columns=["id", "tag"])
-    if table.num_rows != rows:
-        fail(f"pyarrow read {table.num_rows} rows, expected {rows}")
-    ids = table.column("id").to_pylist()
-    want_sum = sum(ids)
-    want_first = ids[0]
-    want_last = ids[-1]
     # the first and last tag come from the CSV itself, so this compares the
     # written values against the input rather than against a re-derivation
     with csv.open("rb") as f:
@@ -138,11 +134,30 @@ def main() -> int:
         f.seek(max(0, csv.stat().st_size - 256))
         lines = f.read().decode().strip().splitlines()
         last_tag = lines[-1].split(",")[1]
-    tags = table.column("tag")
-    if tags[0].as_py() != first_tag:
-        fail(f"pyarrow read first tag {tags[0]!r}, CSV had {first_tag!r}")
-    if tags[-1].as_py() != last_tag:
-        fail(f"pyarrow read last tag {tags[-1]!r}, CSV had {last_tag!r}")
+
+    print("cross-reading with pyarrow ...")
+    # Column at a time. The `tag` column is 2.4 GB of strings and `to_pylist()`
+    # on the ids alone would be 2.7 GB of Python ints, which a small runner
+    # cannot hold; summing in Arrow and reading the tags at the two row-group
+    # boundaries checks the same thing for a fraction of the memory.
+    ids = reader.read(columns=["id"]).column("id")
+    if len(ids) != rows:
+        fail(f"pyarrow read {len(ids)} rows, expected {rows}")
+    want_sum = pc.sum(ids).as_py()
+    want_first = ids[0].as_py()
+    want_last = ids[-1].as_py()
+
+
+    def boundary_tag(last: bool) -> str:
+        group = meta.num_row_groups - 1 if last else 0
+        tags = reader.read_row_group(group, columns=["tag"]).column("tag")
+        return (tags[-1] if last else tags[0]).as_py()
+
+
+    if boundary_tag(last=False) != first_tag:
+        fail(f"pyarrow read first tag {boundary_tag(last=False)!r}, CSV had {first_tag!r}")
+    if boundary_tag(last=True) != last_tag:
+        fail(f"pyarrow read last tag {boundary_tag(last=True)!r}, CSV had {last_tag!r}")
 
     print("cross-reading with duckdb ...")
     con = duckdb.connect()

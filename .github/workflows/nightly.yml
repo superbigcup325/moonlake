@@ -70,3 +70,44 @@ jobs:
         run: python3 harness/check_parquet_corpus.py
       - name: Writer interop (pyarrow + duckdb, both directions)
         run: python3 harness/check_writer_interop.py
+
+  #
+  # The writer's 64-bit file offsets are only exercised by a file past 2 GiB,
+  # which no per-commit job can afford: ~5 GB of scratch and a few minutes of
+  # I/O. A run that silently stops crossing the line is worse than no run, so
+  # `harness/check_large_write.py` fails when the file or its offsets stay
+  # under 2^31 instead of passing on a small file.
+  large-write:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Free disk space
+        run: |
+          # 2.35 GB CSV in, 2.41 GB Parquet out, plus the reader's own scratch:
+          # drop the SDK images this job never touches and show what is left.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Toolchain version
+        run: moon version --all
+      - name: Update registry index
+        run: moon update
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: harness/requirements.txt
+      - name: Install reference tools (pinned)
+        run: |
+          python3 -m pip install --quiet -r harness/requirements.txt
+          python3 -c 'import sys, duckdb, pyarrow; print(sys.version); print(f"DuckDB {duckdb.__version__}, PyArrow {pyarrow.__version__}")'
+      - name: Build the native CLI (release)
+        run: moon build cmd/main --target native --release
+      - name: Write a file past 2 GiB and read it back three ways
+        env:
+          MOONLAKE_BIN: _build/native/release/build/cmd/main/main.exe
+        run: python3 harness/check_large_write.py
