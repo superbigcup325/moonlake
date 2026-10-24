@@ -1094,11 +1094,10 @@ lifetime rule is how one of them gets fixed alone. `with_spill_run` wraps the
 budgeted query in the CLI, so both commands share one purge-on-both-paths
 skeleton; the `errdefer` was the line worth not copying twice.
 
-Left undone on purpose: splitting `engine/exec.mbt` four ways (aggregation,
-sorting, joins, batch utilities) and `cmd/main/main.mbt` (usage text, glob,
-spill directory, commands). Both are mechanical in MoonBit — package-private
-blocks in one package — but they are whole-file moves, so they belong in a commit
-whose diff is only the move. Also left: the `run<n>.bin` naming rule is written
+Left undone at that point, and done in the next section: splitting
+`engine/exec.mbt` four ways (aggregation, sorting, joins, batch utilities) and
+`cmd/main/main.mbt` (usage text, glob, spill directory, commands). Also left: the
+`run<n>.bin` naming rule is written
 in `spill/store.mbt` and guessed again by the CLI's purge, which is a real
 encapsulation gap; closing it means giving the published `spill` package a public
 name rule, so it is an interface decision, not a refactor.
@@ -1110,3 +1109,40 @@ release archive gained exactly one file (`engine/spillruns.mbt`). One behavioura
 detail was checked on purpose rather than assumed: a missing CSV still reports
 `cannot read file at <path>: cannot open <path>: <errno>`, because the shared
 helper raises the same text the two copies did.
+
+2026-10-24 (structure) — **Two 2000-line files became eight that say what they
+hold.** Goal: nothing behavioural again, the second half of the survey above.
+`engine/exec.mbt` (2286 lines) was four stages in one file — aggregation, the
+ordering/slicing stage, the joins, and the batch primitives they all call — and
+`cmd/main/main.mbt` (750) had the usage texts, `--csv` glob expansion and the
+spill-directory bookkeeping sitting next to the two commands.
+
+Approach: split on the `///|` separator, not by hand, and prove the result is a
+move rather than an edit. A script cut both files into blocks, wrote them into
+the new files by an explicit index map, and then compared the block multisets
+against `HEAD`: 66/66 blocks for the engine, 25/25 for the CLI, zero differences
+in either direction. That check is the whole argument — it catches a block
+dropped at a boundary, a block emitted twice, and any accidental rewording,
+none of which a green test suite would distinguish from a correct move. In
+MoonBit order within a package is irrelevant and package-private names cross
+files freely, so no block needed a rename, a `pub`, or a forward declaration;
+each new file only gained a header comment saying what belongs in it.
+
+One thing the split taught: `window` in `exec.mbt` is not the window-function
+stage (that is `engine/window.mbt` and `exec_windows`), it is the OFFSET/LIMIT
+slice over a row-id list, so it went to `exec_sort.mbt` next to `order_limit`.
+Filing it by name would have been wrong, which is the argument for reading each
+block's doc comment before moving it rather than trusting the file's outline.
+
+Boundary kept: `extsort.mbt`, `extjoin.mbt` and `extagg.mbt` are the spilling
+counterparts and did not move, so an in-memory stage and its over-budget twin
+stay one directory apart instead of one file. The CLI's single test block moved
+whole into `glob.mbt` rather than being split across the two files it tests, so
+the test *count* stayed 254/241/241 — a split block would have turned one test
+into two and made the numbers drift for a change that added no assertion.
+
+Verification: `moon check --deny-warn` on native/wasm-gc/js, `moon fmt --check`,
+`moon info` with no `.mbti` change, 254/241/241 tests, 27 golden queries, spill
+acceptance 10/10, writer interop, playground 16/16, and `moon package --list`
+185 → 191 entries (three fewer engine files than that suggests: `exec.mbt` is
+gone) — the archive grew by exactly the six files the split added.

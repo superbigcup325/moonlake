@@ -625,7 +625,7 @@ still refused, and the message now says why instead of blaming the budget.
 **Streamed aggregation.** Grace aggregation used to read a whole partition into
 memory before aggregating it, which for a hot group key meant materializing an
 arbitrarily large partition on top of the budget. It now pulls one spill file at
-a time (`BatchSeq`, `engine/exec.mbt`). Honest result: peak RSS on
+a time (`BatchSeq`, `engine/exec_agg.mbt`). Honest result: peak RSS on
 `SELECT l_returnflag, count(*) … GROUP BY 1` at SF0.1 with `--memory 200K`
 moved 305.0 → 303.7 MB, i.e. nothing measurable, because the scan's live set
 dominates and the projected input is one column wide (~3 MB), so the partition
