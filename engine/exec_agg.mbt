@@ -1,0 +1,753 @@
+// Eager aggregation: the accumulator structs and their fold, the two groupers
+// (a typed key path for the common shapes, one reusable boxed-key path for the
+// rest), and aggregate/aggregate_seq. The pull form takes a BatchSeq, so one
+// fold serves both the in-memory batch array and the grace aggregation's spill
+// runs -- engine/extagg.mbt is the over-budget caller.
+
+///|
+/// One running accumulator per aggregate spec. Mutable state lives in
+/// the payload structs so a fold step updates in place — the enum value
+/// itself is allocated once per group, not once per step.
+priv struct AccSumI {
+  mut sum : Int64
+  mut seen : Bool
+  mut overflowed : Bool
+}
+
+///|
+priv struct AccSumF {
+  mut sum : Double
+  mut seen : Bool
+}
+
+///|
+priv struct AccAvgF {
+  mut sum : Double
+  mut count : Int64
+}
+
+///|
+priv struct AccCount {
+  mut count : Int64
+}
+
+///|
+priv struct AccDistinct {
+  seen : Map[String, Bool]
+}
+
+///|
+priv struct AccVar {
+  mut mean : Double
+  mut m2 : Double
+  mut count : Int64
+}
+
+///|
+priv struct AccMed {
+  vals : Array[Double]
+}
+
+///|
+priv struct AccStrAgg {
+  mut text : String
+  mut seen : Bool
+}
+
+///|
+priv struct AccMinMax {
+  mut cur : @types.Scalar
+  mut seen : Bool
+}
+
+///|
+priv enum Acc {
+  SumI(AccSumI)
+  SumF(AccSumF)
+  AvgF(AccAvgF)
+  CountOf(AccCount)
+  Distinct(AccDistinct)
+  VarF(AccVar)
+  MedV(AccMed)
+  StrAgg(AccStrAgg)
+  MinMax(AccMinMax)
+}
+
+///|
+fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
+  let row : Array[Acc] = []
+  for spec in aggs {
+    row.push(
+      match spec.kind {
+        Sum =>
+          match spec.out_type {
+            @types.Int64 => SumI({ sum: 0L, seen: false, overflowed: false, })
+            _ => SumF({ sum: 0.0, seen: false, })
+          }
+        Avg => AvgF({ sum: 0.0, count: 0L, })
+        Count | CountStar => CountOf({ count: 0L, })
+        CountDistinct => Distinct({ seen: Map([]), })
+        StringAgg => StrAgg({ text: "", seen: false, })
+        SdSamp | SdPop | VarSamp | VarPop =>
+          VarF({ mean: 0.0, m2: 0.0, count: 0L, })
+        Median => MedV({ vals: [], })
+        Min | Max => MinMax({ cur: @types.Null, seen: false, })
+      },
+    )
+  }
+  row
+}
+
+///|
+fn as_double(v : @types.Scalar) -> Double? {
+  match v {
+    @types.Int32(x) => Some(x.to_double())
+    @types.Int64(x) => Some(x.to_double())
+    @types.Float64(x) => Some(x)
+    _ => None
+  }
+}
+
+///|
+/// Fold one input value into the accumulator, in place. `input` is the
+/// pre-evaluated aggregate input for one row; Null inputs are skipped
+/// (aggregates ignore NULL).
+fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Unit {
+  if spec.kind is CountStar {
+    match acc {
+      CountOf(a) => a.count += 1L
+      _ => ()
+    }
+    return
+  }
+  match input {
+    @types.Null => () // aggregates ignore NULL inputs
+    v =>
+      match acc {
+        SumI(a) =>
+          // checked add: overflow when the operands share a sign that
+          // the sum does not (int64 sums wrap silently otherwise)
+          match v {
+            @types.Int32(x) => {
+              let b = x.to_int64()
+              let sum = a.sum + b
+              if ((a.sum ^ sum) & (b ^ sum)) < 0L {
+                a.overflowed = true
+              }
+              a.sum = sum
+              a.seen = true
+            }
+            @types.Int64(x) => {
+              let sum = a.sum + x
+              if ((a.sum ^ sum) & (x ^ sum)) < 0L {
+                a.overflowed = true
+              }
+              a.sum = sum
+              a.seen = true
+            }
+            _ => ()
+          }
+        SumF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              a.sum += x
+              a.seen = true
+            }
+            None => ()
+          }
+        AvgF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              a.sum += x
+              a.count += 1L
+            }
+            None => ()
+          }
+        StrAgg(a) =>
+          match v {
+            @types.Str(s) => {
+              let sep = match spec.sep {
+                Some(x) => x
+                None => ""
+              }
+              a.text = if a.seen { a.text + sep + s } else { s }
+              a.seen = true
+            }
+            _ => ()
+          }
+        CountOf(a) => a.count += 1L
+        VarF(a) =>
+          match as_double(v) {
+            Some(x) => {
+              // Welford: numerically stable online variance
+              let c2 = a.count + 1L
+              let delta = x - a.mean
+              a.mean += delta / c2.to_double()
+              a.m2 += delta * (x - a.mean)
+              a.count = c2
+            }
+            None => ()
+          }
+        MedV(a) =>
+          match as_double(v) {
+            Some(x) => a.vals.push(x)
+            None => ()
+          }
+        Distinct(a) => a.seen[scalar_key(v)] = true
+        MinMax(a) =>
+          if !a.seen {
+            a.cur = v
+            a.seen = true
+          } else {
+            let c = @types.Scalar::compare_nn(v, a.cur)
+            match spec.kind {
+              Min => if c < 0 { a.cur = v }
+              Max => if c > 0 { a.cur = v }
+              _ => ()
+            }
+          }
+      }
+  }
+}
+
+///|
+fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError {
+  match acc {
+    SumI(a) =>
+      if a.overflowed {
+        raise @types.SqlError::Execute(
+          "sum() overflows int64; widen the input or filter values",
+        )
+      } else if a.seen {
+        @types.Int64(a.sum)
+      } else {
+        @types.Null
+      }
+    VarF(a) => {
+      // samp needs a second observation; pop needs a first
+      let samp = spec.kind is SdSamp || spec.kind is VarSamp
+      let ok = if samp { a.count >= 2L } else { a.count >= 1L }
+      if !ok {
+        @types.Null
+      } else {
+        let denom = if samp {
+          (a.count - 1L).to_double()
+        } else {
+          a.count.to_double()
+        }
+        let variance = a.m2 / denom
+        // the Sd* kinds are the square root; Var* stay as variance
+        @types.Float64(
+          if spec.kind is SdSamp || spec.kind is SdPop {
+            variance.sqrt()
+          } else {
+            variance
+          },
+        )
+      }
+    }
+    StrAgg(a) => if a.seen { @types.Str(a.text) } else { @types.Null }
+    MedV(a) => {
+      if a.vals.length() == 0 {
+        return @types.Null
+      }
+      a.vals.sort()
+      let n = a.vals.length()
+      if n % 2 == 1 {
+        @types.Float64(a.vals[n / 2])
+      } else {
+        @types.Float64((a.vals[n / 2 - 1] + a.vals[n / 2]) / 2.0)
+      }
+    }
+    SumF(a) => if a.seen { @types.Float64(a.sum) } else { @types.Null }
+    AvgF(a) =>
+      if a.count > 0L {
+        @types.Float64(a.sum / a.count.to_double())
+      } else {
+        @types.Null
+      }
+    CountOf(a) => @types.Int64(a.count)
+    Distinct(a) => @types.Int64(a.seen.length().to_int64())
+    MinMax(a) => if a.seen { a.cur } else { @types.Null }
+  }
+}
+
+///|
+/// Type-tagged, length-prefixed key text so distinct scalars never
+/// collide across groups or join lookups.
+fn scalar_key(v : @types.Scalar) -> String {
+  let sb = StringBuilder()
+  match v {
+    @types.Null => sb.write_string("0:")
+    @types.Boolean(b) => {
+      sb.write_string("1:")
+      sb.write_string(if b { "T" } else { "F" })
+    }
+    @types.Int32(x) => {
+      sb.write_string("2:")
+      sb.write_string(x.to_string())
+    }
+    @types.Int64(x) => {
+      sb.write_string("3:")
+      sb.write_string(x.to_string())
+    }
+    @types.Float64(x) => {
+      sb.write_string("4:")
+      sb.write_string(x.to_string())
+    }
+    @types.Str(s) => {
+      sb.write_string("5:")
+      sb.write_string(s.length().to_string())
+      sb.write_char(':')
+      sb.write_string(s)
+    }
+    @types.Date(d) => {
+      sb.write_string("6:")
+      sb.write_string(d.to_string())
+    }
+  }
+  sb.to_string()
+}
+
+///|
+fn canonical_key(vals : Array[@types.Scalar]) -> String {
+  let sb = StringBuilder()
+  for v in vals {
+    sb.write_string(scalar_key(v))
+    sb.write_char('\u{0001}')
+  }
+  sb.to_string()
+}
+
+///|
+/// How the group index maps a row to its group id. Single int and
+/// single string keys hash the raw column value — no per-row key
+/// building at all (the string key IS the column's string); every other
+/// shape shares one reusable key builder and materializes the boxed
+/// key row once per group, not once per row. Nulls never enter the
+/// maps: the first null-keyed row opens a shared null group.
+priv enum Grouper {
+  GZero // no GROUP BY: exactly one group
+  GI32(Map[Int64, Int32])
+  GI64(Map[Int64, Int32])
+  GDate(Map[Int64, Int32])
+  GStr(Map[String, Int32])
+  GText(Map[String, Int32], StringBuilder)
+}
+
+///|
+/// A numeric aggregate input resolved to its raw typed arrays, so the
+/// fold loop skips the boxed Scalar per cell. MinMax (must return the
+/// input's own dtype), CountDistinct (needs the boxed key) and
+/// non-numeric inputs stay boxed.
+priv enum FastInput {
+  FBoxed(@types.ColumnVector)
+  FI32(FixedArray[Int32], FixedArray[Bool])
+  FI64(FixedArray[Int64], FixedArray[Bool])
+  FF64(FixedArray[Double], FixedArray[Bool])
+}
+
+///|
+fn fast_input_of(v : @types.ColumnVector, spec : AggSpec) -> FastInput {
+  let numeric_kind = match spec.kind {
+    Sum | Avg | Count | SdSamp | SdPop | VarSamp | VarPop | Median => true
+    _ => false
+  }
+  if !numeric_kind {
+    return FBoxed(v)
+  }
+  match v {
+    @types.I32(d, valid) => FI32(d, valid)
+    @types.I64(d, valid) => FI64(d, valid)
+    @types.F64(d, valid) => FF64(d, valid)
+    _ => FBoxed(v)
+  }
+}
+
+///|
+/// Fold one valid numeric cell into the accumulator, given in both
+/// int64 and double views. Only the numeric fold kinds reach this —
+/// the binder never pairs them with a dtype the views cannot carry.
+fn acc_step_num(acc : Acc, as_int : Int64, as_f64 : Double) -> Unit {
+  match acc {
+    SumI(a) => {
+      // checked add, same rule as acc_step
+      let sum = a.sum + as_int
+      if ((a.sum ^ sum) & (as_int ^ sum)) < 0L {
+        a.overflowed = true
+      }
+      a.sum = sum
+      a.seen = true
+    }
+    SumF(a) => {
+      a.sum += as_f64
+      a.seen = true
+    }
+    AvgF(a) => {
+      a.sum += as_f64
+      a.count += 1L
+    }
+    CountOf(a) => a.count += 1L
+    VarF(a) => {
+      let c2 = a.count + 1L
+      let delta = as_f64 - a.mean
+      a.mean += delta / c2.to_double()
+      a.m2 += delta * (as_f64 - a.mean)
+      a.count = c2
+    }
+    MedV(a) => a.vals.push(as_f64)
+    _ => ()
+  }
+}
+
+///|
+/// A pull-based batch source for aggregation. `next` returns `None`
+/// exactly once, at the end.
+priv struct BatchSeq {
+  next : () -> @types.DataBatch? raise @types.SqlError
+}
+
+///|
+/// A sequence over batches the caller already holds.
+fn BatchSeq::of_batches(batches : Array[@types.DataBatch]) -> BatchSeq {
+  let mut i = 0
+  {
+    next: fn() {
+      if i < batches.length() {
+        let b = batches[i]
+        i += 1
+        Some(b)
+      } else {
+        None
+      }
+    },
+  }
+}
+
+///|
+/// A sequence over spill files: each file is decoded when the cursor
+/// reaches it and dropped once its batches have been consumed, so a
+/// partition made of many runs stays bounded by one run file.
+fn BatchSeq::of_runs(store : SpillStore, ids : Array[Int32]) -> BatchSeq {
+  let mut file = 0
+  let mut decoded : Array[@types.DataBatch] = []
+  let mut inner = 0
+  {
+    next: fn() -> @types.DataBatch? raise @types.SqlError {
+      let mut out : @types.DataBatch? = None
+      let mut done = false
+      while !done {
+        if inner < decoded.length() {
+          out = Some(decoded[inner])
+          inner += 1
+          done = true
+        } else if file < ids.length() {
+          decoded = @types.DataBatch::from_spill_bytes((store.read)(ids[file]))
+          inner = 0
+          file += 1
+        } else {
+          done = true
+        }
+      }
+      out
+    },
+  }
+}
+
+///|
+/// Hash aggregation: one output row per distinct group key (in first-
+/// seen order). With no GROUP BY the result is exactly one row, even for
+/// empty input.
+fn aggregate(
+  batches : Array[@types.DataBatch],
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch raise @types.SqlError {
+  aggregate_seq(BatchSeq::of_batches(batches), group_exprs, group_types, aggs)
+}
+
+///|
+/// The pull form of `aggregate`: the group state is built batch by batch,
+/// so a caller that decodes spill runs (grace aggregation) never holds a
+/// whole partition in memory — one run file plus the state at most.
+fn aggregate_seq(
+  seq : BatchSeq,
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch raise @types.SqlError {
+  let g = group_exprs.length()
+  let m = aggs.length()
+  let grouper : Grouper = if g == 0 {
+    GZero
+  } else if g == 1 {
+    match group_types[0] {
+      @types.Int32 => GI32(Map([]))
+      @types.Int64 => GI64(Map([]))
+      @types.Date => GDate(Map([]))
+      @types.Str => GStr(Map([]))
+      _ => GText(Map([]), StringBuilder())
+    }
+  } else {
+    GText(Map([]), StringBuilder())
+  }
+  let group_keys : Array[Array[@types.Scalar]] = []
+  let acc_rows : Array[Array[Acc]] = []
+  let mut null_gi = -1
+  let mut zero_created = false
+  while (seq.next)() is Some(batch) {
+    // evaluate group keys and aggregate inputs once per batch, then the
+    // row loop reads the materialized columns
+    let key_cols : Array[@types.ColumnVector] = []
+    for e in group_exprs {
+      key_cols.push(eval_vec(e, batch))
+    }
+    let input_cols : Array[FastInput] = []
+    for spec in aggs {
+      match spec.input {
+        Some(e) => input_cols.push(fast_input_of(eval_vec(e, batch), spec))
+        None =>
+          input_cols.push(FBoxed(@types.ColumnVector::make(@types.Int32, 0)))
+      }
+    }
+    for r in 0..<batch.row_count() {
+      let gi = match grouper {
+        GZero =>
+          if zero_created {
+            0
+          } else {
+            zero_created = true
+            group_keys.push([])
+            acc_rows.push(new_accs(aggs))
+            0
+          }
+        GI32(map) =>
+          match key_cols[0] {
+            @types.I32(d, valid) =>
+              if valid[r] {
+                let k = d[r].to_int64()
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Int32(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (int32)",
+              )
+          }
+        GI64(map) =>
+          match key_cols[0] {
+            @types.I64(d, valid) =>
+              if valid[r] {
+                let k = d[r]
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Int64(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (int64)",
+              )
+          }
+        GDate(map) =>
+          match key_cols[0] {
+            @types.DateV(d, valid) =>
+              if valid[r] {
+                let k = d[r].to_int64()
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Date(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (date)",
+              )
+          }
+        GStr(map) =>
+          match key_cols[0] {
+            @types.StrV(d, valid) =>
+              if valid[r] {
+                let k = d[r]
+                match map.get(k) {
+                  Some(i) => i
+                  None => {
+                    let i = group_keys.length()
+                    map[k] = i
+                    group_keys.push([@types.Str(d[r])])
+                    acc_rows.push(new_accs(aggs))
+                    i
+                  }
+                }
+              } else {
+                if null_gi < 0 {
+                  null_gi = group_keys.length()
+                  group_keys.push([@types.Null])
+                  acc_rows.push(new_accs(aggs))
+                }
+                null_gi
+              }
+            _ =>
+              raise @types.SqlError::Execute(
+                "internal: group key dtype drift (string)",
+              )
+          }
+        GText(map, sb) => {
+          sb.reset()
+          // injective per position: null is 'N', strings are
+          // length-prefixed, the \u{0001} separator ends each component;
+          // dtypes are fixed per position so no type tags are needed
+          for c in 0..<g {
+            let vec = key_cols[c]
+            match vec {
+              @types.I32(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.I64(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.F64(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+              @types.BoolV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(if d[r] { "T" } else { "F" })
+                } else {
+                  sb.write_char('N')
+                }
+              @types.StrV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].length().to_string())
+                  sb.write_char(':')
+                  sb.write_string(d[r])
+                } else {
+                  sb.write_char('N')
+                }
+              @types.DateV(d, valid) =>
+                if valid[r] {
+                  sb.write_string(d[r].to_string())
+                } else {
+                  sb.write_char('N')
+                }
+            }
+            sb.write_char('\u{0001}')
+          }
+          let key = sb.to_string()
+          match map.get(key) {
+            Some(i) => i
+            None => {
+              let kv : Array[@types.Scalar] = []
+              for c in 0..<g {
+                kv.push(key_cols[c].get(r))
+              }
+              let i = group_keys.length()
+              map[key] = i
+              group_keys.push(kv)
+              acc_rows.push(new_accs(aggs))
+              i
+            }
+          }
+        }
+      }
+      let row = acc_rows[gi]
+      for i in 0..<m {
+        // CountStar has no input column; its FBoxed placeholder is
+        // never read because acc_step short-circuits on CountStar
+        match input_cols[i] {
+          FI32(d, valid) =>
+            if valid[r] {
+              acc_step_num(row[i], d[r].to_int64(), d[r].to_double())
+            }
+          FI64(d, valid) =>
+            if valid[r] {
+              acc_step_num(row[i], d[r], d[r].to_double())
+            }
+          FF64(d, valid) => if valid[r] { acc_step_num(row[i], 0L, d[r]) }
+          FBoxed(col) => {
+            // CountStar has no input column: pass a placeholder rather
+            // than reading its empty vector; acc_step ignores it
+            let input = if aggs[i].kind is CountStar {
+              @types.Null
+            } else {
+              col.get(r)
+            }
+            acc_step(row[i], aggs[i], input)
+          }
+        }
+      }
+    }
+  }
+  if g == 0 && group_keys.length() == 0 {
+    // a no-GROUP-BY aggregate over empty input still yields one row
+    group_keys.push([])
+    acc_rows.push(new_accs(aggs))
+  }
+  let n = group_keys.length()
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<g {
+    let vec = @types.ColumnVector::make(group_types[c], n)
+    for r in 0..<n {
+      vec.set(r, group_keys[r][c])
+    }
+    columns.push(vec)
+  }
+  for i in 0..<m {
+    let vec = @types.ColumnVector::make(aggs[i].out_type, n)
+    for r in 0..<n {
+      vec.set(r, acc_finish(acc_rows[r][i], aggs[i]))
+    }
+    columns.push(vec)
+  }
+  @types.DataBatch::new(columns, n)
+}
