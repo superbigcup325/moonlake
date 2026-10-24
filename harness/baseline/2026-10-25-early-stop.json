@@ -1,0 +1,208 @@
+{
+  "schema": 1,
+  "what": "what a query costs its source: scan rows pulled, RSS, time",
+  "toolchain": {
+    "raw": [
+      "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon",
+      "moonc v0.10.16+b1a0e846e (2026-10-16) ~/.moon/bin/moonc",
+      "moonrun 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moonrun",
+      "",
+      "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+    ],
+    "moon": "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon"
+  },
+  "git": {
+    "commit": "5b34ad81d31abbf5f609a49547d47abbc5f807da",
+    "branch": "main",
+    "subject": "docs(changelog): name the new spill functions and what the snappy tags cost",
+    "dirty": true
+  },
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "cpu_mhz_at_start": 4200,
+    "kernel": "7.3.0-4-cachyos",
+    "os": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      3.923828125,
+      2.72265625,
+      2.3154296875
+    ],
+    "python": "3.12.14"
+  },
+  "fixture": {
+    "rows": 2000000,
+    "seed": 20261025,
+    "columns": [
+      "id",
+      "i32",
+      "i64",
+      "f64",
+      "cat",
+      "flag"
+    ],
+    "csv_sha256": "a902ff5b5c1e3d6ebb6aa03ade6e4d6116f7eec7c04396038c9e7cd1c522ed12",
+    "csv_bytes": 80738963,
+    "parquet_bytes": 74656667
+  },
+  "measure_floor_mb": 13.8,
+  "binary": "_build/native/release/build/cmd/main/main.exe",
+  "cases": [
+    {
+      "id": "scan/count",
+      "what": "COUNT(*) over the whole file",
+      "sql": "select count(*) as n from t",
+      "scan_rows": 2000000,
+      "result_rows": 1,
+      "wall_ms": 205.0,
+      "median_ms": 206.0,
+      "cpu_ms": 203.6,
+      "rss_mb": 21.3,
+      "rss_raw_mb": 35.1,
+      "wall_spread_pct": 0.5,
+      "output_sha256": "25b8c96bd68ea1ff36bf16105e965320b72d3f56b3ff44857e907256d121f3f1"
+    },
+    {
+      "id": "scan/limit",
+      "what": "SELECT * LIMIT 10: the case early stop is about",
+      "sql": "select * from t limit 10",
+      "scan_rows": 2000000,
+      "result_rows": 10,
+      "wall_ms": 482.8,
+      "median_ms": 487.9,
+      "cpu_ms": 480.2,
+      "rss_mb": 252.0,
+      "rss_raw_mb": 265.8,
+      "wall_spread_pct": 1.1,
+      "output_sha256": "d0359b0d1004f922d0fda85c076fbf1a756da573c658dac91d6cafd4653d6d15"
+    },
+    {
+      "id": "scan/limit_narrow",
+      "what": "one projected column, LIMIT 10",
+      "sql": "select id from t limit 10",
+      "scan_rows": 2000000,
+      "result_rows": 10,
+      "wall_ms": 212.6,
+      "median_ms": 216.8,
+      "cpu_ms": 211.3,
+      "rss_mb": 31.4,
+      "rss_raw_mb": 45.2,
+      "wall_spread_pct": 2.0,
+      "output_sha256": "84af90e34bf4397b70dcd44da60cf8fdfbf19ddeca86ecb2d3399bb2c06e0940"
+    },
+    {
+      "id": "scan/filter_limit",
+      "what": "a filter that keeps nothing, LIMIT 10",
+      "sql": "select * from t where i32 < -1000 limit 10",
+      "scan_rows": 0,
+      "result_rows": 0,
+      "wall_ms": 385.6,
+      "median_ms": 390.4,
+      "cpu_ms": 383.6,
+      "rss_mb": 21.5,
+      "rss_raw_mb": 35.3,
+      "wall_spread_pct": 1.2,
+      "output_sha256": "85e82ba95fc2c1f1560470a4309ead109981801091f79c8ded81139607230020"
+    },
+    {
+      "id": "scan/filter_count",
+      "what": "filter plus aggregate: reads every row on purpose",
+      "sql": "select count(*) as n from t where i32 < 0",
+      "scan_rows": 999737,
+      "result_rows": 1,
+      "wall_ms": 237.9,
+      "median_ms": 238.2,
+      "cpu_ms": 236.6,
+      "rss_mb": 27.5,
+      "rss_raw_mb": 41.3,
+      "wall_spread_pct": 0.1,
+      "output_sha256": "b1f71ec728629e702dea750474b3cb8bd7009063ab095d6341831b4b25d57da6"
+    },
+    {
+      "id": "scan/sort_limit",
+      "what": "ORDER BY on two columns, LIMIT 10",
+      "sql": "select id, i32 from t order by i32, id limit 10",
+      "scan_rows": 2000000,
+      "result_rows": 10,
+      "wall_ms": 1037.6,
+      "median_ms": 1057.9,
+      "cpu_ms": 1033.9,
+      "rss_mb": 53.3,
+      "rss_raw_mb": 67.1,
+      "wall_spread_pct": 2.0,
+      "output_sha256": "8876e703e05ff2a18b651c8f8230569cf1c6c7244c073312957b7c681353c8e5"
+    },
+    {
+      "id": "scan/offset",
+      "what": "OFFSET deep into an ordered result",
+      "sql": "select id from t order by id limit 5 offset 1000000",
+      "scan_rows": 2000000,
+      "result_rows": 5,
+      "wall_ms": 235.3,
+      "median_ms": 235.6,
+      "cpu_ms": 233.8,
+      "rss_mb": 39.3,
+      "rss_raw_mb": 53.2,
+      "wall_spread_pct": 0.1,
+      "output_sha256": "58e89dfce86eda3af30c58964e3f9fa2f620ee14c602dcc96f02fc973a4b9e93"
+    },
+    {
+      "id": "scan/derived_limit",
+      "what": "a derived table under an outer LIMIT",
+      "sql": "select * from (select id from t) s limit 10",
+      "scan_rows": null,
+      "result_rows": null,
+      "wall_ms": 223.4,
+      "median_ms": 234.9,
+      "cpu_ms": 222.1,
+      "rss_mb": 53.4,
+      "rss_raw_mb": 67.3,
+      "wall_spread_pct": 5.1,
+      "output_sha256": "84af90e34bf4397b70dcd44da60cf8fdfbf19ddeca86ecb2d3399bb2c06e0940"
+    },
+    {
+      "id": "scan/full",
+      "what": "every row printed: the collector path",
+      "sql": "select id from t",
+      "scan_rows": 2000000,
+      "result_rows": 2000000,
+      "wall_ms": 418.9,
+      "median_ms": 446.3,
+      "cpu_ms": 413.9,
+      "rss_mb": 37.5,
+      "rss_raw_mb": 51.3,
+      "wall_spread_pct": 6.5,
+      "output_sha256": "3f4f6bfac2192d45e6c34f1356c410eb41d44942b335b3f5009fa04e0ebc6e26"
+    },
+    {
+      "id": "scan/parquet_count",
+      "what": "COUNT(*) over the Parquet file",
+      "sql": "select count(*) as n from t",
+      "scan_rows": 2000000,
+      "result_rows": 1,
+      "wall_ms": 13.2,
+      "median_ms": 16.0,
+      "cpu_ms": 12.9,
+      "rss_mb": 0.1,
+      "rss_raw_mb": 13.9,
+      "wall_spread_pct": 21.3,
+      "output_sha256": "25b8c96bd68ea1ff36bf16105e965320b72d3f56b3ff44857e907256d121f3f1"
+    },
+    {
+      "id": "scan/parquet_limit",
+      "what": "SELECT * LIMIT 10 over the Parquet file",
+      "sql": "select * from t limit 10",
+      "scan_rows": 2000000,
+      "result_rows": 10,
+      "wall_ms": 277.6,
+      "median_ms": 322.2,
+      "cpu_ms": 273.9,
+      "rss_mb": 250.2,
+      "rss_raw_mb": 264.0,
+      "wall_spread_pct": 16.0,
+      "output_sha256": "d0359b0d1004f922d0fda85c076fbf1a756da573c658dac91d6cafd4653d6d15"
+    }
+  ]
+}
