@@ -1501,3 +1501,48 @@ behaviour, minus the surprise.
 **Not done here.** No lease is renewed or expired by time: an owner that hangs
 forever keeps its directory forever, which is correct (it is still running). The
 writer's 2 GiB page-offset limit is still separate work.
+
+## 23. 0.5.0 release (2026-10-24)
+
+Every gate below ran on `2da10d1`, the commit the tag points at.
+
+**Pre-publish gates.** `harness/check_release.py --tag v0.5.0 --check-consumer`
+reported the version claims agreeing (`moon.mod`, `moonlake.mbt`, the newest
+CHANGELOG heading and the tag), the archive holding 187 files with no
+dot-prefixed path, a clean tree, and an archive consumer green on native,
+wasm-gc and JS with a fresh registry and dependency cache. `moon publish
+--dry-run` then returned `Server status: 202 Accepted, detail: Dry run completed
+successfully`.
+
+**Publish.** `moon publish` (through a scratch `MOON_HOME`, because the default
+toolchain home is not writable in this environment) unpacked the archive, passed
+its own `moon check` on the extracted package and reported **`Server status: 200
+OK`**. `moon view superbigcup325/moonlake` reports `Latest: 0.5.0`, published
+`2026-10-24T14:05:05Z`, five versions total.
+
+**Registry consumer.** `harness/check_consumer.py --registry-version 0.5.0`
+resolved the package from mooncakes with no workspace override; native, wasm-gc
+and JS all return the expected version, CSV query, raw/Snappy Parquet
+round-trips, DATE/NULL values and table removal. Evidence boundary: this is a
+registry install of a **released** artifact, not the archive gate of §16.
+
+**Tag, workflows, GitHub release.** The tag is annotated, on `2da10d1`. Pages
+deployed that commit ([pages](https://github.com/superbigcup325/moonlake/actions/runs/40100901865))
+and the tag-triggered provenance job ran green
+([release](https://github.com/superbigcup325/moonlake/actions/runs/40100915146)),
+which re-checked the version claims against the tag and ran the archive consumer.
+CI on the same SHA finished green afterwards
+([CI](https://github.com/superbigcup325/moonlake/actions/runs/40100901861)):
+check, native/wasm-gc/js tests, the TPC-H chain, writer interop and the
+playground job. [The GitHub release](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0)
+was created from the CHANGELOG section of this version.
+
+**Deployed page.** The public page was driven in real Chromium with the version
+gate defaulting to `moon.mod`: 16/16 checks pass, so the page and the tag agree
+on the release identity.
+
+Release limitations, unchanged: the writer's 2 GiB page-offset limit still
+refuses larger files, wasm-gc/js scans still read whole files (their filesystem
+module has no range reads), and spill reclaim still declines to guess about a
+directory whose owner cannot be proven dead. §22 lists what is refused on
+purpose and why.

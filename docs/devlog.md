@@ -1145,3 +1145,42 @@ Verification: `moon check --deny-warn` on native/wasm-gc/js, `moon fmt --check`,
 acceptance 10/10, writer interop, playground 16/16, and `moon package --list`
 185 → 191 entries (three fewer engine files than that suggests: `exec.mbt` is
 gone) — the archive grew by exactly the six files the split added.
+
+2026-10-24 (release) — **0.5.0 shipped, and the docs were made readable first.**
+Goal: publish the four memory changes since 0.4.0, but read the tracked docs as
+someone who only has the repository before doing it.
+
+What that reading found: four tracked docs and the `platform/io` header cited a
+local decision note by filename, the release checker listed a local scratch directory
+among the paths an archive must not contain, one benchmark record stored the
+absolute path of the toolchain binary it ran, and eight places used milestone
+labels (`N1`, `N2a`, `N2b`, `N3`) that mean nothing outside the work that
+produced them. None of those is a wrong claim; each is a sentence a stranger
+cannot follow.
+
+Fixes, chosen so the reasoning stays where the claim is: the `platform/io`
+header now lists the two routes that were rejected (a native-only dependency
+poisons the wasm-gc build plan; target-filtered public functions make the
+interface differ per backend), `verification.md` says which route shipped and
+what contract the binding keeps, and the devlog keeps the prose. The archive
+gate stopped naming one dot-directory and now rejects any path component
+starting with a dot, which is both stricter and needs no local knowledge.
+Recorded toolchain strings keep the version and build hash and drop the path.
+Milestone labels became the change they name: the streaming writer, the Parquet
+range reader, the CSV range reader, spill-lease reclamation.
+
+One accidental confirmation of the gate: the version bump commit was refused by
+the pre-commit hook because `moonlake_test.mbt` still asserted `0.4.0` on both
+`version()` and `VERSION`. A release touches more than `moon.mod`, and the hook
+is what noticed.
+
+Publish: `moon publish --dry-run` returned `202 Accepted`, `moon publish`
+returned `Server status: 200 OK`, and the registry consumer passed on native,
+wasm-gc and js against the published artifact. The deployed page passed its
+16/16 acceptance with the version gate defaulting to `moon.mod`. Evidence,
+including run links, is in `verification.md` §23.
+
+Quality boundary: nothing behavioural changed between the last code commit of
+0.5.0 and the release commit except the version constants; the docs commit moved
+claims and the gate together, and the gate keeps passing over the same 187-file
+archive.
