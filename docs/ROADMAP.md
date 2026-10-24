@@ -26,7 +26,7 @@ refused:
 
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
-| wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream: a `read_at`-style API in `moonbitlang/x`. The browser playground has no filesystem at all and would keep using in-memory input either way. |
+| wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
 | The executor is not streaming end to end | Queries whose result is large but whose operators are not blocking | Spilling bounds a blocking `ORDER BY`/join/`GROUP BY`; a fully streaming pipeline (with backpressure between operators) is a design change, not a flag. Starts when a query that spills is shown to be slow *because* it materializes, not because it spills. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |
@@ -45,7 +45,7 @@ reader can tell the difference between "not yet" and "no".
 | `DECIMAL`, `TIMESTAMP`, explicit window frames | A semantic need with the full chain designed (see the limits table). |
 | Arrow, a DataFrame API, JSONL, object storage | A real consumer and an interface contract. These stay separate adapters; the engine's own API is not a DataFrame. |
 | Parallel execution, linear memory, cross-language benchmark suites | A target user and toolchain support for it. |
-| Ranged reads in `moonbitlang/x` | An upstream API worth proposing: the shape is one range-read method behind the existing file type, with the same contract the native binding keeps. |
+| Ranged reads on wasm-gc and js | Upstream exposing one: a single range-read method behind the existing file type, with the same contract the native binding keeps. `moonbitlang/async` shows the shape on native; the synchronous path and the wasm-gc/js runtime behind it are upstream's to build, so this direction waits rather than being worked on here. |
 
 ## What a release has to clear
 
