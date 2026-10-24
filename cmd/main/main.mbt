@@ -388,14 +388,13 @@ priv struct SpillRun {
 /// * `create_dir` is the lock: the `path_exists` check is an optimisation, and
 ///   a racing process loses the create and moves to the next index.
 ///
-/// What this cannot do is reclaim a subdirectory left behind by a killed
-/// process. The filesystem API in use exposes no pid, no clock and no file
-/// timestamp, so a dead owner is indistinguishable from a live one, and
-/// guessing wrong would delete a running query's run files. The leak is
-/// therefore bounded to one directory per interrupted query under TMPDIR, and
-/// every completed query removes its directory on both the success and the
-/// error path. Making it reclaimable needs native OS APIs beyond the current
-/// moonbitlang/x filesystem surface.
+/// A directory left behind by a killed process is reclaimed here, but only when
+/// it says who owned it and that owner is provably gone: the marker written by
+/// `claim_owner` records a pid, a boot id and the pid's start time, and
+/// `judge_owner` accepts exactly three proofs of death (another boot, a pid that
+/// no longer exists, a pid whose start time changed). A directory with no
+/// marker, an unknown marker, or a live owner is left alone — one of those is a
+/// running query's run files.
 fn spill_run_dir(spill_dir : String?) -> SpillRun raise @types.SqlError {
   let base = match spill_dir {
     Some(d) => d
@@ -412,18 +411,42 @@ fn spill_run_dir(spill_dir : String?) -> SpillRun raise @types.SqlError {
     }
   }
   let mut n = 0
-  while n < 1000 {
+  let mut noted = 0
+  while n < SPILL_RUN_LIMIT {
     let dir = "\{base}/moonlake-spill-\{n}"
-    if !@fs.path_exists(dir) {
-      @fs.create_dir(dir) catch {
-        @fs.IOError(_) => {
+    if @fs.path_exists(dir) {
+      match inspect_owner(dir) {
+        Stale(why) =>
+          // The directory is free after this; go around again rather than burn
+          // the index, so the numbering stays dense for the next run.
+          if reclaim_owner(dir) {
+            if noted < SPILL_NOTE_LIMIT {
+              noted += 1
+              eprintln("moonlake: reclaimed \{dir}: \{why}")
+            }
+          } else {
+            n += 1
+          }
+        Live => n += 1
+        Unreadable(why) => {
+          if noted < SPILL_NOTE_LIMIT {
+            noted += 1
+            eprintln("moonlake: warning: kept spill directory \{dir}: \{why}")
+          }
           n += 1
-          continue
         }
+        Unavailable => n += 1
       }
-      return { dir, base, created_base, }
+      continue
     }
-    n += 1
+    @fs.create_dir(dir) catch {
+      @fs.IOError(_) => {
+        n += 1
+        continue
+      }
+    }
+    claim_owner(dir)
+    return { dir, base, created_base, }
   }
   raise @types.SqlError::Execute("no free spill directory under \{base}")
 }
@@ -438,7 +461,7 @@ fn purge_dir(dir : String) -> Unit {
     @fs.IOError(_) => return // already gone: nothing to purge
   }
   for name in entries {
-    if is_run_file(name) {
+    if is_run_file(name) || is_owner_file(name) {
       @fs.remove_file("\{dir}/\{name}") catch {
         @fs.IOError(_) => ()
       }

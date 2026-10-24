@@ -1009,3 +1009,62 @@ queries, 7 spill checks, writer interop unchanged.
 What this does not claim: wasm-gc/js still hold the file bytes (no range read in
 their fs module, and nothing to seek in a browser), the writer's 2 GiB page-offset
 limit is untouched, and spill-lease reclamation is still the next item.
+
+2026-10-24 (spill) — **A spill directory can now say who owns it.** Goal: the
+one entry on the memory list that was never a performance problem — a query
+killed with `SIGKILL` left its `moonlake-spill-<n>` behind, and nothing would
+ever remove it. The reason it was left was honest: `moonbitlang/x/fs` exposes no
+pid, no clock and no file timestamp, so a dead owner and a live one looked
+identical, and the previous section called the leak a pinned boundary rather than
+fix it with a guess.
+
+Approach: write the proof down when the directory is claimed. Right after
+`create_dir` wins, the query creates `owner` with `O_CREAT|O_EXCL` — a claim, not
+a lock, so an existing marker is never overwritten — recording its pid, the
+kernel's boot id, and that pid's start time (field 22 of `/proc/<pid>/stat`).
+A later run judges a marker with three facts and needs all of them: a different
+boot id means the owner died before the reboot; a missing `/proc/<pid>` means the
+process is gone; a different start time means the number was reused. Everything
+else — no marker, an unknown version, a missing field, no `/proc`, a probe that
+errors — is "cannot tell", and a directory that cannot be judged is kept and
+reported. Reclaiming renames the marker to `owner.stale-<nonce>` before deleting
+anything: that rename is the claim among concurrent reapers, and it guarantees a
+reclaim interrupted in the middle leaves a directory with no marker, which the
+"cannot tell" rule then refuses to touch again.
+
+The rules are pure — `judge_owner(mark, boot_id_here, probe)` — and the machine
+facts are target-split, so the table of seven combinations is tested on all three
+backends without forking a process or rebooting, while four native tests hit the
+real `/proc`. The protocol sits in `cmd/main`, an executable nobody imports, so
+the published interface did not move and `spill` still knows nothing about
+leases. `platform/io` grew an exclusive create, a rename that reports a vanished
+source instead of failing, a hand-rolled `/proc` read (`x/fs` sizes a read from
+`stat`, and every `/proc` file reports 0, so a size-driven read returns empty),
+and the clock: 113 → 177 lines of C.
+
+Two things cost time. The boot id file ends with a newline, and the marker parser
+trims while the in-memory comparison did not, so a marker this process had just
+written judged itself stale — the native test caught it in the first run. And the
+acceptance check I first wrote waited for `run*.bin` before killing the query;
+on SF0.1 with `--memory 200K` the spill phase lasts a fraction of the run, so the
+poll lost the race and the query exited cleanly. The check now freezes the query
+the moment its `owner` file appears and writes the leaked run file by hand, which
+is exactly what a kill mid-sort leaves. The same investigation showed check 4 of
+the existing suite would pass on `spill runs: 0`, so it now requires a non-zero
+count.
+
+Quality boundary: one directory is only reclaimed on positive evidence. The known
+false-dead case is a `--spill-dir` shared across PID namespaces, where pids mean
+different things in different containers; that is documented rather than
+detected, and the mitigation is a per-container directory. On macOS there is no
+boot id to record, so nothing is claimed and nothing is reclaimed — the old
+behaviour, minus the surprise.
+
+Evidence: 254 / 241 / 241 tests across native, wasm-gc and js with
+`--deny-warn`; a ten-check `harness/spill_accept.sh` including the frozen-then-
+`kill -9` reclaim and the live-owner protection; 27 golden queries; writer
+interop; playground 16/16; `moon package --list` at 184 entries.
+
+What this does not claim: no lease is renewed or expired by time, so an owner
+that hangs forever keeps its directory forever (it is still running, so that is
+the right answer), and the writer's 2 GiB page-offset limit is still its own task.

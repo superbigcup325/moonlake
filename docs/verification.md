@@ -647,9 +647,9 @@ lock; a racing process loses and moves on), and the purge only ever looks
 inside the directory it created — so a caller's own files are not even listed,
 let alone deleted.
 
-**What cannot be fixed without a clock or a pid.** A killed process leaves its
-subdirectory behind, and the next run does not remove it: the filesystem API in
-use (`moonbitlang/x/fs`) exposes no pid, no wall clock and no file timestamp,
+**What could not be fixed without a clock or a pid.** A killed process leaves
+its subdirectory behind, and the next run does not remove it: the filesystem API
+in use (`moonbitlang/x/fs`) exposes no pid, no wall clock and no file timestamp,
 so a dead owner and a live one look identical, and deleting on a guess would
 break a running query. Measured: `kill -9` during a spilled sort leaves
 `moonlake-spill-0` with 40 run files (1.8 MB); a following clean query creates
@@ -657,7 +657,9 @@ its own directory, finishes, removes it, and leaves that one alone. The leak is
 therefore bounded to one directory per interrupted query, which the acceptance
 pins as a known boundary. Reclaiming it needs a native syscall surface in the
 CLI, which conflicts with the project's "no FFI" claim and is a decision, not a
-bug fix.
+bug fix. That decision was taken in §22: the CLI now records an owner marker and
+reclaims a directory whose owner it can prove dead, and still keeps one it
+cannot judge — the paragraph above is the state this section measured.
 
 **Acceptance.** `bash harness/spill_accept.sh` (seven checks, deterministic,
 ~4 s):
@@ -671,7 +673,9 @@ bug fix.
 5. the same `ANALYZE` without a budget prints no spill line at all;
 6. two spilled queries running at once on one `--spill-dir` both succeed with
    their own answers and leave the directory empty;
-7. a `moonlake-spill-0` left by an interrupted run survives the next query.
+7. a `moonlake-spill-0` left by an interrupted run survives the next query
+   (§22 restates this as "a directory with no marker survives", and adds the
+   reclaiming cases; the list here is the seven this section shipped).
 
 Counters are taken at the store boundary (one wrapper around the caller's
 `SpillStore`, `engine/options.mbt`), not inside each operator, so a future
@@ -955,7 +959,8 @@ These are local development results. The previous published-package evidence
 remains in §8; a 0.4.0 tag, publication, registry-consumer acceptance and a
 check of the newly deployed public page are separate release steps. Whole-file
 output buffering and reclaiming a killed query's spill directory still require
-filesystem APIs that the current dependency does not expose.
+filesystem APIs that the current dependency does not expose (both have landed
+since: §19 for the writer, §22 for spill reclamation).
 
 ## 16. Archive consumer and deployed-page acceptance (2026-10-22)
 
@@ -1113,7 +1118,7 @@ Release limitations, unchanged at the time: the writer still buffered its whole
 output, a SIGKILLed query's spill directory was not reclaimed (both waited on a
 native I/O decision), and non-finite doubles are strings rather than DuckDB's bare
 tokens. The first of these is resolved since §19 on native targets; the spill
-reclamation is N3.
+reclamation landed in §22.
 
 ## 19. Incremental Parquet output (2026-10-23)
 
@@ -1377,3 +1382,120 @@ Not done here: wasm-gc/js still hold the file bytes (their fs module has no rang
 read, and the browser build has no filesystem to read ranges from), the writer's
 2 GiB page-offset limit still refuses larger files, and spill-lease reclamation
 (N3) is untouched.
+
+## 22. Spill directory reclaim (2026-10-24)
+
+§10 pinned a boundary and called it a decision: a killed query leaves its
+`moonlake-spill-<n>` subdirectory behind, and the next run must not remove it,
+because `moonbitlang/x/fs` exposes no pid, no clock and no file timestamp, so a
+dead owner and a live one look identical. Measured then: `kill -9` during a
+spilled sort left 40 run files (1.8 MB) that nothing would ever clean up. One
+directory per interrupted query, forever.
+
+**The three facts that prove an owner dead.** A spill directory now carries an
+`owner` marker, written immediately after `create_dir` succeeds:
+
+```
+version=1
+pid=4242
+boot_id=d82cf1fc-0ad6-4062-9f3b-9d87d4e1872f
+starttime=5658786        field 22 of /proc/4242/stat
+nonce=4242-1761310000    which claim this was; readable in a postmortem
+created_at=1761310000    seconds since the epoch
+```
+
+only `pid`, `boot_id` and `starttime` take part in the verdict, and all three
+are needed:
+
+* the recorded boot id differs from this boot → the owner died before the
+  machine came back, so the directory is stale;
+* `/proc/<pid>` is gone → stale;
+* `/proc/<pid>` exists but its start time differs → the number was reused by a
+  different process, so the owner is gone and the directory is stale too.
+
+Everything else is "cannot tell" and the directory is kept: no marker at all,
+an unknown version (a newer build may write rules this one must not delete), a
+parseable marker with a field missing, no `/proc` on the platform, a probe that
+errors. Deleting on a guess is how a live query loses its run files, and a
+leaked directory under `TMPDIR` is the smaller problem.
+
+**Claim and reclaim order.** The marker is created with `O_CREAT|O_EXCL`
+(`write_new_file`), never overwritten: a directory belongs to whoever claimed it
+first, and `create_dir` remains the lock on the *index*. Reclaiming renames the
+marker to `owner.stale-<nonce>` before it touches anything else — that rename is
+the claim among concurrent reapers, exactly one of them wins it — then deletes
+only `run<n>.bin` and the marker names this protocol writes, then removes the
+directory. A directory holding a file the protocol did not write is left alone
+and reported; a reclaim interrupted after the rename leaves a marker-less
+directory, which the "cannot tell" rule keeps rather than emptying again and
+again.
+
+**Where the code lives.** `cmd/main/spill_owner.mbt` holds the rules as a pure
+function, `judge_owner(mark, boot_id_here, probe)`, plus the parser, the
+inspection and the reclaim order; `spill_owner_native.mbt` supplies the machine
+facts (`/proc`, the exclusive create, the rename) and `spill_owner_other.mbt`
+supplies conservative stubs for wasm/wasm-gc/js, where nothing is recorded and
+nothing is reclaimed — the pre-§22 behaviour, kept deliberately. It all sits in
+an executable package, which no one imports, so no published interface moved;
+`spill` keeps its `FsStore` and knows nothing about leases. `platform/io` grew
+the primitives that made this possible: an exclusive create, a rename that
+reports "the source is gone" instead of failing, a hand-rolled read for the
+`/proc` pseudo-files (`moonbitlang/x/fs` sizes a read from `stat`, and every
+`/proc` file reports 0), and the wall clock. The C file went from 113 to 177
+lines.
+
+**Evidence.** The rules are tested as a table, on all three backends, because
+`judge_owner` takes the boot id and the probe as arguments: 9 tests cover the
+round trip, an unknown version, a marker missing any of its three facts, a
+reboot, a gone pid, a live pid, a reused pid, a platform without a boot id, and a
+probe that cannot answer. Four more run on native only, against the real
+`/proc`: a marker this process writes judges `live` (and a second claim leaves it
+alone), a marker for pid 999999999 — above any `pid_max` — judges `stale` and is
+reclaimed, a marker for this pid with the wrong start time judges `stale`, and a
+directory with no marker is `unavailable`. 254 / 241 / 241 tests across native,
+wasm-gc and js.
+
+**Acceptance.** `bash harness/spill_accept.sh` (ten checks, deterministic, ~6 s):
+
+1. a spilled `ORDER BY` leaves no directory behind;
+2. a query that fails on hash skew leaves none either;
+3. `--spill-dir` keeps a caller's `notes.txt` and a `runx.bin` that is not a
+   run file;
+4. `--analyze --memory 200K` prints all four spill counters *and a non-zero run
+   count* — check 4 used to pass on zero, which proved nothing;
+5. the same `ANALYZE` without a budget prints no spill line at all;
+6. two spilled queries running at once on one `--spill-dir` both succeed with
+   their own answers and leave the directory empty;
+7. a `moonlake-spill-0` with **no** marker survives the next query (the old
+   check 7, restated: it is now the "cannot tell" rule, not the only case);
+8. a query frozen as soon as it claims its directory, then `kill -9`'d, leaves
+   that directory behind with a stale run file; the next query on the same
+   `--spill-dir` reclaims it, leaves nothing, and says
+   `moonlake: reclaimed …: its process (…) is gone`;
+9. a directory whose marker names a live process — an unrelated `sleep` with its
+   real boot id and start time — is **not** reclaimed, is not mentioned as
+   reclaimed, and the query moves on to the next index;
+10. a `version=9` marker is kept and reported as "not one this version
+    understands".
+
+Check 8 freezes the query with `SIGSTOP` the moment its `owner` file appears
+rather than waiting for run files: a spill on SF0.1 only lasts part of the run,
+so polling for `run*.bin` raced the query to completion. The leaked run file is
+written in by hand, which is exactly what a kill in the middle of a sort leaves.
+
+**Gates.** `moon check --deny-warn` on native, wasm-gc and js; 254 / 241 / 241
+tests; 27 golden queries; spill 10/10; `check_writer_interop.py`; playground
+16/16; `moon package --list` at 184 entries (the five new files, including the
+native-gated test, ship because `.internal/` is the only excluded tree).
+
+**What is refused on purpose.** A `--spill-dir` shared across PID namespaces (two
+containers, one volume) makes a live query look dead: pids are per namespace and
+a boot id is per kernel, so the evidence is meaningless in that setup. Nothing
+detects the setup, and the mitigation is the same as for `/proc`-less platforms:
+point each container at its own `--spill-dir`. On macOS, `boot_id_here()` is
+empty, no marker is written, and no directory is ever reclaimed — the pre-§22
+behaviour, minus the surprise.
+
+**Not done here.** No lease is renewed or expired by time: an owner that hangs
+forever keeps its directory forever, which is correct (it is still running). The
+writer's 2 GiB page-offset limit is still separate work.

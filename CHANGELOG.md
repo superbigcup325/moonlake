@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- 2026-10-24 a query killed outright no longer leaks its spill directory: each
+  `moonlake-spill-<n>` is claimed with an `owner` marker (pid, boot id, the pid's
+  start time from `/proc`) created exclusively, and the next query removes a
+  directory only when that marker proves the owner is dead — another boot, a pid
+  that no longer exists, or a pid whose start time changed. A directory with no
+  marker, an unknown marker version, or a live owner is kept, and the first two
+  are reported on stderr. Reclaiming renames the marker away first, so
+  concurrent reapers cannot both empty one directory, and it deletes only the
+  run files and marker names it wrote. Backends without `/proc` (wasm-gc/js, and
+  macOS, which has no boot id to record) keep the previous behaviour: nothing is
+  recorded and nothing is reclaimed. The rules live in the `cmd/main`
+  executable, so no published signature changed; `platform/io` grew the
+  exclusive create, a rename that tolerates a vanished source, a pseudo-file
+  read for `/proc`, and the clock. Details and the ten-check acceptance are in
+  `docs/verification.md` §22
+
+
 - 2026-10-24 CSV files are scanned in byte ranges instead of whole: `scan_file`
   reads a 64 KB prefix at registration (header plus the inference sample) and
   one 4 MB range at a time while a query runs, indexing and materializing each

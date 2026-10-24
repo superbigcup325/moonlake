@@ -284,3 +284,76 @@ pub fn FileReader::close(self : FileReader) -> Unit raise IOFailure {
     raise IOFailure("close failed: \{last_error()}")
   }
 }
+
+///|
+/// The owning process's id: what a spill owner marker records about itself.
+pub fn process_id() -> Int32 {
+  pid_ffi()
+}
+
+///|
+extern "C" fn now_ffi() -> Int64 = "moonlake_io_now"
+
+///|
+/// Seconds since the epoch, for markers that should be explainable afterwards.
+/// Nothing here measures elapsed time with it.
+pub fn unix_now() -> Int64 {
+  now_ffi()
+}
+
+///|
+#borrow(path, bytes)
+extern "C" fn write_new_ffi(path : Bytes, bytes : Bytes) -> Int32 = "moonlake_io_write_new"
+
+///|
+/// Create `path` and write `bytes` into it, refusing to touch a file that is
+/// already there.
+///
+/// `false` means someone else owns the name — a legitimate answer for a claim
+/// (`O_CREAT|O_EXCL`), not an error. Every other problem raises, and the
+/// half-written file is removed so a later attempt does not find a marker
+/// nothing can read.
+pub fn write_new_file(path : String, bytes : Bytes) -> Bool raise IOFailure {
+  match write_new_ffi(cstr(path), bytes) {
+    1 => true
+    0 => false
+    _ => raise IOFailure("cannot create \{path}: \{last_error()}")
+  }
+}
+
+///|
+#borrow(from, to)
+extern "C" fn rename_if_exists_ffi(from : Bytes, to : Bytes) -> Int32 = "moonlake_io_rename_if_exists"
+
+///|
+/// Rename `from` to `to`, or report that `from` was already gone.
+///
+/// Losing that race is a normal outcome: two runs reclaiming the same abandoned
+/// directory both want the same end state, and the one that moved the marker is
+/// the one that owns the deletion.
+pub fn rename_file(from : String, to : String) -> Bool raise IOFailure {
+  match rename_if_exists_ffi(cstr(from), cstr(to)) {
+    1 => true
+    0 => false
+    _ => raise IOFailure("cannot rename \{from}: \{last_error()}")
+  }
+}
+
+///|
+#borrow(path, bytes)
+extern "C" fn read_small_ffi(path : Bytes, bytes : Bytes, cap : Int32) -> Int64 = "moonlake_io_read_small"
+
+///|
+/// Read a small text file whose reported size lies.
+///
+/// Everything under `/proc` reports a size of 0, so the size-driven read that
+/// `moonbitlang/x/fs` does comes back empty; this reads until EOF instead.
+/// `None` means the file is absent, unreadable, or longer than `cap`.
+pub fn read_small_file(path : String, cap : Int32) -> String? {
+  let buf = Bytes::make(cap, 0)
+  let n = read_small_ffi(cstr(path), buf, cap)
+  if n < 0 || n.to_int() >= cap {
+    return None
+  }
+  Some(@utf8.decode_lossy(buf[0:n.to_int()].to_owned()))
+}
