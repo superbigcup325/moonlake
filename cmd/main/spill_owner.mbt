@@ -226,7 +226,7 @@ fn reclaim_owner(dir : String) -> Bool {
   // write is not ours to empty, and the only cost of refusing is one more leaked
   // directory (which the next run will refuse again, and report).
   for name in names {
-    if !(is_run_file(name) || is_owner_file(name)) {
+    if !(@spill.is_run_file_name(name) || is_owner_file(name)) {
       eprintln(
         "moonlake: warning: kept spill directory \{dir}: it holds \{name}, which this protocol did not write",
       )
@@ -239,7 +239,7 @@ fn reclaim_owner(dir : String) -> Bool {
   }
   let after = @fs.read_dir(dir) catch { @fs.IOError(_) => [] }
   for name in after {
-    if is_run_file(name) || is_owner_file(name) {
+    if @spill.is_run_file_name(name) || is_owner_file(name) {
       @fs.remove_file("\{dir}/\{name}") catch {
         @fs.IOError(_) => ()
       }

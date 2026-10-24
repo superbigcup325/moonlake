@@ -94,7 +94,7 @@ fn spill_run_dir(spill_dir : String?) -> SpillRun raise @types.SqlError {
 }
 
 ///|
-/// Remove one spill directory: the run files this store names, then the
+/// Remove one spill directory: the run files `@spill` names, then the
 /// directory. A directory that survives is reported rather than silently
 /// ignored — ignoring it is how a leaked temp tree turns into a disk-full
 /// failure mid-query.
@@ -103,7 +103,7 @@ fn purge_dir(dir : String) -> Unit {
     @fs.IOError(_) => return // already gone: nothing to purge
   }
   for name in entries {
-    if is_run_file(name) || is_owner_file(name) {
+    if @spill.is_run_file_name(name) || is_owner_file(name) {
       @fs.remove_file("\{dir}/\{name}") catch {
         @fs.IOError(_) => ()
       }
@@ -124,23 +124,4 @@ fn purge_spill_run(run : SpillRun) -> Unit {
       @fs.IOError(_) => () // not empty: something else lives there now
     }
   }
-}
-
-///|
-/// `run<n>.bin`: the only file names this store writes.
-fn is_run_file(name : String) -> Bool {
-  if !(name.has_prefix("run") && name.has_suffix(".bin")) {
-    return false
-  }
-  let n = name.length()
-  if n <= 7 {
-    return false // "run" + at least one digit + ".bin"
-  }
-  let mut ok = true
-  for i, ch in name {
-    if i >= 3 && i < n - 4 && (ch < '0' || ch > '9') {
-      ok = false
-    }
-  }
-  ok
 }

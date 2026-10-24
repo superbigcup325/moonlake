@@ -6,6 +6,9 @@ import {
 }
 
 // Values
+pub fn is_run_file_name(String) -> Bool
+
+pub fn run_file_name(Int32) -> String
 
 // Errors
 
