@@ -286,6 +286,58 @@ pub fn FileReader::close(self : FileReader) -> Unit raise IOFailure {
 }
 
 ///|
+/// Release a reader without letting a close failure reach the caller.
+///
+/// For the case where the file has already been read, or is already failing: a
+/// failed close there could only replace a useful error with a useless one.
+/// Same reason `FileSink::abort` never raises.
+pub fn close_quietly(reader : FileReader) -> Unit {
+  reader.close() catch {
+    _ => ()
+  }
+}
+
+///|
+/// Open a file for the helpers below, wording the failure the way a scan
+/// reports it: "cannot read file at <path>: <what went wrong>".
+fn open_for_reading(path : String) -> FileReader raise IOFailure {
+  FileReader::open(path) catch {
+    IOFailure(message) =>
+      raise IOFailure("cannot read file at \{path}: \{message}")
+  }
+}
+
+///|
+/// Size of an existing file, without keeping the handle.
+pub fn file_size(path : String) -> Int64 raise IOFailure {
+  // size() cannot fail, so there is no failing path that could leak the handle
+  let reader = open_for_reading(path)
+  let size = reader.size()
+  close_quietly(reader)
+  size
+}
+
+///|
+/// Read one byte range of a file, opening it for just that range.
+///
+/// One open per range keeps lifetime trivial -- a reader cannot be left open by
+/// an abandoned stream, and nothing has to survive between reads -- and costs
+/// nothing at the granularity both formats read at: Parquet issues one per
+/// projected column of a row group, CSV one per few MB.
+///
+/// The range is returned whole or not at all; `FileReader::read_at` owns that
+/// rule, so this only adds the open.
+pub fn read_range(
+  path : String,
+  offset : Int64,
+  count : Int32,
+) -> Bytes raise IOFailure {
+  let reader = open_for_reading(path)
+  errdefer close_quietly(reader)
+  reader.read_at(offset, count)
+}
+
+///|
 /// The owning process's id: what a spill owner marker records about itself.
 pub fn process_id() -> Int32 {
   pid_ffi()
