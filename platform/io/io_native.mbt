@@ -1,12 +1,11 @@
 // Native file sink: the write side of the platform binding.
 //
-// Why this exists at all is recorded in `.internal/native-io-decision.md`: the
-// locked `moonbitlang/x` (0.5.6, also the latest release) offers whole-file
-// reads and writes only, and a native-only dependency cannot be linked into a
-// module that also builds for wasm-gc/js. This package is therefore the whole
-// platform boundary: native targets get a real file handle, the other backends
-// do not compile it, and no shared package imports it except through a
-// target-stable wrapper (see `sources/parquet/write_file_*.mbt`).
+// Why it exists at all: the locked `moonbitlang/x` (0.5.6, also the latest
+// release) offers whole-file reads and writes only, and a native-only dependency
+// cannot be linked into a module that also builds for wasm-gc/js. This package is
+// therefore the whole platform boundary: native targets get a real file handle,
+// the other backends do not compile it, and no shared package imports it except
+// through a target-stable wrapper (see `sources/parquet/write_file_*.mbt`).
 
 ///|
 pub(all) suberror IOFailure {

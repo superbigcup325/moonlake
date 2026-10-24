@@ -250,8 +250,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 2026-10-21 `harness/check_release.py` and a `release` workflow on `v*` tags:
   the version claims (`moon.mod`, the library `VERSION`, the newest CHANGELOG
   heading, the tag name) have to agree, `moon package --list` has to hold the
-  files a release needs and none of the dev-only ones (`.internal/`, `moon.work`,
-  `harness/data/`, the bench drivers, `hooks/`), the tree has to be clean, and
+  files a release needs and none of the dev-only ones (dot-directories,
+  `moon.work`, `harness/data/`, the bench drivers, `hooks/`), the tree has to be
+  clean, and
   `--publish-dry-run` optionally runs the publish gate. 0.3.0 shipped after a
   manual review found three of those four agreeing; nothing made them agree by
   construction. `/harness/kernel_bench/` is excluded from the archive like the

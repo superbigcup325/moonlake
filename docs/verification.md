@@ -879,10 +879,10 @@ on every `v*` tag:
    not a claim), and the tag name when the check runs on a tag. Disagreement
    names every value.
 2. **the archive is the one intended** — `moon package --list` must contain
-   `moon.mod`, `README.md`, `LICENSE` and `moonlake.mbt`, and no path matching
-   `.internal/`, `moon.work`, `.mooncakes/`, `_build/`, `target/`,
-   `__pycache__/`, `harness/data/`, `harness/spill_bench/`,
-   `harness/kernel_bench/`, `hooks/`, `.venv/` or `.env`. This is the only
+   `moon.mod`, `README.md`, `LICENSE` and `moonlake.mbt`, no dot-prefixed path
+   (a dot-directory at any depth, or `.env`) and none matching `moon.work`,
+   `_build/`, `target/`, `__pycache__/`, `harness/data/`,
+   `harness/spill_bench/`, `harness/kernel_bench/` or `hooks/`. That is the only
    trustworthy preview of an archive: `.git/info/exclude` is never consulted for
    packaging and a `.moonignore` replaces a directory's `.gitignore`.
    `/harness/kernel_bench/` was excluded alongside the existing spill driver in
@@ -1086,9 +1086,9 @@ OK`** against mooncakes.io. `moon view superbigcup325/moonlake` now reports
 resolved the package from mooncakes with a fresh registry and dependency cache
 and no workspace override; native, wasm-gc and JS all return the expected
 version, CSV query, raw/Snappy Parquet round-trips, DATE/NULL values and table
-removal. Record: `.internal/registry-consumer-0.4.0.json` (local, not
-committed). Evidence boundary: this is a registry install of a **released**
-artifact, not the archive gate of §16.
+removal. The run's JSON report stays out of the repository. Evidence boundary:
+this is a registry install of a **released** artifact, not the archive gate of
+§16.
 
 **Tag-triggered release workflow, first run ever.** `release.yml` had never
 executed through its tag trigger (0 runs before this release). On the tag push
@@ -1127,8 +1127,8 @@ The writer accumulated its whole archive in a `Buffer` and then handed that one
 larger the file, the more copies of it were alive. `write_file_with` now streams
 on native targets: pages go to a file handle as they are encoded, a temporary
 name is renamed over the target on success, and the signature is identical on
-every backend. The decision record (route, rejected routes, contract) is
-`.internal/native-io-decision.md`; this section is the evidence for what shipped.
+every backend. This section is the evidence for what shipped: the route, the
+routes rejected and the contract the binding has to keep.
 
 **Mechanism.** `platform/io` is a whole-package native-only binding (`O_WRONLY`
 open, `write` with EINTR retry, `fsync`, `close`, `rename`, `unlink`, `strerror`)
@@ -1145,9 +1145,9 @@ up pointing past its data — and the 2 GiB page-offset guard still runs on an
 
 **Same bytes.** The transport changed, the format did not: for both codecs the
 file produced by the streaming path is byte-identical to `write_bytes_with`
-(`write_file_test.mbt`), and identical to the archive the pre-N1 build wrote
-from the same input (md5 `84a4dfd8…` raw 1×, `7ccb79e3…` from Parquet input raw,
-`938430a5…` snappy; 2× and 4× inputs likewise).
+(`write_file_test.mbt`), and identical to the archive the previous, non-streaming
+build wrote from the same input (md5 `84a4dfd8…` raw 1×, `7ccb79e3…` from Parquet
+input raw, `938430a5…` snappy; 2× and 4× inputs likewise).
 
 **Failure behaviour.** A write publishes nothing until it succeeds: the target
 keeps its previous contents and the temporary file is gone both when `finish`
@@ -1169,7 +1169,8 @@ that run's own high-water mark; SF0.1 `lineitem`, 75 / 151 / 302 MB inputs):
 
 The removed term is the archive-sized second copy. With a Parquet input the new
 peak is flat at ~101 MB regardless of codec and output size; the remaining CSV
-growth is the scan's own memory, which is N2b's subject, not the writer's.
+growth is the scan's own memory, which is the CSV range reader's subject, not
+the writer's.
 
 **Gates.** `moon check --deny-warn` on native, wasm-gc and js; 223 / 218 / 218
 tests; 27 golden queries; spill 7/7; `check_writer_interop.py` (pyarrow and DuckDB
@@ -1178,7 +1179,7 @@ read the streamed files raw and Snappy); `moon package --list` ships
 (`pub type Emit = (Bytes) -> Unit raise @types.SqlError`).
 
 Not done here: the 2 GiB page-offset limit still refuses larger files, and the
-sources still read a whole file because the fs API has no range reads (N2a).
+sources still read a whole file because the fs API has no range reads yet.
 
 ## 20. Parquet range reads (2026-10-23)
 
@@ -1281,7 +1282,7 @@ signatures are unchanged.
 
 Not done here: the writer's 2 GiB page-offset limit still refuses larger files
 (a reader no longer needs the relaxation, a writer still does), CSV scans still
-read whole files (N2b — the remaining memory term), and wasm-gc/js scans still
+read whole files (the remaining memory term), and wasm-gc/js scans still
 read the whole file because their fs module cannot do better.
 
 ## 21. CSV range reads (2026-10-24)
@@ -1347,8 +1348,8 @@ still costs 1066 MB)" — and the writer is now flat for both input formats.
 
 **Same bytes, same answers.** The archives are unchanged: md5 `84a4dfd8…` for
 the 1× write and `043b084c…` for the 4× write, identical between the two builds
-and to what the pre-N1 build produced for 1×. Over the 2.4 M-row 302 MB file,
-row counts (`2402288`), `sum(l_quantity)` (`61339208`) and the
+and to what the pre-streaming build produced for 1×. Over the 2.4 M-row 302 MB
+file, row counts (`2402288`), `sum(l_quantity)` (`61339208`) and the
 `l_returnflag` groups (`A 591160 / N 1217924 / R 593204`) match DuckDB exactly,
 on the CSV and on the Parquet file written from it.
 
@@ -1381,7 +1382,7 @@ and `sources/csv`'s public signatures are unchanged.
 Not done here: wasm-gc/js still hold the file bytes (their fs module has no range
 read, and the browser build has no filesystem to read ranges from), the writer's
 2 GiB page-offset limit still refuses larger files, and spill-lease reclamation
-(N3) was untouched at this point -- it landed the same day, in §22.
+was untouched at this point -- it landed the same day, in §22.
 
 ## 22. Spill directory reclaim (2026-10-24)
 
@@ -1486,7 +1487,8 @@ written in by hand, which is exactly what a kill in the middle of a sort leaves.
 **Gates.** `moon check --deny-warn` on native, wasm-gc and js; 254 / 241 / 241
 tests; 27 golden queries; spill 10/10; `check_writer_interop.py`; playground
 16/16; `moon package --list` at 184 entries (the five new files, including the
-native-gated test, ship because `.internal/` is the only excluded tree).
+native-gated test, ship because the archive excludes only dot-prefixed paths and
+the dev-only trees listed in §16).
 
 **What is refused on purpose.** A `--spill-dir` shared across PID namespaces (two
 containers, one volume) makes a live query look dead: pids are per namespace and

@@ -42,9 +42,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # What a published archive must contain, and what it must never contain.
 REQUIRED = ("moon.mod", "README.md", "LICENSE", "moonlake.mbt")
 FORBIDDEN = (
-    ".internal/",
     "moon.work",
-    ".mooncakes/",
     "_build/",
     "/target/",
     "__pycache__/",
@@ -53,8 +51,6 @@ FORBIDDEN = (
     "harness/kernel_bench/",
     "harness/consumer/",
     "hooks/",
-    ".venv/",
-    ".env",
 )
 
 
@@ -134,6 +130,12 @@ def check_archive() -> dict:
     for want in REQUIRED:
         if want not in files:
             fail(f"the archive is missing {want}")
+    # Packaging excludes dot-prefixed paths by default; assert it rather than
+    # trusting a default, so a stray scratch directory cannot ship.
+    for f in files:
+        dotted = [part for part in f.split("/") if part.startswith(".")]
+        if dotted:
+            fail(f"the archive carries a dot-prefixed path: {f}")
     for pattern in FORBIDDEN:
         hits = [f for f in files if pattern in f]
         if hits:

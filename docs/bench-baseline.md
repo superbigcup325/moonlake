@@ -368,7 +368,7 @@ is not writable here). The fingerprint now compares version and build hash.
 
 The 0.4.0 numbers above include a reader that loaded each whole Parquet file.
 `sort/order_by` and the scan cases therefore carried the archive in memory as a
-fixed term; that term is gone (N2a, `verification.md` §20). This is an
+fixed term; that term is gone (`verification.md` §20). This is an
 interleaved A/B of two binaries on this machine, one isolated child per run, both
 reading files written by the newer build so the bytes are identical:
 

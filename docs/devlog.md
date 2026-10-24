@@ -900,11 +900,10 @@ public interface per backend. The starting point was measured, not assumed:
 one `Bytes` to a whole-file write, so a 75 MB output kept roughly two copies of
 it alive and a 301 MB output kept about 1.4 GB of peak RSS. `moonbitlang/x`
 offers no incremental write handle and its file functions are private, so the
-transport had to come from somewhere else. Two rejected routes are recorded in
-`.internal/native-io-decision.md`: a native-only dependency poisons the wasm-gc
-build plan outright, and target-filtered public functions make the interface
-differ per backend (a wasm consumer gets `Value … not found` for a function that
-exists on native).
+transport had to come from somewhere else. Two routes were rejected: a
+native-only dependency poisons the wasm-gc build plan outright, and
+target-filtered public functions make the interface differ per backend (a wasm
+consumer gets `Value … not found` for a function that exists on native).
 
 What shipped is a native-only `platform/io` package (a small C stub behind
 `native-stub`, gated so wasm-gc/js build an empty package) plus a shared writer
@@ -957,8 +956,8 @@ must not disturb each other. 236/227/227 tests across native, wasm-gc and js wit
 Peak RSS: 295 → 12 MB for `count(*)` on 287 MB, 585 → 12 MB on 574 MB, and
 one-column aggregates are now bounded by the row-group columns in flight
 (37 → 67 MB as input doubles) rather than by the file. What this does not claim:
-CSV scans still read whole files (that is the remaining memory term and N2b's
-subject), the writer's 2 GiB page-offset limit is untouched, and the browser
+CSV scans still read whole files (that is the remaining memory term), the
+writer's 2 GiB page-offset limit is untouched, and the browser
 build still pays a whole-file read because its fs module cannot do better.
 
 2026-10-24 (csv) — **The CSV scan stops indexing the file.** Goal: the last
