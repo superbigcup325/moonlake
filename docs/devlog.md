@@ -1281,3 +1281,31 @@ numbers, and `docs/verification.md` §25 has the tables and the method. Nothing
 here is committed as a script: it is a debug probe over the CLI, not a gate, and
 the wall clocks are one machine on one day, so the claim being made is "rows,
 not bytes" rather than "N seconds".
+
+2026-10-24 (writer) — **A dictionary is worth a third of the file, and still not
+the first thing to do.**
+
+The writing row of the roadmap has said "prove it pays" since the 0.5.0 scope
+was cut. It is now measured: SF1 `lineitem`, 6M rows, one table, five ways to
+write it with pyarrow and one with our own writer, read back with DuckDB.
+
+Plain+snappy is 288 MB. A dictionary on every column is 207 MB, and on the
+twelve columns that actually benefit it is 196 MB — 32% smaller, written in the
+same 1.6 s and read back in the same 20 ms, because a dictionary is a page
+encoding and costs the reader nothing extra to *skip*. The columns that lose are
+the ones with no repetition to find: `l_orderkey` and `l_extendedprice` grow,
+which is exactly the argument for choosing per column rather than per file.
+zstd would take 183 MB, but that is the codec list, not the encoder.
+
+What changed the plan is the baseline. Our writer emits 333 MB for the same
+rows: 16% more than pyarrow's plain+snappy, with comparable raw bytes (ours are
+*smaller* for the integers, since we write `int32` where pyarrow infers `int64`)
+and the same page granularity. So the gap is not the encoding at all — it is how
+well Snappy does on the bytes we hand it, i.e. page layout. Adding a dictionary
+on top of a page layout that already leaves 16% on the table would bank the
+smaller half of the win and make the comparison afterwards harder to read.
+
+So the order is: charge the 16% to something specific (page size, where pages
+end, statistics overhead), then choose encodings per column. The numbers are in
+the roadmap's writing row and the candidate row now starts from them. No code
+changed for this.
