@@ -1,8 +1,9 @@
 // CSV scanning: a byte-level reader (reader.mbt) records per-cell
 // offsets, type inference samples the first rows at registration, and the
 // data itself is materialized batch by batch, only for the columns a query
-// projects. Registering a file therefore reads it (the fs API has no
-// range reads) but keeps no bytes: the source re-reads on `open`.
+// projects. A file is read in byte ranges: registration touches only the
+// header and the sample, and one scan holds one range's offsets rather than
+// the whole file's, which is what large CSV scans cost most of their memory on.
 //
 // Empty cells become NULL. An empty table still emits one zero-row batch,
 // with the projected columns, so the engine sees the layout.
@@ -16,15 +17,32 @@ const BATCH_SIZE : Int32 = @catalog.SCAN_BATCH_ROWS
 const INFER_SAMPLE : Int32 = 100
 
 ///|
+/// Bytes per ranged read while scanning a file. Wide enough for several
+/// thousand lineitem rows, so per-read overhead disappears; narrow enough that
+/// the per-cell offset index for one range stays a few MB instead of growing
+/// with the file.
+const CHUNK_BYTES : Int32 = 4 * 1024 * 1024
+
+///|
+/// Bytes read when all a registration needs is the header and the inference
+/// sample. Grown when a row does not fit.
+const PREFIX_BYTES : Int32 = 64 * 1024
+
+///|
 /// Where a source's bytes come from: content the caller already holds
-/// (playground, tests) or a file to re-read on demand. The reader is a
-/// function field, not an enum with a `File` arm: an enum arm would keep
-/// the filesystem call reachable from `scan_string`, and a wasm-gc build
-/// that only scans in-memory content (the browser playground) must not
-/// import the host's fs module at all.
+/// (playground, tests) or a file read by range. Reading is a pair of function
+/// fields, not an enum with a `File` arm: an enum arm would keep the
+/// filesystem call reachable from `scan_string`, and a wasm-gc build that only
+/// scans in-memory content (the browser playground) must not import the host's
+/// fs module at all.
 priv struct CsvInput {
   label : String // empty for in-memory content: the table name is used
-  read : () -> Bytes raise @types.SqlError
+  size : () -> Int64 raise @types.SqlError
+  read_at : (Int64, Int32) -> Bytes raise @types.SqlError
+  // drop cached bytes when a scan starts on this input: hosts without range
+  // reads keep a whole-file snapshot, and a table must still see the file as
+  // it is when the scan opens
+  reset : () -> Unit
 }
 
 ///|
@@ -49,8 +67,9 @@ pub fn scan_string(
 
 ///|
 /// Scan a CSV file from disk (native target; wasm targets load files via
-/// the playground bridge instead). Registration reads the file to infer the
-/// schema and then keeps only the path: the data is read back by `open`.
+/// the playground bridge instead). Registration reads the header and the
+/// inference sample only, and then keeps the path: the data is read back by
+/// `open`, in ranges.
 pub fn scan_file(
   path : String,
   table_name : String,
@@ -78,32 +97,28 @@ pub fn scan_files(
 }
 
 ///|
-/// In-memory input: the bytes are already in hand, no filesystem involved.
+/// In-memory input: the bytes are already in hand, no filesystem involved. A
+/// range is a copy of the slice.
 fn memory_input(content : Bytes) -> CsvInput {
-  { label: "", read: fn() { content }, }
-}
-
-///|
-/// File-backed input: reads the bytes back on every open. Defined next to
-/// the only callers that need it so a program holding just `scan_string`
-/// never links `@fs`.
-fn file_input(path : String) -> CsvInput {
+  let length = content.length()
+  let total = length.to_int64()
   {
-    label: path,
-    read: fn() raise @types.SqlError {
-      @fs.read_file_to_bytes(path) catch {
-        _ => raise @types.SqlError::Scan("cannot read file at \{path}")
+    label: "",
+    size: fn() { total },
+    read_at: (offset, count) => {
+      let end = offset + count.to_int64()
+      if offset < 0L || count < 0 || end > total {
+        raise @types.SqlError::Scan(
+          "cannot read \{count} bytes at \{offset} of a \{length} byte buffer",
+        )
       }
+      let start = offset.to_int()
+      let out : @buffer.Buffer = @buffer.Buffer::Buffer(size_hint=count)
+      out.write_bytes(content[start:start + count])
+      out.to_bytes()
     },
+    reset: fn() { () },
   }
-}
-
-///|
-/// Open the source's bytes. In-memory inputs are already in hand;
-/// file-backed ones are read here, so nothing is held between registration
-/// and scan.
-fn read_input(input : CsvInput) -> Bytes raise @types.SqlError {
-  (input.read)()
 }
 
 ///|
@@ -129,14 +144,37 @@ fn strip_bom(content : Bytes) -> Bytes {
 }
 
 ///|
+/// Read a prefix of a source holding at least `want_rows` records (the whole
+/// source when it is shorter), widening the range when a record does not fit.
+/// A record cut in half by the range does not count: the schema must be
+/// inferred from whole cells.
+fn read_prefix(
+  input : CsvInput,
+  want_rows : Int32,
+) -> Bytes raise @types.SqlError {
+  let size = (input.size)()
+  let mut want = PREFIX_BYTES
+  while true {
+    let count = if size < want.to_int64() { size.to_int() } else { want }
+    let bytes = (input.read_at)(0L, count)
+    let at_eof = count.to_int64() >= size
+    let (raw, _) = scan_chunk(bytes, at_eof)
+    if raw.n_rows() >= want_rows || at_eof {
+      return bytes
+    }
+    want = want * 4
+  }
+  b""
+}
+
+///|
 /// Infer the schema (header + sampled types) and check every file's header,
 /// then hand the paths (or the in-memory bytes) to the lazy source.
 fn scan_inputs(
   inputs : Array[CsvInput],
   table_name : String,
 ) -> @catalog.TableEntry raise @types.SqlError {
-  let first = read_input(inputs[0])
-  let buf = strip_bom(first)
+  let buf = strip_bom(read_prefix(inputs[0], INFER_SAMPLE + 1))
   // only the header and the inference sample are parsed here: the rest of
   // the file is not touched until a query opens the scan
   let raw = scan_csv_prefix(buf, INFER_SAMPLE + 1)
@@ -152,10 +190,9 @@ fn scan_inputs(
   }
   let dtypes = infer_types(header, buf, raw)
   for i in 1..<inputs.length() {
-    let content = read_input(inputs[i])
     validate_header(
       input_label(inputs[i], table_name),
-      strip_bom(content),
+      read_prefix(inputs[i], 2),
       header,
     )
   }
@@ -170,25 +207,38 @@ fn scan_inputs(
 
 ///|
 /// Every file must repeat the first file's header verbatim — a drifted
-/// column list would silently misalign the typed vectors.
+/// column list would silently misalign the typed vectors. The prefix carries
+/// a byte order mark when the file has one.
 fn validate_header(
   label : String,
   content : Bytes,
   header : Array[String],
 ) -> Unit raise @types.SqlError {
-  let raw = scan_csv_prefix(content, 2)
+  let raw = scan_csv_prefix(strip_bom(content), 2)
   if raw.n_rows() == 0 {
     raise @types.SqlError::Scan("\{label}: CSV has no header row")
   }
+  if !check_header(raw, header) {
+    raise @types.SqlError::Scan(
+      "\{label}: header does not match the first file (expected \{header.join(",")})",
+    )
+  }
+}
+
+///|
+/// Does this scan's first row repeat `header` verbatim? Called on the first
+/// range of every file at scan time too, since a file can change between
+/// registration and scan.
+fn check_header(raw : RawCsv, header : Array[String]) -> Bool {
+  if raw.n_rows() == 0 || raw.row_start(1) - raw.row_start(0) != header.length() {
+    return false
+  }
   for i, name in header {
-    let cell = raw.row_start(0) + i
-    if raw.row_start(1) - raw.row_start(0) != header.length() ||
-      raw.decode(cell) != name {
-      raise @types.SqlError::Scan(
-        "\{label}: header does not match the first file (expected \{header.join(",")})",
-      )
+    if raw.decode(raw.row_start(0) + i) != name {
+      return false
     }
   }
+  true
 }
 
 ///|
@@ -261,8 +311,10 @@ fn infer_types(
 }
 
 ///|
-/// One scan over the source: walks files in order, and inside a file walks
-/// data rows in BATCH_SIZE chunks. Only the projected columns are parsed.
+/// One scan over the source: files in order, and inside a file byte ranges.
+/// A range is indexed, trimmed to whole batches, materialized and then
+/// dropped, so the scan holds one range's cell offsets instead of offsets for
+/// every cell of the file.
 priv struct CsvStream {
   table_name : String
   header : Array[String]
@@ -270,10 +322,15 @@ priv struct CsvStream {
   columns : Array[Int32] // projected, original column indexes
   inputs : Array[CsvInput]
   mut next_file : Int32
-  mut buf : Bytes
-  mut raw : RawCsv?
-  mut pos : Int32 // next data row (raw row 0 is the header)
-  mut rows_left : Int32
+  mut buf : Bytes // the current range's bytes
+  mut raw : RawCsv? // the current range's cell offsets
+  mut skip : Int32 // raw rows before this range's first data row
+  mut pos : Int32 // next data row of this range
+  mut rows_left : Int32 // data rows in this range
+  mut row_base : Int32 // data rows of this file already emitted
+  mut chunk_base : Int64 // where the current range starts in the file
+  mut file_size : Int64
+  mut header_pending : Bool // this file's header is not checked yet
   mut emitted : Bool
   mut finished : Bool
 }
@@ -284,38 +341,44 @@ impl @catalog.BatchStream for CsvStream with fn next(self) -> @types.DataBatch? 
     return None
   }
   while true {
-    match self.raw {
-      Some(raw) =>
-        if self.pos < self.rows_left {
-          let end = if self.pos + BATCH_SIZE < self.rows_left {
-            self.pos + BATCH_SIZE
-          } else {
-            self.rows_left
+    if self.pos >= self.rows_left {
+      // this range is fully emitted: drop its bytes and index, load the next
+      self.row_base = self.row_base + self.rows_left
+      self.pos = 0
+      self.rows_left = 0
+      self.raw = None
+      if !self.load_chunk() {
+        if !self.start_next_file() {
+          self.finished = true
+          // a table with no rows still reports its column layout once
+          if !self.emitted {
+            self.emitted = true
+            return Some(empty_batch(self.dtypes))
           }
-          let batch = build_batch(
-            self.dtypes,
-            self.columns,
-            self.buf,
-            raw,
-            self.pos,
-            end,
-          )
-          self.pos = end
-          self.emitted = true
-          return Some(batch)
+          return None
         }
-      None => ()
-    }
-    // this file (if any) is exhausted: move on to the next one
-    if !self.load_next() {
-      self.finished = true
-      // a table with no rows still reports its column layout once
-      if !self.emitted {
-        self.emitted = true
-        return Some(empty_batch(self.dtypes))
+        continue
       }
-      return None
     }
+    let raw = self.raw.unwrap()
+    let end = if self.pos + BATCH_SIZE < self.rows_left {
+      self.pos + BATCH_SIZE
+    } else {
+      self.rows_left
+    }
+    let batch = build_batch(
+      self.dtypes,
+      self.columns,
+      self.buf,
+      raw,
+      self.skip,
+      self.row_base,
+      self.pos,
+      end,
+    )
+    self.pos = end
+    self.emitted = true
+    return Some(batch)
   }
   None // unreachable: the loop returns
 }
@@ -345,8 +408,13 @@ impl @catalog.ScanSource for CsvSource with fn open(
     next_file: 0,
     buf: b"",
     raw: None,
+    skip: 0,
     pos: 0,
     rows_left: 0,
+    row_base: 0,
+    chunk_base: 0L,
+    file_size: 0L,
+    header_pending: true,
     emitted: false,
     finished: false,
   }
@@ -369,33 +437,114 @@ impl @catalog.ScanSource for CsvSource with fn plan(
 }
 
 ///|
-/// Read and index the next input file. Returns false once every input has
-/// been consumed; skips files that hold only a header.
-fn CsvStream::load_next(self : CsvStream) -> Bool raise @types.SqlError {
+/// Start the next input file, or report that every input has been consumed.
+/// The header is checked against the registration-time one when the file's
+/// first range arrives, since the file can change between the two.
+fn CsvStream::start_next_file(self : CsvStream) -> Bool raise @types.SqlError {
   while self.next_file < self.inputs.length() {
     let input = self.inputs[self.next_file]
     self.next_file += 1
-    let content = read_input(input)
-    let buf = strip_bom(content)
-    let raw = scan_csv(buf)
-    if raw.n_rows() == 0 {
+    (input.reset)()
+    let size = (input.size)()
+    if size == 0L {
       raise @types.SqlError::Scan(
         "\{input_label(input, self.table_name)}: CSV has no header row",
       )
     }
-    // the file may have changed since registration: re-check the header
-    // rather than silently misaligning the projected vectors
-    validate_header(input_label(input, self.table_name), buf, self.header)
-    let n = raw.n_rows() - 1
-    if n > 0 {
-      self.buf = buf
+    self.file_size = size
+    self.chunk_base = 0L
+    self.row_base = 0
+    self.pos = 0
+    self.rows_left = 0
+    self.raw = None
+    self.header_pending = true
+    return true
+  }
+  false
+}
+
+///|
+/// Read and index the next range of the current file. Returns false when the
+/// file is exhausted; a file that holds only a header is validated and
+/// skipped. A range that cannot hold one whole record (a very long line) is
+/// widened until it can.
+fn CsvStream::load_chunk(self : CsvStream) -> Bool raise @types.SqlError {
+  if self.next_file == 0 {
+    return false // no file has started yet
+  }
+  let input = self.inputs[self.next_file - 1]
+  let label = input_label(input, self.table_name)
+  while self.chunk_base < self.file_size {
+    let at_start = self.chunk_base == 0L
+    let mut want = CHUNK_BYTES
+    while true {
+      let rest = self.file_size - self.chunk_base
+      let count = if rest < want.to_int64() { rest.to_int() } else { want }
+      let bytes = (input.read_at)(self.chunk_base, count)
+      let at_eof = self.chunk_base + count.to_int64() >= self.file_size
+      // a byte order mark can only sit at the very front of the file
+      let stripped = if at_start { strip_bom(bytes) } else { bytes }
+      let base = self.chunk_base +
+        (bytes.length() - stripped.length()).to_int64()
+      let (raw, consumed) = scan_chunk(stripped, at_eof)
+      let skip : Int32 = if self.header_pending { 1 } else { 0 }
+      let data_rows = raw.n_rows() - skip
+      if data_rows <= 0 {
+        if !at_eof {
+          want = want * 2
+          continue
+        }
+        if self.header_pending {
+          if raw.n_rows() == 0 {
+            raise @types.SqlError::Scan("\{label}: CSV has no header row")
+          }
+          self.check_chunk_header(raw, label)
+          self.header_pending = false
+        }
+        // header only, or trailing blank lines: nothing left to read
+        self.chunk_base = self.file_size
+        return false
+      }
+      if self.header_pending {
+        self.check_chunk_header(raw, label)
+        self.header_pending = false
+      }
+      // whole batches only, so a batch never straddles two ranges; the rows
+      // past the last whole batch are read again as the start of the next one
+      let mut usable = data_rows
+      let mut next_base = base + consumed.to_int64()
+      if data_rows > BATCH_SIZE {
+        let whole = data_rows - data_rows % BATCH_SIZE
+        if whole < data_rows {
+          usable = whole
+          next_base = base + raw.cut_rows(skip + whole).to_int64()
+        }
+      }
+      self.buf = stripped
       self.raw = Some(raw)
+      self.skip = skip
       self.pos = 0
-      self.rows_left = n
+      self.rows_left = usable
+      self.chunk_base = next_base
       return true
     }
   }
   false
+}
+
+///|
+/// The header of a file's first range must repeat the header the schema was
+/// inferred from.
+fn CsvStream::check_chunk_header(
+  self : CsvStream,
+  raw : RawCsv,
+  label : String,
+) -> Unit raise @types.SqlError {
+  if !check_header(raw, self.header) {
+    raise @types.SqlError::Scan(
+      "\{label}: header does not match the first file (expected \{self.header.join(",")})",
+    )
+  }
 }
 
 ///|
@@ -412,12 +561,19 @@ fn empty_batch(dtypes : Array[@types.DataType]) -> @types.DataBatch {
 /// Parse one column's cells straight into typed arrays — no boxed
 /// Scalars on the way in, and no Strings for numeric/boolean/date
 /// columns. Empty cells mark the slot invalid (NULL); an unparsable
-/// non-empty cell is a scan error with row/column context. Row indices
-/// here are data-row indices (the header is row 0 of the raw scan).
+/// non-empty cell is a scan error with row/column context.
+///
+/// `start..<end` are rows of the current chunk, `skip` is the raw row the
+/// chunk's first data row sits at (1 while the chunk still holds the header),
+/// and `row_base` is how many data rows of the file came before it: error
+/// messages report file rows, so a chunked scan numbers rows exactly like a
+/// whole-file one.
 fn build_column(
   dtype : @types.DataType,
   buf : Bytes,
   raw : RawCsv,
+  skip : Int32,
+  row_base : Int32,
   start : Int32,
   end : Int32,
   c : Int32,
@@ -436,7 +592,7 @@ fn build_column(
       let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
         if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
@@ -448,7 +604,7 @@ fn build_column(
             }
             None =>
               raise @types.SqlError::Scan(
-                "row \{r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as int32",
+                "row \{row_base + r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as int32",
               )
           }
         }
@@ -459,7 +615,7 @@ fn build_column(
       let d : FixedArray[Int64] = FixedArray::make(n, 0L)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
         if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
@@ -471,7 +627,7 @@ fn build_column(
             }
             None =>
               raise @types.SqlError::Scan(
-                "row \{r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as int64",
+                "row \{row_base + r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as int64",
               )
           }
         }
@@ -482,7 +638,7 @@ fn build_column(
       let d : FixedArray[Double] = FixedArray::make(n, 0.0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
         if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
@@ -494,7 +650,7 @@ fn build_column(
             }
             None =>
               raise @types.SqlError::Scan(
-                "row \{r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as float64",
+                "row \{row_base + r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as float64",
               )
           }
         }
@@ -505,7 +661,7 @@ fn build_column(
       let d : FixedArray[Bool] = FixedArray::make(n, false)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
         if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
@@ -517,7 +673,7 @@ fn build_column(
             }
             None =>
               raise @types.SqlError::Scan(
-                "row \{r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as bool",
+                "row \{row_base + r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as bool",
               )
           }
         }
@@ -528,7 +684,7 @@ fn build_column(
       let d : FixedArray[Int32] = FixedArray::make(n, 0)
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
         if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
@@ -540,7 +696,7 @@ fn build_column(
             }
             None =>
               raise @types.SqlError::Scan(
-                "row \{r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as date",
+                "row \{row_base + r + 2} column \{c}: cannot parse \"\{raw.decode(i)}\" as date",
               )
           }
         }
@@ -551,7 +707,7 @@ fn build_column(
       let d : FixedArray[String] = FixedArray::make(n, "")
       let valid : FixedArray[Bool] = FixedArray::make(n, false)
       for r in start..<end {
-        let i = rows_data.unsafe_get(r + 1) + c
+        let i = rows_data.unsafe_get(skip + r) + c
         let w = r - start
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
@@ -566,18 +722,22 @@ fn build_column(
 }
 
 ///|
-/// Materialize rows `start..<end` of one file, projected columns only.
+/// Materialize rows `start..<end` of one chunk, projected columns only.
 fn build_batch(
   dtypes : Array[@types.DataType],
   columns : Array[Int32],
   buf : Bytes,
   raw : RawCsv,
+  skip : Int32,
+  row_base : Int32,
   start : Int32,
   end : Int32,
 ) -> @types.DataBatch raise @types.SqlError {
   let out : Array[@types.ColumnVector] = []
   for i, dtype in dtypes {
-    out.push(build_column(dtype, buf, raw, start, end, columns[i]))
+    out.push(
+      build_column(dtype, buf, raw, skip, row_base, start, end, columns[i]),
+    )
   }
   @types.DataBatch::new(out, end - start)
 }

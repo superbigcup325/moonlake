@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- 2026-10-24 CSV files are scanned in byte ranges instead of whole: `scan_file`
+  reads a 64 KB prefix at registration (header plus the inference sample) and
+  one 4 MB range at a time while a query runs, indexing and materializing each
+  range before dropping it, so peak RSS no longer grows with the file or with
+  a per-cell offset table for all of it. `count(*)` over a 302 MB SF0.1 lineitem
+  copy drops from 1062.7 MB to 35.2 MB and `write --csv` from 1062.7 MB to
+  34.9 MB, with byte-identical archives and DuckDB-identical results; wall time
+  roughly halves. Memory inputs and the wasm-gc/js builds keep their existing
+  behaviour behind the same signatures, so the public interface is unchanged.
+  Measured numbers and the range-level tests are in `docs/verification.md` §21
+
 - 2026-10-23 Parquet files are read in byte ranges instead of whole: the native
   `platform/io` binding gained positioned reads (`pread` plus a size from
   `fstat`) and a `FileReader`, and `scan_file` now reads the 8-byte trailer and

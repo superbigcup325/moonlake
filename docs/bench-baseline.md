@@ -286,6 +286,22 @@ and output size. Not supported by these numbers: that a CSV input is likewise
 flat. It is not — the scan itself grows with the file (4× still costs 1066 MB),
 which is why CSV chunking is the next memory item rather than a writer one.
 
+**After CSV reads became ranged (2026-10-24).** The scan no longer holds the
+file or its per-cell index (`verification.md` §21), which was the term the
+paragraph above left open. Same table, same machine, one isolated child per run:
+
+| input | before | after |
+|---|---|---|
+| `--csv` (SF0.1, 75 MB → 75 MB) | 320.1 MB / 0.99 s | 35.0 MB / 0.83 s |
+| `--csv` ×2 (151 MB → 150 MB) | 537.2 MB / 2.11 s | 33.7 MB / 1.70 s |
+| `--csv` ×4 (302 MB → 301 MB) | 1062.7 MB / 3.95 s | 34.9 MB / 3.23 s |
+
+The write column is now flat in the input format: 35 MB whether the source is a
+CSV scan or a Parquet read, at 1× and at 4×. Reading a CSV moved the same way —
+`count(*)` 327.8 → 34.2 MB and 1062.7 → 35.2 MB, `sum(l_quantity)` 326.2 → 39.1
+MB and 1062.6 → 57.4 MB — and the archives are byte-identical to what the
+previous build wrote (md5 `84a4dfd8…` 1×, `425bc3c1…` 2×, `043b084c…` 4×).
+
 ## Answers are checked before numbers are recorded (2026-10-23)
 
 `--compare` has always refused to print deltas across different machines, data

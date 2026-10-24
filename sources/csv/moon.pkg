@@ -1,7 +1,21 @@
 import {
   "superbigcup325/moonlake/types",
   "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/platform/io",
   "moonbitlang/core/buffer",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/x/fs",
 }
+
+// platform/io is compiled only for native targets, so the import above is
+// unused on wasm-gc/js; -29 is that warning. It cannot be avoided by moving the
+// import into the gated file: package imports are per package, not per file.
+
+warnings = "-29"
+
+options(
+  targets: {
+    "scan_file_native.mbt": [ "native", "llvm" ],
+    "scan_file_other.mbt": [ "wasm", "wasm-gc", "js" ],
+  },
+)

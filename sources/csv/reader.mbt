@@ -119,20 +119,41 @@ fn RawCsv::is_empty_cell(self : RawCsv, i : Int32) -> Bool {
 }
 
 ///|
-/// Scan the whole buffer.
-fn scan_csv(buf : Bytes) -> RawCsv {
-  scan_rows(buf, None)
-}
-
-///|
-/// Scan only the first `max_rows` rows (header included). Used to read the
-/// header and the type-inference sample without walking a large file.
+/// Scan only the first `max_rows` rows (header included) of a buffer that is
+/// either a whole small CSV or a prefix of a large one. The buffer is treated
+/// as if it ended there, so a trailing fragment counts as a row.
 fn scan_csv_prefix(buf : Bytes, max_rows : Int32) -> RawCsv {
-  scan_rows(buf, Some(max_rows))
+  scan_rows(buf, Some(max_rows), true).0
 }
 
 ///|
-fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
+/// Scan one chunk of a larger file and report where the last complete record
+/// ends. A record ends at a newline outside quotes, so a chunk can end inside
+/// one: unless `at_eof`, that trailing fragment is left out of the index and
+/// `consumed` is the offset of the record it belongs to, which is where the
+/// next chunk starts. Cell offsets in the result are relative to `buf`, and no
+/// record is ever split across two chunks.
+fn scan_chunk(buf : Bytes, at_eof : Bool) -> (RawCsv, Int32) {
+  scan_rows(buf, None, at_eof)
+}
+
+///|
+/// Keep rows `0..<n` of the index and report the byte offset where row `n`
+/// starts, so a caller can make the next chunk begin on that record.
+fn RawCsv::cut_rows(self : RawCsv, n : Int32) -> Int32 {
+  let cell = self.row_start(n)
+  let offset = self.starts.data[cell]
+  self.starts.truncate(cell)
+  self.ends.truncate(cell)
+  self.quoted.truncate(cell)
+  self.rows.truncate(n + 1)
+  offset
+}
+
+///|
+/// Worker behind `scan_csv_prefix` and `scan_chunk`: index every record in
+/// `buf` and report where the last complete one ends (`consumed`).
+fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
   let n = buf.length()
   let starts = GrowI::new()
   let ends = GrowI::new()
@@ -140,10 +161,12 @@ fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
   let rows = GrowI::new()
   rows.push(0)
   let mut pos = 0
+  let mut complete = 0 // end offset of the last newline-terminated record
   while pos < n {
     // scan one row of fields
     let row_cells_start = starts.len
     let mut row_terminated = false
+    let mut ended_at_newline = false
     while !row_terminated {
       let field_start = pos
       let mut is_quoted = false
@@ -200,6 +223,7 @@ fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
         } else {
           pos += 1 // '\n'
           row_terminated = true
+          ended_at_newline = true
         }
       } else {
         row_terminated = true
@@ -214,8 +238,14 @@ fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
       starts.truncate(row_cells_start)
       ends.truncate(row_cells_start)
       quoted.truncate(row_cells_start)
+      if ended_at_newline {
+        complete = pos
+      }
     } else {
       rows.push(starts.len)
+      if ended_at_newline {
+        complete = pos
+      }
       // `limit` counts the header row plus data rows: once it is reached the
       // rest of the buffer can stay unread
       if limit is Some(k) && rows.len > k {
@@ -223,11 +253,26 @@ fn scan_rows(buf : Bytes, limit : Int32?) -> RawCsv {
       }
     }
   }
+  // a chunk that did not reach EOF may hold a record cut in half: drop it and
+  // report where it started, so the next chunk begins on a record boundary
+  let mut consumed = n
+  if !at_eof {
+    if rows.len > 1 && complete < n {
+      rows.truncate(rows.len - 1)
+      let cells = rows.data[rows.len - 1]
+      starts.truncate(cells)
+      ends.truncate(cells)
+      quoted.truncate(cells)
+      consumed = complete
+    } else if rows.len == 1 {
+      consumed = 0
+    }
+  }
   starts.trim()
   ends.trim()
   quoted.trim()
   rows.trim()
-  { buf, starts, ends, quoted, rows, }
+  ({ buf, starts, ends, quoted, rows, }, consumed)
 }
 
 ///|

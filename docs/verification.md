@@ -1278,3 +1278,102 @@ Not done here: the writer's 2 GiB page-offset limit still refuses larger files
 (a reader no longer needs the relaxation, a writer still does), CSV scans still
 read whole files (N2b — the remaining memory term), and wasm-gc/js scans still
 read the whole file because their fs module cannot do better.
+
+## 21. CSV range reads (2026-10-24)
+
+Registration used to read the whole CSV and keep it: the source's input was
+`() -> Bytes`, so opening a table allocated a buffer the size of the file, and
+the byte-level reader then indexed **every cell of the file at once** — one
+`Int32` start, one `Int32` end, one `Bool` quoted flag per cell, plus a row
+table. That index, not the bytes, was the dominant term: roughly 9 bytes per
+cell, about 28 per lineitem row, ~700 MB for a 4× copy of SF0.1. A scan only
+ever needs the rows of the batch it is building, so the whole index was paid for
+one 4096-row slice at a time.
+
+**Mechanism.** `CsvInput` became `{ label, size, read_at, reset }` — the shape
+the Parquet reader took in §20 — and `scan_file` is target-split: native reads
+4 MB ranges through `platform/io`, wasm-gc/js keep the whole-file read their
+hosts require (with `reset` dropping the snapshot when a scan opens, so a table
+still sees the file as it is then, exactly as the ranged native input does).
+Registration reads a 64 KB prefix — header plus the 100-row inference sample —
+and grows it only when a row does not fit. A scan then reads one range at a
+time: `scan_chunk` indexes it, `RawCsv::cut_rows` trims it to whole 4096-row
+batches, those batches are materialized, and the range is dropped before the
+next read. Rows past the last whole batch are re-read as the start of the next
+range, so no batch straddles two ranges and no row is lost or counted twice. A
+range that cannot hold one record (a very long quoted field) is widened until it
+can, which is what keeps a quoted multi-line field one row rather than a
+fragment. The header is re-checked at the first range of every file, so a file
+that changed under a registered table is refused instead of mis-read, and error
+messages carry absolute file row numbers (`row_base`), so a bad cell in the
+fourth range reports the row a whole-file scan would have reported.
+
+**Peak memory** (native release, one isolated child per run so `ru_maxrss` is
+that run's own high-water mark; SF0.1 `lineitem`, 75 / 151 / 302 MB inputs):
+
+| query | input | before | after |
+|---|---|---|---|
+| `count(*)` | 75 MB | 327.8 MB / 0.30 s | 34.2 MB / 0.17 s |
+| `sum(l_quantity)` | 75 MB | 326.2 MB / 0.32 s | 39.1 MB / 0.17 s |
+| `count(*)` | 151 MB | 537.7 MB / 0.65 s | 35.1 MB / 0.31 s |
+| `sum(l_quantity)` | 151 MB | 538.5 MB / 0.68 s | 47.1 MB / 0.34 s |
+| `count(*)` | 302 MB | 1062.7 MB / 1.36 s | 35.2 MB / 0.64 s |
+| `sum(l_quantity)` | 302 MB | 1062.6 MB / 1.45 s | 57.4 MB / 0.66 s |
+| `l_returnflag, count(*) GROUP BY` | 302 MB | 1062.9 MB / 1.44 s | 97.1 MB / 0.79 s |
+
+The before column tracks the input size, because it *was* the input plus its
+index. The after column does not: a metadata-only query is flat at ~35 MB at
+1×/2×/4×, and a one-column aggregate grows only with the columns in flight
+(39 → 57 MB as the input quadruples), not with the file. The grouped query is
+the honest ceiling here: its peak is the scan term plus the group table it builds
+(97 MB at 2.4 M rows).
+
+**The write path was paying the same term.** With the CSV reader chunked,
+`write --csv` no longer materializes the file to write it (input and output as
+before, one isolated child per run):
+
+| input → output | before | after |
+|---|---|---|
+| 75 MB → 75 MB | 320.1 MB / 0.99 s | 35.0 MB / 0.83 s |
+| 302 MB → 301 MB | 1062.7 MB / 3.95 s | 34.9 MB / 3.23 s |
+
+That closes the open item §19 named — "the scan itself grows with the file (4×
+still costs 1066 MB)" — and the writer is now flat for both input formats.
+
+**Same bytes, same answers.** The archives are unchanged: md5 `84a4dfd8…` for
+the 1× write and `043b084c…` for the 4× write, identical between the two builds
+and to what the pre-N1 build produced for 1×. Over the 2.4 M-row 302 MB file,
+row counts (`2402288`), `sum(l_quantity)` (`61339208`) and the
+`l_returnflag` groups (`A 591160 / N 1217924 / R 593204`) match DuckDB exactly,
+on the CSV and on the Parquet file written from it.
+
+**What the tests pin**, because a chunked reader and a whole-file reader return
+the same rows and only one of them is bounded:
+
+- a whitebox test installs an input that records every range. Registration is
+  bounded by the 64 KB prefix, the largest scan read is exactly the 4 MB range,
+  and the bytes read stay under the file plus one range; the 100,000-row fixture
+  produces 25 batches, 24 of them full, and the last row decodes to its value.
+- range boundaries are invisible in the rows: a fixture whose every row carries
+  a newline inside a quoted field (so most boundaries fall inside a quoted
+  field) yields exactly 165,000 rows and the expected string; a single quoted
+  field longer than one range (4.25 MB) still arrives as one row, and that test
+  asserts the range had to grow to read it.
+- error numbering survives chunking: a bad cell at data row 99,000 — in the
+  second range — reports `row 99002 column 0`, the number a whole-file scan
+  would give.
+- a header that changed under a registered table is refused when the scan opens,
+  with the message naming the file.
+- the blackbox suite keeps its existing 11 CSV tests unchanged, including the
+  5000-row 4096 + 904 batch split and the multi-file glob.
+
+**Gates.** `moon check --deny-warn` on native, wasm-gc and js; 241 / 232 / 232
+tests; 27 golden queries; spill 7/7; `check_writer_interop.py`; `moon package
+--list` still ships the one C file, `platform/io/io_native.c`. The published
+interface gained nothing: `CsvInput` is private, `platform/io` is native-only,
+and `sources/csv`'s public signatures are unchanged.
+
+Not done here: wasm-gc/js still hold the file bytes (their fs module has no range
+read, and the browser build has no filesystem to read ranges from), the writer's
+2 GiB page-offset limit still refuses larger files, and spill-lease reclamation
+(N3) is untouched.

@@ -960,3 +960,52 @@ one-column aggregates are now bounded by the row-group columns in flight
 CSV scans still read whole files (that is the remaining memory term and N2b's
 subject), the writer's 2 GiB page-offset limit is untouched, and the browser
 build still pays a whole-file read because its fs module cannot do better.
+
+2026-10-24 (csv) — **The CSV scan stops indexing the file.** Goal: the last
+open memory item from the reader work — CSV reads still pulled the whole file
+into `Bytes` and, worse, built a byte-level offset index for every cell of it
+(start, end, quoted flag, row table: ~9 bytes per cell, ~700 MB for a 4× SF0.1
+copy). A scan only needs the rows of the batch it is building, so the index was
+being paid whole to serve a 4096-row slice.
+
+The Parquet reader already had the primitive, so CSV took the same shape:
+`CsvInput { label, size, read_at, reset }`, a 4 MB range at a time on native
+through `platform/io`, and the whole-file read every wasm/js host still forces
+behind a target-split file. Registration reads a 64 KB prefix (header plus the
+100-row inference sample) and grows it only when a row does not fit there; a scan
+indexes one range, trims it to whole 4096-row batches, materializes those
+batches, and drops the range. Rows past the last whole batch are re-read as the
+start of the next range, so a batch never straddles two ranges. A range too
+small for one record (a long quoted field with newlines) is widened until it
+holds one, and the header is re-checked at the first range of every file. Offsets
+inside a range start at zero, so the reader and the per-cell parsers did not
+change at all — only where their bytes come from and how many rows they see.
+
+Two things were not obvious. First, the `reset` hook exists because on wasm/js
+the input is a whole-file snapshot: the existing blackbox test that rewrites a
+file between registration and scan caught exactly that regression (3 rows became
+2), so the snapshot is dropped when a scan opens and the semantics match native
+again. Second, the row index into the chunk had to become `skip + r` rather than
+`skip + r + 1`; the off-by-one read one row past the end on the *last* row of a
+range, which is why the first run panicked in `RawCsv::decode` instead of
+returning wrong data — the safer of the two failures, and the reason the tests
+below assert values rather than only row counts.
+
+Quality boundary: a chunked reader and a whole-file reader return the same rows,
+so the evidence has to be about reads as well as answers. Peak RSS over SF0.1
+`lineitem`: `count(*)` 327.8 → 34.2 MB (1×), 537.7 → 35.1 (2×), 1062.7 → 35.2
+(4×); `sum(l_quantity)` 326.2 → 39.1, 538.5 → 47.1, 1062.6 → 57.4; a grouped
+query 1062.9 → 97.1 at 2.4 M rows. `write --csv` loses the same term: 320.1 →
+35.0 MB at 1× and 1062.7 → 34.9 MB at 4×, with byte-identical archives (md5
+`84a4dfd8…` 1×, `425bc3c1…` 2×, `043b084c…` 4×) and DuckDB-identical counts,
+sums and groups. Five whitebox tests hold the mechanism down: recorded ranges
+(prefix-sized registration, 4 MB scan reads), a fixture whose every row carries
+a newline inside quotes so boundaries land inside quoted fields, a 4.25 MB
+single quoted field that forces the range to grow, an error at data row 99,000
+reporting file row 99002, and a changed header being refused on open.
+241/232/232 tests across native, wasm-gc and js with `--deny-warn`, 27 golden
+queries, 7 spill checks, writer interop unchanged.
+
+What this does not claim: wasm-gc/js still hold the file bytes (no range read in
+their fs module, and nothing to seek in a browser), the writer's 2 GiB page-offset
+limit is untouched, and spill-lease reclamation is still the next item.
