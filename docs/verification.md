@@ -1381,7 +1381,7 @@ and `sources/csv`'s public signatures are unchanged.
 Not done here: wasm-gc/js still hold the file bytes (their fs module has no range
 read, and the browser build has no filesystem to read ranges from), the writer's
 2 GiB page-offset limit still refuses larger files, and spill-lease reclamation
-(N3) is untouched.
+(N3) was untouched at this point -- it landed the same day, in §22.
 
 ## 22. Spill directory reclaim (2026-10-24)
 
