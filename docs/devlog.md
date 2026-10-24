@@ -1184,3 +1184,33 @@ Quality boundary: nothing behavioural changed between the last code commit of
 0.5.0 and the release commit except the version constants; the docs commit moved
 claims and the gate together, and the gate keeps passing over the same 187-file
 archive.
+
+2026-10-24 (planning) — **The plan moved into the repository, and 0.5.0 got its record.**
+
+The repository had no roadmap: what comes next, what is refused on purpose and
+what would start a held direction lived in an untracked handoff note, so a
+reader could only take the changelog's word for it. `docs/ROADMAP.md` now
+carries that: the limits refused on purpose (a writer offset past 2 GiB,
+whole-file reads on wasm-gc/js, an executor that is not streaming end to end,
+the schema and encoding scope, spill reclamation declining to judge an owner it
+cannot prove dead), what closing each would involve, and the trigger each held
+direction waits for (cost-based planning, bit-packed validity, dictionary
+encodings, DECIMAL/TIMESTAMP, Arrow/DataFrame, parallelism). The README states
+the two limits a user can actually hit and links to it; AGENTS.md keeps one
+pointer, so the plan is not written twice.
+
+0.5.0 shipped without a committed performance record, which is how "did it get
+slower" becomes a memory. Two records were taken in one session:
+`2026-10-24-0.5.0.json`, and a 0.4.0 rebuilt from tag `v0.4.0` in a worktree,
+because yesterday's 0.4.0 record sits on a different kernel and `--compare`
+refuses that by design. The pair shows where the release's work landed: CSV
+scans 345 -> 35 MB peak RSS and 22% less wall time, joins 305 -> 51 MB,
+`count(*)` over Parquet 10.9 -> 3.8 ms because the reader stopped bringing the
+whole file in. Eight cases moved further than their own run spread; the rest,
+including a 34.6% `sum(l_quantity)` delta that sits inside a 61.7% spread, are
+noise, and `bench-baseline.md` says so instead of counting them as wins.
+
+Issue #9 is closed. Both follow-ups were already done — every release since
+0.3.1 was published from its tag, and the playground upload path is driven in
+real Chromium in CI — so the closure comment points at the sections that prove
+it rather than at a session log.

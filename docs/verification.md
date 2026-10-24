@@ -1545,4 +1545,11 @@ Release limitations, unchanged: the writer's 2 GiB page-offset limit still
 refuses larger files, wasm-gc/js scans still read whole files (their filesystem
 module has no range reads), and spill reclaim still declines to guess about a
 directory whose owner cannot be proven dead. §22 lists what is refused on
-purpose and why.
+purpose and why; `docs/ROADMAP.md` says what closing each one would involve.
+
+**Performance record, added after the release.** 0.5.0's numbers in this section
+are measured A/B pairs, not a release record. A
+[`2026-10-24-0.5.0.json`](../harness/baseline/2026-10-24-0.5.0.json) record was
+committed beside a 0.4.0 rebuilt from tag `v0.4.0` in the same session, so the
+scan/join/gather/spill cases have a like-for-like comparison across the release
+(`docs/bench-baseline.md`, last section).

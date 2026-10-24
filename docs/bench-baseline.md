@@ -1,12 +1,15 @@
 # Release performance baseline
 
-> Recorded 2026-10-20 for the 0.3.1 release (native release build, TPC-H SF0.1,
-> measured at `3d766de`). The machine-readable record is
-> [`harness/baseline/2026-10-20-0.3.1.json`](../harness/baseline/2026-10-20-0.3.1.json);
-> the earlier 0.3.0-era record is
-> [`harness/baseline/2026-10-20-0.3.0.json`](../harness/baseline/2026-10-20-0.3.0.json)
-> and is kept because the difference between the two is a lesson. Regenerate
-> with `python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.json`.
+> One record per release, native release build, TPC-H SF0.1, same script and
+> same machine. The newest is
+> [`harness/baseline/2026-10-24-0.5.0.json`](../harness/baseline/2026-10-24-0.5.0.json),
+> taken beside a 0.4.0 re-record so the two can be compared (the last section).
+> The first was 0.3.1 at `3d766de`
+> ([`2026-10-20-0.3.1.json`](../harness/baseline/2026-10-20-0.3.1.json)); the
+> earlier 0.3.0-era record
+> ([`2026-10-20-0.3.0.json`](../harness/baseline/2026-10-20-0.3.0.json)) is kept
+> because the difference between the two is a lesson. Regenerate with
+> `python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.json`.
 
 A number without its machine, build mode, data and toolchain is not a
 measurement, it is a rumour. This baseline pins all four, and hashes each
@@ -382,5 +385,56 @@ reading files written by the newer build so the bytes are identical:
 
 The rule to carry forward: a Parquet case no longer scales its memory with the
 input file, so any future regression in these cases is scan or operator memory,
-not input size. The `parquet/*` cases in the records above were taken with the
-old reader and are comparable on answers, not on peak memory.
+not input size. The `parquet/*` cases in the 0.4.0 records above were taken with the
+old reader and are comparable on answers, not on peak memory; the 0.5.0 record
+below starts from the range reader.
+
+## 0.5.0 record, and a same-session pair against 0.4.0 (2026-10-24)
+
+Two records were taken on this machine in one session for the 0.5.0 release:
+
+- [`harness/baseline/2026-10-24-0.5.0.json`](../harness/baseline/2026-10-24-0.5.0.json)
+  — `b40ab50`, the released 0.5.0, with the answer oracle green.
+- [`harness/baseline/2026-10-24-0.4.0-rerecord.json`](../harness/baseline/2026-10-24-0.4.0-rerecord.json)
+  — the published 0.4.0, rebuilt from tag `v0.4.0` in a worktree in the same
+  session and recorded with this tree's script, so the pair is on one kernel,
+  one toolchain and one dataset. The 0.4.0 record committed yesterday cannot be
+  compared here: the kernel moved from `7.2.11-1-cachyos` to
+  `7.3.0-4-cachyos` and `--compare` refuses that by design.
+
+The pair is worth reading because 0.5.0 changed how inputs are read, and the
+change shows up as both wall time and peak memory:
+
+| case | wall 0.4.0 | wall 0.5.0 | delta | peak RSS 0.4.0 -> 0.5.0 |
+|---|---|---|---|---|
+| scan/count_csv | 199.0 ms | 155.8 ms | −21.7% | 345.1 -> 35.3 MB |
+| scan/filtered_count_csv | 220.1 ms | 174.5 ms | −20.7% | 345.1 -> 35.2 MB |
+| scan/parquet_count | 10.9 ms | 3.8 ms | −65.1% | 25.1 -> 21.6 MB |
+| scan/parquet_sum | 18.5 ms | 12.1 ms | −34.6% | 39.1 -> 21.6 MB |
+| join/two_table_count | 274.2 ms | 223.2 ms | −18.6% | 305.3 -> 51.1 MB |
+| join/q3 | 299.1 ms | 252.1 ms | −15.7% | 307.5 -> 43.2 MB |
+| gather/wide_projection | 490.9 ms | 457.4 ms | −6.8% | 373.0 -> 310.9 MB |
+| gather/self_join_fanout | 433.0 ms | 361.9 ms | −16.4% | 389.0 -> 53.0 MB |
+| spill/order_by_wide | 539.7 ms | 496.4 ms | −8.0% | 345.0 -> 45.3 MB |
+| spill/format_write | 1234.1 ms | 1182.7 ms | −4.2% | 401.2 -> 344.5 MB |
+| spill/format_read | 453.7 ms | 446.5 ms | −1.6% | 230.3 -> 230.3 MB |
+
+Eight cases moved further than their own run-to-run spread; the rest are inside
+it, and `scan/parquet_sum`'s new record repeats the wide spread the old one
+showed (61.7% across its seven runs), so treat that delta as noise rather than
+as a 35% win. `gather/wide_projection` is the one case whose memory barely
+moves, because its peak is the materialized wide result rather than an input
+file.
+
+The memory column is the direct consequence of §20 and §21 of
+`verification.md`: a CSV scan no longer materializes the file, so the cases
+that read the 302 MB SF0.1 CSV lose a ~310 MB term, and the cases that read
+only Parquet lose a smaller one. Wall time follows where the case was copying
+that term. Nothing here is a new optimization: the run was recorded to answer
+"did 0.5.0 get slower than 0.4.0", and it did not.
+
+Reproducibility check: the 0.5.0 side was measured twice, once before the 0.4.0
+worktree run and once immediately after it. `scan/count_csv` came out at 155.3
+and 155.8 ms wall with 35.2 and 35.3 MB peak RSS; the committed record is the
+second, so the numbers a future comparison reads are the ones taken next to
+their 0.4.0 counterpart.

@@ -12,6 +12,9 @@ You can browse and install extra skills here:
 - `docs/devlog.md` — weekly log: goals, approach and quality boundaries.
 - `docs/verification.md`, `docs/spill-survey.md`, `docs/DEMO.md` — verification
   evidence, the memory-spill design survey, and demo notes.
+- `docs/ROADMAP.md` — what is worked towards next, the limits that are refused
+  on purpose, and the trigger each held direction waits for. Planning belongs
+  here, not duplicated into this file.
 - `CHANGELOG.md` — release notes (Keep a Changelog, SemVer).
 - `harness/` — TPC-H harness, golden answers and reference tooling.
 
