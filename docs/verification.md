@@ -1681,3 +1681,33 @@ The executor row in the limits table now carries these numbers. The scripts behi
 section are not committed: they are a debug probe (`VmHWM` sampling over the
 native CLI), not a regression gate, and every number is a wall clock on one
 developer machine, so they say "rows, not bytes" rather than "N seconds".
+
+## 26. The 16% snappy gap was one tag (2026-10-24)
+
+Section 25 left a debt that looked like page layout: for the same 6M rows in the
+same layout, this writer's `--snappy` file was 333.0 MB against pyarrow's
+287.9 MB. The raw bytes were comparable (ours are smaller, since `l_orderkey` is
+`int32` here and `int64` in pyarrow's inference), the page granularity was the
+same (one page per batch, 4,094 rows against pyarrow's 4,096), and the
+per-column breakdown blamed the data with short repeats: `l_quantity` 17.1 MB
+against 11.7, `l_comment` 88.5 against 73.0, while `l_shipinstruct` — mostly
+incompressible text — was 13.1 against 12.4.
+
+The compressor wrote every match as a three-byte `copy2` tag, even a four-byte
+match eight bytes behind the cursor, which is what most of a text page looks
+like. The format has a two-byte form for exactly that (`copy1`: length 4–11 at
+an offset below 2048) and the decoder already accepted it; the encoder now emits
+it when it fits.
+
+| check | result |
+|---|---|
+| SF1 `lineitem` written with `--snappy` | 333.0 MB → 289.2 MB |
+| pyarrow, plain+snappy, same rows | 287.9 MB |
+| read back in moonlake / pyarrow / DuckDB | 6,001,215 rows, sum 18,005,322,964,949 |
+| `harness/check_writer_interop.py` | all checks passed |
+
+Only the encoder's tag choice moved, so the decoded bytes are the ones written
+before. The whitebox test `a short match close behind is a two-byte copy` builds
+the provoking pattern (a four-byte token every eight bytes), walks the tags and
+requires at least 90 `copy1` and no wider copy, so a regression to `copy2` fails
+a test instead of quietly costing 13% of every compressed file.

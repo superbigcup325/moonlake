@@ -1309,3 +1309,27 @@ So the order is: charge the 16% to something specific (page size, where pages
 end, statistics overhead), then choose encodings per column. The numbers are in
 the roadmap's writing row and the candidate row now starts from them. No code
 changed for this.
+
+2026-10-24 (snappy) — **The 16% was one missing tag.**
+
+The encoding measurement left an odd baseline: our `--snappy` output was 333 MB
+where pyarrow's plain+snappy of the same rows was 288, with comparable raw bytes
+and the same page granularity. The plan for that number was "page layout", and
+the per-column table killed it: `l_shipinstruct` (mostly incompressible text)
+was within 6% of pyarrow, while `l_quantity` and `l_comment` — the columns made
+of short repeats — were 46% and 21% worse. That is not a page boundary problem;
+it is what a compressor does with short matches.
+
+It was writing every match as a three-byte `copy2`. Snappy's two-byte `copy1`
+covers a length of 4 to 11 at an offset under 2048, which is precisely the
+"ABCD" then a few varying bytes, "ABCD" again shape that text pages are made of,
+and the decoder here had always accepted it. Emitting it when it fits: 333.0 MB
+→ 289.2 MB, half a percent off pyarrow, with the decoded bytes unchanged because
+only the tag choice moved.
+
+The test does not check a size, it walks the tags: a pattern with a four-byte
+token every eight bytes must come out as at least 90 `copy1` and no wider copy,
+so the day someone reverts the encoder the suite says so instead of every
+compressed file growing by 13% unnoticed. What is left of the writing row is the
+per-column dictionary — still worth −32% on this table, and still waiting for a
+second table to tune the choice against.

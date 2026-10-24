@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it (`harness/check_large_write.py`). Nothing public changed: `write_bytes`,
   `write_file` and `write_file_with` keep their signatures, and files under
   2 GiB are byte-identical to 0.5.0's.
+- `--snappy` output is about 13% smaller. The compressor wrote every match as a
+  three-byte `copy2` tag even when the match was short and close behind, which
+  is what most of a text page looks like; a length of 4–11 at an offset below
+  2048 is now a two-byte `copy1`. The SF1 `lineitem` table (6,001,215 rows)
+  drops from 333.0 MB to 289.2 MB, against 287.9 MB for pyarrow writing the
+  same rows as plain+snappy. Only the encoder's tag choice changed, so the
+  decoded bytes are the same ones as before.
 
 ## [0.5.0] - 2026-10-24
 

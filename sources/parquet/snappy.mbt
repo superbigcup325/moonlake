@@ -180,9 +180,11 @@ fn snappy_literal(out : Buffer, b : Bytes, start : Int32, end : Int32) -> Unit {
 
 ///|
 /// Compress a block into the raw Snappy format (the inverse of
-/// `snappy_decompress`). Every reference is a `copy2`, so offsets are limited
-/// to 64 KiB and a match to 64 bytes — the two limits the simple matcher
-/// below already respects.
+/// `snappy_decompress`). Offsets are limited to 64 KiB and a match to 64 bytes.
+/// A short match close behind is a `copy1`, which spends two bytes on a length
+/// of 4..11 and an offset below 2048; everything else is a `copy2`. The
+/// matcher is simple on purpose, but the tag choice is not: text and short runs
+/// are mostly `copy1`-shaped, and writing them as `copy2` costs a byte each.
 fn snappy_compress(src : Bytes) -> Bytes {
   let out = Buffer()
   let mut declared = src.length().to_uint64()
@@ -216,9 +218,14 @@ fn snappy_compress(src : Bytes) -> Bytes {
         len += 1
       }
       let offset = i - candidate
-      out.write_byte((((len - 1) << 2) | 2).to_byte())
-      out.write_byte((offset & 0xFF).to_byte())
-      out.write_byte(((offset >> 8) & 0xFF).to_byte())
+      if len <= 11 && offset < 2048 {
+        out.write_byte(((offset >> 8 << 5) | ((len - 4) << 2) | 1).to_byte())
+        out.write_byte((offset & 0xFF).to_byte())
+      } else {
+        out.write_byte((((len - 1) << 2) | 2).to_byte())
+        out.write_byte((offset & 0xFF).to_byte())
+        out.write_byte(((offset >> 8) & 0xFF).to_byte())
+      }
       i += len
       literal_from = i
     } else {
