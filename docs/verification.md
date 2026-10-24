@@ -1404,7 +1404,7 @@ nonce=4242-1761310000    which claim this was; readable in a postmortem
 created_at=1761310000    seconds since the epoch
 ```
 
-only `pid`, `boot_id` and `starttime` take part in the verdict, and all three
+Only `pid`, `boot_id` and `starttime` take part in the verdict, and all three
 are needed:
 
 * the recorded boot id differs from this boot → the owner died before the
@@ -1421,14 +1421,14 @@ leaked directory under `TMPDIR` is the smaller problem.
 
 **Claim and reclaim order.** The marker is created with `O_CREAT|O_EXCL`
 (`write_new_file`), never overwritten: a directory belongs to whoever claimed it
-first, and `create_dir` remains the lock on the *index*. Reclaiming renames the
-marker to `owner.stale-<nonce>` before it touches anything else — that rename is
-the claim among concurrent reapers, exactly one of them wins it — then deletes
-only `run<n>.bin` and the marker names this protocol writes, then removes the
-directory. A directory holding a file the protocol did not write is left alone
-and reported; a reclaim interrupted after the rename leaves a marker-less
-directory, which the "cannot tell" rule keeps rather than emptying again and
-again.
+first, and `create_dir` remains the lock on the *index*. Reclaiming looks before
+it deletes: a directory holding a file the protocol did not write is left alone
+and reported, not half-emptied. Otherwise it renames the marker to
+`owner.stale-<nonce>` — that rename is the claim among concurrent reapers,
+exactly one of them wins it — then deletes only `run<n>.bin` and the marker names
+this protocol writes, then removes the directory. A reclaim interrupted after
+the rename leaves a marker-less directory, which the "cannot tell" rule keeps
+rather than emptying again and again.
 
 **Where the code lives.** `cmd/main/spill_owner.mbt` holds the rules as a pure
 function, `judge_owner(mark, boot_id_here, probe)`, plus the parser, the
