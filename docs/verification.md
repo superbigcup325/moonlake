@@ -1606,3 +1606,78 @@ would need a `DataPageHeader` this format's reader does not have), a row group
 remains one batch, and the writer still produces one row group per CSV batch,
 which for this file means 8,399 small row groups rather than a handful of large
 ones. None of those is new, and none of them is what the 2 GiB limit was.
+
+## 25. What a spilling query spends, and where (2026-10-24)
+
+The roadmap holds the streaming-executor direction until a query that spills is
+shown to be slow *because* it materializes, and not because it spills. This is
+that measurement. The input is SF1 `lineitem`: 6,001,215 rows, as a 773 MB CSV
+and as a 751 MB Parquet written from it by this tree, so the row reader and the
+column reader face the same queries. Peak RSS is `VmHWM` read from
+`/proc/<pid>/status`: `getrusage` over children reports a running maximum, which
+makes every smaller case look like the largest one before it.
+
+**The spill bytes are not the cost.** The same `ORDER BY` at a 16 MB budget,
+writing its runs to tmpfs and to disk:
+
+| spill directory | wall (median of 2) | runs | bytes written and read | peak RSS |
+|---|---|---|---|---|
+| `/dev/shm` | 2.95 s | 6 | 3,774,219 | 125 MB |
+| disk | 2.98 s | 6 | 3,774,219 | 129 MB |
+
+Three hundredths of a second apart, 3.8 MB each way. What grows with a smaller
+budget is the number of runs, and with it the work of merging them:
+
+| query | budget | runs | spilled | wall | peak RSS |
+|---|---|---|---|---|---|
+| `l_orderkey`, ordered | 8G | 0 | 0 | 1.59 s | 159 MB |
+| | 64M | 2 | 3.8 MB | 2.89 s | 221 MB |
+| | 16M | 6 | 3.8 MB | 2.95 s | 125 MB |
+| | 1M | 98 | 18.8 MB | 6.44 s | 117 MB |
+| all 16 columns, ordered | 8G | 0 | 0 | 4.84 s | 3,346 MB |
+| | 64M | 46 | 1.67 GB | 50.6 s | 5,082 MB |
+
+The narrow sort nearly doubles while moving 3.8 MB, so the extra time is a
+second pass over the rows, not the file. The wide sort is ten times slower and
+moves 1.67 GB, and its peak *rises* to 5.1 GB under a 64 MB budget: the budget
+bounds the run buffer, while the merged rows and their buffers are on top of it.
+A spilling query is slow because of the rows it copies and re-merges; the device
+is irrelevant at both sizes.
+
+**The rows are the cost, and the blocking operator is not what allocates them.**
+The same scan with nothing after it, CSV then Parquet:
+
+| query | CSV | Parquet |
+|---|---|---|
+| `count(*)` | 1.44 s / 35 MB | 0.05 s / 13 MB |
+| `l_orderkey` alone | 2.16 s / 159 MB | 0.78 s / 159 MB |
+| `l_comment` alone | 2.80 s / 620 MB | — |
+| all 16 columns | 13.1 s / 3,195 MB | 11.9 s / 3,132 MB |
+| all 16 columns, `where l_quantity < 10` (3% of rows) | 5.6 s / 584 MB | 4.4 s / 590 MB |
+| all 16 columns, `limit 1000` | 4.9 s / 2,557 MB | — |
+
+`count(*)` over the bare table stays at 35 MB because no column is decoded;
+project one column and the peak is that column's rows, project sixteen and it is
+all sixteen, at about six times the decoded bytes (24 MB of `int32` becomes
+159 MB of rows). The result buffer is not the CLI's: the same peak appears when
+the rows go straight into an aggregate.
+
+| query | wall | peak RSS |
+|---|---|---|
+| `select count(*) from (select * from lineitem)` | 5.33 s | 3,195 MB |
+| `select count(*) from (select * from lineitem order by l_orderkey)` | 5.76 s | 3,328 MB |
+| `select * from lineitem limit 1000` | 4.87 s | 2,557 MB |
+
+`LIMIT` reaches nothing: the scan materializes all 6M rows before the limit
+operator sees the first one. Parquet gives the same numbers as CSV for the same
+projection, so this is the executor, not the reader, and the spilling sort's
+3.2 GB floor was there before it spilled anything.
+
+**What this means for the roadmap.** The trigger fires, and it fires above the
+spill files: the first thing a streaming executor has to change is the scan's
+row materialization and the missing backpressure (`LIMIT` reaching the scan is
+the visible proof), after which the merge pass is what spilling costs on top.
+The executor row in the limits table now carries these numbers. The scripts behind this
+section are not committed: they are a debug probe (`VmHWM` sampling over the
+native CLI), not a regression gate, and every number is a wall clock on one
+developer machine, so they say "rows, not bytes" rather than "N seconds".

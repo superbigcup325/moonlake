@@ -10,9 +10,10 @@ only when its trigger fires.
 
 Parquet and CSV scans read byte ranges on native targets instead of whole
 files, the native Parquet writer streams as it encodes, and a query reclaims a
-spill directory left behind by a killed process. Peak memory for a scan no
-longer grows with input size ([CHANGELOG](../CHANGELOG.md) has the numbers).
-Correctness scope is unchanged: the same SQL subset, the same flat-schema
+spill directory left behind by a killed process. A scan that aggregates holds a
+couple of row groups rather than the file ([CHANGELOG](../CHANGELOG.md) has the
+numbers); a scan that returns its rows still materializes them, which is the
+executor row below. Correctness scope is unchanged: the same SQL subset, the same flat-schema
 Parquet reading, the same `PLAIN`/v1-pages writing.
 
 ## Known limits, and what closing each one means
@@ -27,7 +28,7 @@ refused:
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
-| The executor is not streaming end to end | Queries whose result is large but whose operators are not blocking | Spilling bounds a blocking `ORDER BY`/join/`GROUP BY`; a fully streaming pipeline (with backpressure between operators) is a design change, not a flag. Starts when a query that spills is shown to be slow *because* it materializes, not because it spills. |
+| The executor is not streaming end to end | Any query that returns its rows, not only ones larger than memory | Measured, and the trigger has fired: a scan materializes every projected value before the parent operator runs, so 6M rows of SF1 `lineitem` peak at 159 MB for one column and 3.1 GB for all sixteen, on CSV and Parquet alike, while `count(*)` over the same scan stays at 35 MB; `LIMIT 1000` still peaks at 2.6 GB because the scan finishes before the limit sees a row. Spilling is not the culprit: a 64 MB budget still peaks at 3.2 GB, and spilling to RAM or to disk differs by 0.03 s while moving 3.8 MB. A fix is bounded batches with backpressure between operators, starting with `LIMIT` reaching the scan; the merge pass is what spilling would then cost on top. [verification §25](verification.md) has the tables. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |
 | Writing is `PLAIN` values with v1 pages; `--snappy` is the only compression choice | Output size for wide or repetitive columns | A real producer whose size/read/write trade favours a dictionary or adaptive encoding. The format change is small; proving it pays is the work. |

@@ -1247,3 +1247,37 @@ need not" rather than "no limit".
 the footer with pyarrow, cross-read with DuckDB, read back with moonlake) in a
 few minutes and 5 GB of scratch disk, so the claim in CHANGELOG and
 verification §24 has a command behind it.
+
+2026-10-24 (executor) — **The rows are the cost; the spill files are not.**
+
+The roadmap had one direction parked on an open question: a streaming executor
+waits until a spilling query is shown to be slow *because* it materializes
+rather than because it spills. Answering it needed a profile, not an
+implementation, so the question went to SF1: 6M `lineitem` rows, the native
+release CLI, peak RSS read per process from `/proc` (the `getrusage` figure over
+children is a running max, which quietly turns every case into its predecessor's
+size).
+
+The spill itself is free. The same `ORDER BY` at a 16 MB budget, with its runs
+on tmpfs and on disk, finishes 0.03 s apart and moves 3.8 MB each way. Even a
+46-run sort that pushes 1.67 GB through files is not paying for the device. What
+it pays for is the rows: the narrow sort nearly doubles from 1.59 s to 2.95 s
+while spilling 3.8 MB, which is a second pass over the rows, and the wide sort
+goes from 4.8 s to 50.6 s.
+
+The uncomfortable part is where the memory sits. A plain `SELECT *` over those
+6M rows, no blocking operator anywhere, peaks at 3.1 GB — the scan materializes
+every projected value before the parent operator runs, about six times the
+decoded bytes, on CSV and on Parquet with the same number. `LIMIT 1000` does not
+reduce it, because the scan has already finished. So the 3.2 GB floor under a
+spilling sort was there before the sort spilled anything, and `--memory` bounds
+the run buffer rather than the rows: a 64 MB budget peaks *higher* (5.1 GB) than
+an 8G one.
+
+That reorders the work. The first win is backpressure between operators — a
+`LIMIT` that reaches the scan is the visible proof — and only then the merge
+pass that spilling costs on top. Both rows in `docs/ROADMAP.md` carry the
+numbers, and `docs/verification.md` §25 has the tables and the method. Nothing
+here is committed as a script: it is a debug probe over the CLI, not a gate, and
+the wall clocks are one machine on one day, so the claim being made is "rows,
+not bytes" rather than "N seconds".
