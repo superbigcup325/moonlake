@@ -16,6 +16,14 @@
 // the input streams batch by batch (see `TableEntry::stream`), so peak memory is
 // the output buffer plus one batch instead of the whole table plus the archive.
 // pyarrow writes optional columns by default for the same reason.
+//
+// File offsets are 64-bit. A column chunk's `file_offset` and its
+// `data_page_offset` are positions inside the file, and a Parquet file is not
+// bounded by 2 GiB, so they are written as Int64 and counted as Int64 here; the
+// only 2 GiB-shaped field left is a page's own body/stored length (`w_page_header`
+// takes Int32, as the format's `DataPageHeader` does). A page holds one batch, so
+// that bound is the batch size, not the file size: writing a 3 GiB file as
+// 100-many 30 MB pages is exactly what this writer does.
 
 ///|
 fn write_error(msg : String) -> @types.SqlError {
@@ -262,7 +270,7 @@ fn w_column_meta_data(
   num_values : Int32,
   total_uncompressed : Int32,
   total_compressed : Int32,
-  data_page_offset : Int32,
+  data_page_offset : Int64,
   codec : ParquetCodec,
   stats : ColStats,
 ) -> Bytes {
@@ -281,7 +289,7 @@ fn w_column_meta_data(
   last = w_field_i64(out, last, 5, num_values.to_int64())
   last = w_field_i64(out, last, 6, total_uncompressed.to_int64())
   last = w_field_i64(out, last, 7, total_compressed.to_int64())
-  last = w_field_i64(out, last, 9, data_page_offset.to_int64())
+  last = w_field_i64(out, last, 9, data_page_offset)
   last = w_field(out, last, 12, W_STRUCT)
   out.write_bytes(w_statistics(stats))
   w_stop(out)
@@ -289,10 +297,10 @@ fn w_column_meta_data(
 }
 
 ///|
-fn w_column_chunk(file_offset : Int32, meta_data : Bytes) -> Bytes {
+fn w_column_chunk(file_offset : Int64, meta_data : Bytes) -> Bytes {
   let out = Buffer()
   let mut last = 0
-  last = w_field_i64(out, last, 2, file_offset.to_int64())
+  last = w_field_i64(out, last, 2, file_offset)
   last = w_field(out, last, 3, W_STRUCT)
   out.write_bytes(meta_data)
   w_stop(out)
@@ -747,10 +755,7 @@ fn write_with(
         Snappy => snappy_compress(body)
       }
       let header = w_page_header(body.length(), stored.length(), rows)
-      if position > 2000000000L {
-        raise write_error("file would exceed the 2 GiB page offset limit")
-      }
-      let offset = position.to_int()
+      let offset = position
       emit(header)
       emit(stored)
       position += (header.length() + stored.length()).to_int64()

@@ -1214,3 +1214,36 @@ Issue #9 is closed. Both follow-ups were already done — every release since
 0.3.1 was published from its tag, and the playground upload path is driven in
 real Chromium in CI — so the closure comment points at the sections that prove
 it rather than at a session log.
+
+2026-10-24 (writer) — **The 2 GiB file limit was an offset type, not a design.**
+
+Every release since writing landed carried the same limitation line: the writer
+refuses an output that would need a page offset past 2 GiB. Reading the guard
+showed it was not a compromise, just an `Int32` in three places (the column
+chunk's `file_offset`, the column metadata's `data_page_offset`, and the
+counted position) with a polite error in front of it. A file position is
+64-bit in Parquet, so the fix is a type: the reader already decoded those
+fields as `Int64` and the reader's only narrowing is a chunk's length, which
+stays.
+
+The before/after is one input. 2.35 GiB of CSV, written by 0.5.0 and by this
+tree: 0.5.0 exits 1 with `file would exceed the 2 GiB page offset limit` and
+leaves nothing behind (the streaming sink renames on success, so a failure
+leaves the previous file alone); this tree writes 2,410,475,894 bytes in 13.5 s
+at 22 MB of peak RSS. The file has 8,399 row groups and 1,820 of its 16,798
+column chunks start past 2^31, so the offsets in the footer are genuinely wide.
+pyarrow, DuckDB and moonlake read the same 34,400,000 rows and the same sum
+back, which is the only way to tell "wrote a wide offset" from "wrote a wide
+offset that happens to be the low 32 bits".
+
+What did not change is the part worth checking: files under 2 GiB are byte
+identical to 0.5.0's on three inputs (242 bytes for a three-row CSV, 75 MB
+writing the SF0.1 CSV, 85 MB rewriting the SF0.1 Parquet), and no public
+signature moved. The one 32-bit length left is a page's body, which is one
+batch, so the honest statement of the new limit is "a page must fit, a file
+need not" rather than "no limit".
+
+`harness/check_large_write.py` repeats the whole thing (generate, write, read
+the footer with pyarrow, cross-read with DuckDB, read back with moonlake) in a
+few minutes and 5 GB of scratch disk, so the claim in CHANGELOG and
+verification §24 has a command behind it.

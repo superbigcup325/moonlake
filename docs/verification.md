@@ -1541,11 +1541,12 @@ was created from the CHANGELOG section of this version.
 gate defaulting to `moon.mod`: 16/16 checks pass, so the page and the tag agree
 on the release identity.
 
-Release limitations, unchanged: the writer's 2 GiB page-offset limit still
-refuses larger files, wasm-gc/js scans still read whole files (their filesystem
-module has no range reads), and spill reclaim still declines to guess about a
-directory whose owner cannot be proven dead. §22 lists what is refused on
-purpose and why; `docs/ROADMAP.md` says what closing each one would involve.
+Release limitations at the tag: the writer's 2 GiB page-offset limit refused
+larger files, wasm-gc/js scans still read whole files (their filesystem module
+has no range reads), and spill reclaim still declines to guess about a directory
+whose owner cannot be proven dead. §22 lists what is refused on purpose and why;
+`docs/ROADMAP.md` says what closing each would involve. The first of those has
+since moved: §24.
 
 **Performance record, added after the release.** 0.5.0's numbers in this section
 are measured A/B pairs, not a release record. A
@@ -1553,3 +1554,53 @@ are measured A/B pairs, not a release record. A
 committed beside a 0.4.0 rebuilt from tag `v0.4.0` in the same session, so the
 scan/join/gather/spill cases have a like-for-like comparison across the release
 (`docs/bench-baseline.md`, last section).
+
+## 24. Parquet files past 2 GiB (2026-10-24)
+
+The writer stored a page's position in the file as `Int32`, so it refused any
+output that would need an offset past 2 GiB (it raised `file would exceed the
+2 GiB page offset limit` before emitting the page). That was the last item on
+the list of limits this repository admitted to. The fix is a type: a column
+chunk's `file_offset` and its `data_page_offset` are positions inside the file,
+so they are `Int64` in the writer and decoded as `Int64` by the reader, which
+already did that. The one 32-bit length left is a page's own body and stored
+size, and a page holds one batch, so that bound is the batch size rather than
+the file size.
+
+**Before and after, same input, same machine.** A 2.35 GiB CSV (34,400,000
+rows of `id,tag`) written to Parquet:
+
+| build | result |
+|---|---|
+| 0.5.0, from tag `v0.5.0` | exit 1, `parquet write: file would exceed the 2 GiB page offset limit`, no output file |
+| this tree | exit 0, 2,410,475,894 bytes in 13.5 s, peak RSS 22 MB |
+
+**What the file looks like to other readers.** pyarrow's metadata reports
+34,400,000 rows in 8,399 row groups, with the widest `data_page_offset` at
+2,408,368,843 and 1,820 of 16,798 column chunks past 2^31, so the offsets in the
+footer are genuinely wide rather than coincidentally small. pyarrow reads
+34,400,000 rows and the expected `sum(id)`; DuckDB returns the same
+`count(*)`/`sum`/`min`/`max`; moonlake's own range reader returns the same
+count and sum over the whole file (1.4 s, 227 MB peak RSS) and prunes to 15 MB
+for a predicate on the id range. This is reproducible with
+`harness/check_large_write.py`, which generates the CSV, writes it, checks the
+footer with pyarrow, cross-reads with DuckDB and reads back with moonlake. It is
+not wired into CI: it needs about 5 GB of scratch disk and a few minutes, so it
+is a check to run when the write path changes, not on every push.
+
+**Unchanged.** No public signature moved (`write_bytes`, `write_bytes_with`,
+`write_file`, `write_file_with` keep theirs, and `pkg.generated.mbti` does not
+change). Files under 2 GiB are byte-identical to 0.5.0's, compared directly:
+242 bytes for a three-row CSV, 75,174,601 bytes writing the SF0.1 `lineitem`
+CSV, 84,788,461 bytes rewriting the SF0.1 Parquet. The whitebox test
+`a column chunk offset past 2 GiB survives the footer round trip` builds a
+synthetic footer at offset 5,000,000,000 and reads it back through `read_footer`,
+so the wide path is covered without a multi-gigabyte fixture in the test suite.
+Gates: `moon check --deny-warn` and 255 / 242 / 242 tests on native, wasm-gc and
+js.
+
+**Not done here.** A single page larger than 2 GiB is still not writable (it
+would need a `DataPageHeader` this format's reader does not have), a row group
+remains one batch, and the writer still produces one row group per CSV batch,
+which for this file means 8,399 small row groups rather than a handful of large
+ones. None of those is new, and none of them is what the 2 GiB limit was.

@@ -17,9 +17,15 @@ Parquet reading, the same `PLAIN`/v1-pages writing.
 
 ## Known limits, and what closing each one means
 
+The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
+It is gone: page and column-chunk offsets are 64-bit, so a single page still has
+to fit its 32-bit length field and a file no longer does. A 2.41 GiB file
+written from CSV reads back identically in moonlake, pyarrow and DuckDB
+([CHANGELOG](../CHANGELOG.md), `harness/check_large_write.py`). What is still
+refused:
+
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
-| The native writer refuses a file that would need an offset past 2 GiB | Anyone writing an output larger than a couple of GB (a TPC-H SF10 `lineitem` is ~7 GB) | Store page offsets as 64-bit in the footer and column metadata; a single page stays under 2 GiB, so the guard becomes per-page rather than per-file. Readers are already fine: a chunk over 2 GiB is refused by column name, and a large file with ordinary chunks is not. |
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream: a `read_at`-style API in `moonbitlang/x`. The browser playground has no filesystem at all and would keep using in-memory input either way. |
 | The executor is not streaming end to end | Queries whose result is large but whose operators are not blocking | Spilling bounds a blocking `ORDER BY`/join/`GROUP BY`; a fully streaming pipeline (with backpressure between operators) is a design change, not a flag. Starts when a query that spills is shown to be slow *because* it materializes, not because it spills. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |

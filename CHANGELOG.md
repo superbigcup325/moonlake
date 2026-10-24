@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The Parquet writer no longer refuses files larger than 2 GiB. A column
+  chunk's `file_offset` and its `data_page_offset` are file positions, so they
+  are written and counted as 64-bit now; the only 32-bit length left is a page's
+  own body, and a page holds one batch, so that bound is the batch size rather
+  than the file size. Writing 2.35 GiB of CSV produces a 2.41 GiB Parquet file
+  in 13.5 s at 22 MB of peak RSS, with 1,820 of its 16,798 column chunks past
+  2^31, and moonlake, pyarrow and DuckDB read the same rows and sums back from
+  it (`harness/check_large_write.py`). Nothing public changed: `write_bytes`,
+  `write_file` and `write_file_with` keep their signatures, and files under
+  2 GiB are byte-identical to 0.5.0's.
+
 ## [0.5.0] - 2026-10-24
 
 > First release since 0.4.0. The theme is that a query's memory no longer grows
