@@ -302,6 +302,33 @@ fn cli_fail(msg : String) -> @types.SqlError {
 }
 
 ///|
+/// The one scope every budgeted query runs inside: take a spill directory,
+/// open the store in it, run `body` under those options, and remove the
+/// directory again on both exit paths.
+///
+/// The error path is the reason this exists. A query that spills and then
+/// fails must not leave its run files behind, and that purge is easy to leave
+/// out of a second copy of this skeleton -- which is what the two commands below
+/// used to be.
+fn[T] with_spill_run(
+  spill_dir : String?,
+  memory : Int32,
+  body : (@engine.ExecOptions) -> T raise @types.SqlError,
+) -> T raise @types.SqlError {
+  let run = spill_run_dir(spill_dir)
+  let fs = @spill.FsStore::new(run.dir) catch {
+    err => {
+      purge_spill_run(run)
+      raise cli_fail(err.to_string())
+    }
+  }
+  errdefer purge_spill_run(run)
+  let out = body({ budget: memory, spill: Some(fs.store()), })
+  purge_spill_run(run)
+  out
+}
+
+///|
 /// ANALYZE under the same memory options a real run would use: it
 /// executes the query, so the spill counters it reports must come from
 /// the budget the caller asked for (an in-memory analyze can never show
@@ -315,27 +342,16 @@ fn analyze_query(
   if memory <= 0 {
     return @engine.explain_analyze(sql, cat)
   }
-  let run = spill_run_dir(spill_dir)
-  let fs = @spill.FsStore::new(run.dir) catch {
-    err => {
-      purge_spill_run(run)
-      raise cli_fail(err.to_string())
-    }
-  }
-  errdefer purge_spill_run(run)
-  let out = @engine.explain_analyze_with(sql, cat, {
-    budget: memory,
-    spill: Some(fs.store()),
+  with_spill_run(spill_dir, memory, opts => {
+    @engine.explain_analyze_with(sql, cat, opts)
   })
-  purge_spill_run(run)
-  out
 }
 
 ///|
-/// Run the query under the memory options: a positive budget spills the
-/// blocking ORDER BY to a per-run directory (default under TMPDIR).
-/// The directory is purged once the query ends, on both the success and
-/// the error path.
+/// Run the query under the memory options: a positive budget lets the
+/// blocking operators (ORDER BY, grace join, grace aggregation) spill into a
+/// per-run directory under `--spill-dir` or TMPDIR, which `with_spill_run`
+/// removes once the query ends, on both the success and the error path.
 fn run_query(
   sql : String,
   cat : @catalog.Catalog,
@@ -345,20 +361,9 @@ fn run_query(
   if memory <= 0 {
     return @moonlake.execute(sql, cat)
   }
-  let run = spill_run_dir(spill_dir)
-  let fs = @spill.FsStore::new(run.dir) catch {
-    err => {
-      purge_spill_run(run)
-      raise cli_fail(err.to_string())
-    }
-  }
-  errdefer purge_spill_run(run)
-  let result = @moonlake.execute_with(sql, cat, {
-    budget: memory,
-    spill: Some(fs.store()),
+  with_spill_run(spill_dir, memory, opts => {
+    @moonlake.execute_with(sql, cat, opts)
   })
-  purge_spill_run(run)
-  result
 }
 
 ///|
