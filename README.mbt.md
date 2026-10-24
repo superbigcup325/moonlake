@@ -115,7 +115,7 @@ moon add superbigcup325/moonlake
 ```
 
 > This README and the browser playground track `main`. `moon add` gives you the
-> latest published release from mooncakes (0.4.0), which includes the session
+> latest published release from mooncakes (0.5.0), which includes the session
 > playground, the Parquet writer and the spill/JSON fixes recorded in
 > [CHANGELOG.md](CHANGELOG.md).
 

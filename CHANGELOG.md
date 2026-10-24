@@ -4,7 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-24
+
+> First release since 0.4.0. The theme is that a query's memory no longer grows
+> with the size of its input files: Parquet and CSV scans read byte ranges
+> instead of whole files, and native Parquet output streams as it encodes
+> instead of building the archive in one buffer. `count(*)` over a 287 MB
+> Parquet file drops from 295 MB of peak RSS to 12 MB, and over a 302 MB CSV
+> file from 1063 MB to 35 MB. It also closes what a killed query left behind:
+> a spill directory is claimed with an owner marker and reclaimed by the next
+> query only when that marker proves the owner is dead. One signature was
+> added, native-only (`pub type Emit`, the sink `write_file_with` writes
+> through); every other public signature and every produced file is unchanged,
+> byte for byte.
 
 ### Changed
 
