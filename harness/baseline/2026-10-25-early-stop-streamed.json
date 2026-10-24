@@ -1,0 +1,208 @@
+{
+  "schema": 1,
+  "what": "what a query costs its source: scan rows pulled, RSS, time",
+  "toolchain": {
+    "raw": [
+      "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon",
+      "moonc v0.10.16+b1a0e846e (2026-10-16) ~/.moon/bin/moonc",
+      "moonrun 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moonrun",
+      "",
+      "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+    ],
+    "moon": "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon"
+  },
+  "git": {
+    "commit": "3fb36ee0e5f9b1ee9781fec2ad69846663706653",
+    "branch": "main",
+    "subject": "test(harness): record what a LIMIT costs the scan today",
+    "dirty": true
+  },
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "cpu_mhz_at_start": 569,
+    "kernel": "7.3.0-4-cachyos",
+    "os": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      2.857421875,
+      2.4306640625,
+      2.26806640625
+    ],
+    "python": "3.12.14"
+  },
+  "fixture": {
+    "rows": 2000000,
+    "seed": 20261025,
+    "columns": [
+      "id",
+      "i32",
+      "i64",
+      "f64",
+      "cat",
+      "flag"
+    ],
+    "csv_sha256": "a902ff5b5c1e3d6ebb6aa03ade6e4d6116f7eec7c04396038c9e7cd1c522ed12",
+    "csv_bytes": 80738963,
+    "parquet_bytes": 74656667
+  },
+  "measure_floor_mb": 14.0,
+  "binary": "_build/native/release/build/cmd/main/main.exe",
+  "cases": [
+    {
+      "id": "scan/count",
+      "what": "COUNT(*) over the whole file",
+      "sql": "select count(*) as n from t",
+      "scan_rows": 2000000,
+      "result_rows": 1,
+      "wall_ms": 217.0,
+      "median_ms": 220.0,
+      "cpu_ms": 215.8,
+      "rss_mb": 21.2,
+      "rss_raw_mb": 35.2,
+      "wall_spread_pct": 1.4,
+      "output_sha256": "25b8c96bd68ea1ff36bf16105e965320b72d3f56b3ff44857e907256d121f3f1"
+    },
+    {
+      "id": "scan/limit",
+      "what": "SELECT * LIMIT 10: the case early stop is about",
+      "sql": "select * from t limit 10",
+      "scan_rows": 4096,
+      "result_rows": 10,
+      "wall_ms": 13.9,
+      "median_ms": 14.3,
+      "cpu_ms": 13.5,
+      "rss_mb": 13.0,
+      "rss_raw_mb": 27.1,
+      "wall_spread_pct": 3.0,
+      "output_sha256": "d0359b0d1004f922d0fda85c076fbf1a756da573c658dac91d6cafd4653d6d15"
+    },
+    {
+      "id": "scan/limit_narrow",
+      "what": "one projected column, LIMIT 10",
+      "sql": "select id from t limit 10",
+      "scan_rows": 4096,
+      "result_rows": 10,
+      "wall_ms": 16.1,
+      "median_ms": 18.7,
+      "cpu_ms": 15.8,
+      "rss_mb": 13.2,
+      "rss_raw_mb": 27.2,
+      "wall_spread_pct": 16.2,
+      "output_sha256": "84af90e34bf4397b70dcd44da60cf8fdfbf19ddeca86ecb2d3399bb2c06e0940"
+    },
+    {
+      "id": "scan/filter_limit",
+      "what": "a filter that keeps nothing, LIMIT 10",
+      "sql": "select * from t where i32 < -1000 limit 10",
+      "scan_rows": 0,
+      "result_rows": 0,
+      "wall_ms": 398.3,
+      "median_ms": 402.1,
+      "cpu_ms": 396.5,
+      "rss_mb": 21.0,
+      "rss_raw_mb": 35.1,
+      "wall_spread_pct": 1.0,
+      "output_sha256": "85e82ba95fc2c1f1560470a4309ead109981801091f79c8ded81139607230020"
+    },
+    {
+      "id": "scan/filter_count",
+      "what": "filter plus aggregate: reads every row on purpose",
+      "sql": "select count(*) as n from t where i32 < 0",
+      "scan_rows": 999737,
+      "result_rows": 1,
+      "wall_ms": 247.3,
+      "median_ms": 247.9,
+      "cpu_ms": 245.9,
+      "rss_mb": 27.1,
+      "rss_raw_mb": 41.1,
+      "wall_spread_pct": 0.2,
+      "output_sha256": "b1f71ec728629e702dea750474b3cb8bd7009063ab095d6341831b4b25d57da6"
+    },
+    {
+      "id": "scan/sort_limit",
+      "what": "ORDER BY on two columns, LIMIT 10",
+      "sql": "select id, i32 from t order by i32, id limit 10",
+      "scan_rows": 2000000,
+      "result_rows": 10,
+      "wall_ms": 1048.7,
+      "median_ms": 1052.8,
+      "cpu_ms": 1043.9,
+      "rss_mb": 51.2,
+      "rss_raw_mb": 65.2,
+      "wall_spread_pct": 0.4,
+      "output_sha256": "8876e703e05ff2a18b651c8f8230569cf1c6c7244c073312957b7c681353c8e5"
+    },
+    {
+      "id": "scan/offset",
+      "what": "OFFSET deep into an ordered result",
+      "sql": "select id from t order by id limit 5 offset 1000000",
+      "scan_rows": 2000000,
+      "result_rows": 5,
+      "wall_ms": 239.8,
+      "median_ms": 242.0,
+      "cpu_ms": 238.5,
+      "rss_mb": 51.2,
+      "rss_raw_mb": 65.2,
+      "wall_spread_pct": 0.9,
+      "output_sha256": "58e89dfce86eda3af30c58964e3f9fa2f620ee14c602dcc96f02fc973a4b9e93"
+    },
+    {
+      "id": "scan/derived_limit",
+      "what": "a derived table under an outer LIMIT",
+      "sql": "select * from (select id from t) s limit 10",
+      "scan_rows": null,
+      "result_rows": null,
+      "wall_ms": 233.2,
+      "median_ms": 270.9,
+      "cpu_ms": 231.8,
+      "rss_mb": 37.2,
+      "rss_raw_mb": 51.2,
+      "wall_spread_pct": 16.1,
+      "output_sha256": "84af90e34bf4397b70dcd44da60cf8fdfbf19ddeca86ecb2d3399bb2c06e0940"
+    },
+    {
+      "id": "scan/full",
+      "what": "every row printed: the collector path",
+      "sql": "select id from t",
+      "scan_rows": 2000000,
+      "result_rows": 2000000,
+      "wall_ms": 405.7,
+      "median_ms": 407.7,
+      "cpu_ms": 403.2,
+      "rss_mb": 37.2,
+      "rss_raw_mb": 51.3,
+      "wall_spread_pct": 0.5,
+      "output_sha256": "3f4f6bfac2192d45e6c34f1356c410eb41d44942b335b3f5009fa04e0ebc6e26"
+    },
+    {
+      "id": "scan/parquet_count",
+      "what": "COUNT(*) over the Parquet file",
+      "sql": "select count(*) as n from t",
+      "scan_rows": 2000000,
+      "result_rows": 1,
+      "wall_ms": 14.4,
+      "median_ms": 15.9,
+      "cpu_ms": 13.6,
+      "rss_mb": 0.0,
+      "rss_raw_mb": 14.0,
+      "wall_spread_pct": 10.6,
+      "output_sha256": "25b8c96bd68ea1ff36bf16105e965320b72d3f56b3ff44857e907256d121f3f1"
+    },
+    {
+      "id": "scan/parquet_limit",
+      "what": "SELECT * LIMIT 10 over the Parquet file",
+      "sql": "select * from t limit 10",
+      "scan_rows": 4096,
+      "result_rows": 10,
+      "wall_ms": 4.9,
+      "median_ms": 4.9,
+      "cpu_ms": 4.5,
+      "rss_mb": 0.1,
+      "rss_raw_mb": 14.1,
+      "wall_spread_pct": 0.7,
+      "output_sha256": "d0359b0d1004f922d0fda85c076fbf1a756da573c658dac91d6cafd4653d6d15"
+    }
+  ]
+}

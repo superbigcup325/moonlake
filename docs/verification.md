@@ -1673,6 +1673,11 @@ operator sees the first one. Parquet gives the same numbers as CSV for the same
 projection, so this is the executor, not the reader, and the spilling sort's
 3.2 GB floor was there before it spilled anything.
 
+That was true of every shape when these numbers were taken. [§27](#27-a-limit-stops-its-scan-2026-10-24)
+is what a plain single-table LIMIT does now — 14.3 ms and 27 MB, from 4.87 s and
+2,557 MB, for the same query — and everything else in this section still
+describes a scan with no window above it.
+
 **What this means for the roadmap.** The trigger fires, and it fires above the
 spill files: the first thing a streaming executor has to change is the scan's
 row materialization and the missing backpressure (`LIMIT` reaching the scan is
@@ -1729,3 +1734,80 @@ The whitebox test `a short match close behind is a two-byte copy` builds
 the provoking pattern (a four-byte token every eight bytes), walks the tags and
 requires at least 90 `copy1` and no wider copy, so a regression to `copy2` fails
 a test instead of quietly costing 13% of every compressed file.
+
+## 27. A LIMIT stops its scan (2026-10-24)
+
+A LIMIT over a single table used to cost a full scan. The executor is eager:
+the scan drains its source into an array and each operator runs over that array
+in turn, so the window could only cut rows that had already been read, decoded
+and projected. Over the 2,000,000-row fixture (75 MB of CSV, 71 MB of Parquet)
+`select * from t limit 10` pulled every row, in 483 ms and 252 MB of peak RSS,
+where `select count(*)` over the same scan was 205 ms and 21 MB.
+
+The window now pulls. The scan, the build filter pushed down to it, the deferred
+`WHERE` and the projection run a batch at a time, and the loop stops as soon as
+the `OFFSET + LIMIT` window is full. There is no cancel protocol because nothing
+needs one: a consumer that has what it asked for stops calling `next`, and an
+unfinished stream is dropped — the sources hold decoders and file handles, not
+spill files or locks. The rules a stage may rely on are written at the top of
+`engine/stream.mbt`.
+
+| case | rows the scan pulled | wall ms | peak RSS MB |
+|---|---|---|---|
+| `select * from t limit 10` (CSV) | 2,000,000 → 4,096 | 482.8 → 13.9 | 252.0 → 13.0 |
+| `select id from t limit 10` (CSV) | 2,000,000 → 4,096 | 212.6 → 16.1 | 31.4 → 13.2 |
+| `select * from t limit 10` (Parquet) | 2,000,000 → 4,096 | 277.6 → 4.9 | 250.2 → 0.1 |
+| `select count(*) from t` | 2,000,000 | 205.0 → 217.0 | 21.3 → 21.2 |
+| `select id from t` (all rows) | 2,000,000 | 418.9 → 405.7 | 37.5 → 37.2 |
+| `select * from t where i32 < -1000 limit 10` | 0 | 385.6 → 398.3 | 21.5 → 21.0 |
+| `select count(*) from t where i32 < 0` | 999,737 | 237.9 → 247.3 | 27.5 → 27.1 |
+| `select id from t order by id limit 5 offset 1000000` | 2,000,000 | 235.3 → 239.8 | 39.3 → 51.2 |
+| `select id, i32 from t order by i32, id limit 10` | 2,000,000 | 1037.6 → 1048.7 | 53.3 → 51.2 |
+| `select * from (select id from t) s limit 10` | (no plan) | 223.4 → 233.2 | 53.4 → 37.2 |
+
+"Rows the scan pulled" is the `scan` line of `--analyze`. Before and after are
+one build apart over the same seeded fixture, measured by
+`harness/bench_early_stop.py --compare` with two timed runs per case and the
+fastest kept; wall and RSS are single-digit percentages apart between runs for
+everything in the table, so the rows that moved are the ones to read. Peak RSS is
+`ru_maxrss` of the query's own process minus the 14 MB floor a bare `/bin/true`
+reports through the same path (a forked child carries its parent's resident pages
+until it execs, so the raw number has a constant in it); in raw terms the first
+row is 265.8 MB → 27.1 MB, and the Parquet row lands on the floor itself. Answers
+are judged against DuckDB reading the same file — multiset for an unordered
+result, in order where the query defines an order, a count plus a column sum for
+the 2,000,000-row output — so a faster wrong answer would fail instead of looking
+good, and every case in the table answered the same before and after.
+
+Everything else stayed where it was, and the numbers say why. `count(*)` has to
+see every row. `ORDER BY` cannot know its top ten before the last batch arrives,
+and the `OFFSET` case carries one. A derived table is a finished query by the
+time the outer LIMIT sees a row. The filter case is the interesting one: its
+`scan` line is 0 both before and after because the predicate is pushed into the
+scan, which then still has to read the file to conclude that no row matches, so
+398 ms is the honest cost of that shape rather than something this change could
+remove.
+
+What a LIMIT may stream is not this change's decision to make: the binder already
+decides which predicates are applied to a table before the first join, and only
+those may travel to a source (see `engine/scan.mbt`). A probe filter, a join
+residual or the deferred `WHERE` cannot, because an outer join can leave a row
+visible as the unmatched side. The window applies what it may to each batch and
+stops when it has what it needs.
+
+§25's case is the same shape at SF1 scale: `select * from lineitem limit 1000`
+over the 773 MB CSV took 4.87 s and peaked at 2,557 MB before the window pulled,
+and is 14.3 ms and 13.0 MB above a 14.2 MB floor now, for 1,000 rows out of
+6,001,215. `count(*)` over the same file is 1.53 s and 21.0 MB, so the window
+costs one 4 MB range and the count costs the whole file — which is the
+difference this change is supposed to make and nothing more.
+
+`engine/pull_wbtest.mbt` pins both sides of that boundary with a counting source:
+`LIMIT 10` over eight batches of 100 rows pulls one batch (the case that used to
+pull eight), `LIMIT 250` pulls three, `LIMIT 5 OFFSET 495` pulls five, `LIMIT 0`
+pulls none, and a filter that passes rows still stops at the window — while
+`count(*)`, `ORDER BY`, `SELECT DISTINCT`, a join and a derived table still pull
+all eight, because a count that fell there would be a wrong answer. Nothing
+public changed: `execute`, `execute_with` and `run_select` keep their signatures,
+and the eager path remains the implementation for every shape that cannot stop
+early, so the remaining operators can move to this contract one at a time.

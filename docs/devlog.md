@@ -1333,3 +1333,38 @@ so the day someone reverts the encoder the suite says so instead of every
 compressed file growing by 13% unnoticed. What is left of the writing row is the
 per-column dictionary — still worth −32% on this table, and still waiting for a
 second table to tune the choice against.
+
+## A LIMIT that stops reading (2026-10-24): the first operator on a batch
+## contract
+
+The executor was eager by construction: the scan drained its source into an
+array, each operator ran over that array, and the window at the end cut rows
+that had already been decoded and projected. So `select * from t limit 10` over
+2,000,000 rows cost 483 ms and 252 MB of peak RSS to return ten rows, while
+`count(*)` over the same scan was 205 ms and 21 MB. The ten rows were not paying
+for counting; they were paying for materializing every column.
+
+The window now pulls batches and stops when it is full. That is only safe if a
+stage knows what it may assume, so the rules are written down next to the code
+that follows them: whole batches until `None`, never an empty batch, any batch
+size, source order only, error by raising, the caller owns what it was handed,
+and an unfinished stream must be droppable. There is no cancel message and no
+`Stop` value — a consumer that has what it asked for simply stops calling
+`next`, which also means a stage cannot claim to have stopped for a reason it
+did not have.
+
+What may travel toward the source did not change with this: the binder already
+decides which predicates apply to a table before the first join, and an outer
+join makes the rest unsafe to push. The window applies the build filter and the
+deferred `WHERE` per batch and projects per batch, which is what the eager path
+did to the whole array, so the answers are the same rows — checked against
+DuckDB for all eleven shapes in `harness/bench_early_stop.py`, with the pull
+counts pinned by a counting source in `engine/pull_wbtest.mbt`.
+
+The numbers that matter: 2,000,000 rows pulled → 4,096, 483 ms → 13.9 ms,
+252 MB → 13 MB on CSV, and 278 ms / 250 MB → 4.9 ms / 14 MB on Parquet. The
+aggregate, the sort, the distinct, the join and the derived table are untouched,
+because each of them genuinely needs every row first — the honest count in the
+whitebox test is the one that did not move. Everything public kept its
+signature, and the eager path is still the implementation for the rest, so the
+next operator can move over without a rewrite.

@@ -28,6 +28,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it (`harness/check_large_write.py`). Nothing public changed: `write_bytes`,
   `write_file` and `write_file_with` keep their signatures, and files under
   2 GiB are byte-identical to 0.5.0's.
+- A single-table `LIMIT` stops its scan when the window is full. The executor
+  used to materialize a whole table before the window saw a row: `select * from
+  t limit 10` over 2,000,000 rows (75 MB of CSV) read all of them, taking 483 ms
+  and 252 MB of peak RSS above the measurement floor, and 278 ms / 250 MB over
+  the same rows as Parquet. It now pulls one batch of 4,096 rows: 13.9 ms and
+  13 MB on CSV, 4.9 ms on Parquet, with `--analyze` reporting the 4,096 rows the
+  scan emitted instead of 2,000,000. What a LIMIT cannot stream — a join, an
+  aggregate, `ORDER BY` or `DISTINCT` above it, or a derived table on the outer
+  side — behaves exactly as before, and all eleven benchmark shapes return the
+  same rows as 0.5.0 when checked against DuckDB on the same fixture. Nothing
+  public changed.
 - `--snappy` output is about 13% smaller. The compressor wrote every match as a
   three-byte `copy2` tag even when the match was short and close behind, which
   is what most of a text page looks like; a length of 4–11 at an offset below
