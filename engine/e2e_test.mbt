@@ -343,6 +343,26 @@ test "join ON syntax matches the comma form" {
 }
 
 ///|
+test "a streamed limit applies the window to rows, not to the scan" {
+  // The scan stops as soon as the window is full, so these are the cases where
+  // "full" is decided by rows the window itself skips: a NULL or a skipped
+  // column still occupies its place, and an OFFSET counts rows after WHERE.
+  let content = "a,b\n1,x\n2,\n3,z\n4,w\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "t") catch { e => abort("\{e}") })
+  let page = run("SELECT b, a FROM t LIMIT 2", cat)
+  assert_eq(page.row_count(), 2)
+  assert_eq(page.get(0, 0), @types.Scalar::Str("x"))
+  assert_eq(page.get(1, 0), @types.Scalar::Null)
+  assert_eq(page.get(1, 1), @types.Scalar::Int32(2))
+  let tail = run("SELECT a FROM t WHERE a > 1 LIMIT 1 OFFSET 1", cat)
+  assert_eq(tail.row_count(), 1)
+  assert_eq(tail.get(0, 0), @types.Scalar::Int32(3))
+  assert_eq(run("SELECT a FROM t LIMIT 5 OFFSET 10", cat).row_count(), 0)
+  assert_eq(run("SELECT a FROM t LIMIT 0", cat).row_count(), 0)
+}
+
+///|
 test "aggregation over a join with group/order/limit" {
   let cat = join_catalog()
   let r = run(

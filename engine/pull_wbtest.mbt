@@ -94,15 +94,16 @@ fn counted_batches(
 }
 
 ///|
-/// A catalog holding one lazy table `t`, plus the counters its source updates:
+/// A lazy two-column table `name` over in-memory batches, plus its counters:
 /// `[opens, pulls, rows, projection width]`.
-fn counting_catalog(
+fn counting_entry(
+  name : String,
   batches : Int32,
   rows_per_batch : Int32,
-) -> (@catalog.Catalog, Array[Int32]) {
+) -> (@catalog.TableEntry, Array[Int32]) {
   let cells : Array[Int32] = [0, 0, 0, 0]
   let schema : @catalog.TableSchema = {
-    table: "t",
+    table: name,
     columns: [
       { name: "c0", dtype: @types.Int32, },
       { name: "c1", dtype: @types.Int32, },
@@ -112,8 +113,17 @@ fn counting_catalog(
     batches: counted_batches(batches, rows_per_batch),
     cells,
   }
+  (@catalog.TableEntry::from_source(schema, source), cells)
+}
+
+///|
+fn counting_catalog(
+  batches : Int32,
+  rows_per_batch : Int32,
+) -> (@catalog.Catalog, Array[Int32]) {
+  let (entry, cells) = counting_entry("t", batches, rows_per_batch)
   let cat = @catalog.Catalog::new()
-  cat.register(@catalog.TableEntry::from_source(schema, source))
+  cat.register(entry)
   (cat, cells)
 }
 
@@ -125,74 +135,120 @@ fn run_counted(sql : String, cat : @catalog.Catalog) -> SelectResult {
 }
 
 ///|
-test "a scan pulls every batch, and a LIMIT cannot stop it" {
-  // 8 batches of 100 rows; LIMIT 10 needs the first 10 rows of the first
-  // batch. Today the scan materializes all 800 rows and the LIMIT slices the
-  // result afterwards, which is the cost the batched executor removes.
+test "a LIMIT stops the scan after the batch that fills its window" {
+  // 8 batches of 100 rows; LIMIT 10 needs the first batch and nothing after it.
+  // Before the streamed window this pulled all 8 batches to return 10 rows.
   let (cat, cells) = counting_catalog(8, 100)
   let r = run_counted("SELECT c0 FROM t LIMIT 10", cat)
   assert_eq(r.row_count(), 10)
   assert_eq(r.get(0, 0), @types.Scalar::Int32(0))
-  assert_eq(cells[1], 8) // pulls
-  assert_eq(cells[2], 800) // rows pulled, not rows returned
+  assert_eq(cells[1], 1) // pulls
+  assert_eq(cells[2], 100) // rows pulled, not rows returned
   assert_eq(cells[3], 1) // projection width: only c0 was decoded
 }
 
 ///|
-test "a selective filter reads the whole table and keeps almost nothing" {
-  // WHERE eliminates every row; the scan still pays for all of them, because
-  // the filter runs batch by batch but nothing tells the source to stop.
+test "a LIMIT that spans batches pulls only the batches it needs" {
   let (cat, cells) = counting_catalog(8, 100)
-  let r = run_counted("SELECT c0 FROM t WHERE c0 < 0", cat)
-  assert_eq(r.row_count(), 0)
-  assert_eq(cells[1], 8)
-  assert_eq(cells[2], 800)
+  let r = run_counted("SELECT c0 FROM t LIMIT 250", cat)
+  assert_eq(r.row_count(), 250)
+  assert_eq(r.get(249, 0), @types.Scalar::Int32(249))
+  assert_eq(cells[1], 3) // 300 rows are enough for 250
+  assert_eq(cells[2], 300)
 }
 
 ///|
-test "OFFSET past the first batch still pulls every batch" {
+test "an OFFSET deep into the table pulls only up to its window" {
+  // 495 rows of offset plus 5 of limit: five batches fill it, the last three
+  // are never touched.
   let (cat, cells) = counting_catalog(8, 100)
   let r = run_counted("SELECT c0 FROM t LIMIT 5 OFFSET 495", cat)
   assert_eq(r.row_count(), 5)
   assert_eq(r.get(0, 0), @types.Scalar::Int32(495))
+  assert_eq(cells[1], 5)
+  assert_eq(cells[2], 500)
+}
+
+///|
+test "limit 0 opens the scan and pulls nothing" {
+  let (cat, cells) = counting_catalog(8, 100)
+  let r = run_counted("SELECT c0 FROM t LIMIT 0", cat)
+  assert_eq(r.row_count(), 0)
+  assert_eq(cells[1], 0)
+  assert_eq(cells[2], 0)
+}
+
+///|
+test "a filter that matches nothing cannot stop the scan, and must not" {
+  // The source cannot evaluate this predicate (it is not pushed down as a
+  // hint by the test source), so the scan has to look at every row to know
+  // that none qualify. A count here that fell would be a wrong answer.
+  let (cat, cells) = counting_catalog(8, 100)
+  let r = run_counted("SELECT c0 FROM t WHERE c0 < 0 LIMIT 10", cat)
+  assert_eq(r.row_count(), 0)
   assert_eq(cells[1], 8)
-  assert_eq(cells[2], 800)
+}
+
+///|
+test "a filter that passes rows still stops at the window" {
+  let (cat, cells) = counting_catalog(8, 100)
+  let r = run_counted("SELECT c0 FROM t WHERE c0 >= 0 LIMIT 10", cat)
+  assert_eq(r.row_count(), 10)
+  assert_eq(cells[1], 1) // first batch already has ten rows past the filter
 }
 
 ///|
 test "an aggregate pulls every batch, which is honest" {
-  // COUNT(*) has to see the rows: this count must not shrink when the
-  // executor learns to stop early.
+  // COUNT(*) has to see the rows: this count must not shrink.
   let (cat, cells) = counting_catalog(8, 100)
   let r = run_counted("SELECT count(*), sum(c0) FROM t", cat)
   assert_eq(r.get(0, 0), @types.Scalar::Int64(800L))
   assert_eq(r.get(0, 1), @types.Scalar::Int64(319600L))
   assert_eq(cells[1], 8)
-  assert_eq(cells[2], 800)
 }
 
 ///|
 test "ORDER BY LIMIT still reads the whole table, which is honest" {
   // A top-10 over an unsorted table cannot know it has the top 10 before the
-  // last batch arrives, so this count stays at 8 after any early-stop work.
+  // last batch arrives.
   let (cat, cells) = counting_catalog(8, 100)
   let r = run_counted("SELECT c0 FROM t ORDER BY c0 DESC LIMIT 10", cat)
   assert_eq(r.row_count(), 10)
   assert_eq(r.get(0, 0), @types.Scalar::Int32(799))
   assert_eq(cells[1], 8)
-  assert_eq(cells[2], 800)
+}
+
+///|
+test "SELECT DISTINCT LIMIT still reads the whole table" {
+  // DISTINCT has to see every row before it knows which rows are distinct.
+  let (cat, cells) = counting_catalog(8, 100)
+  let r = run_counted("SELECT DISTINCT c1 FROM t LIMIT 2", cat)
+  assert_eq(r.row_count(), 2)
+  assert_eq(cells[1], 8)
+}
+
+///|
+test "a LIMIT over a join cannot stop either scan" {
+  let (left, cells_l) = counting_entry("l", 2, 10)
+  let (right, cells_r) = counting_entry("r", 2, 10)
+  let cat = @catalog.Catalog::new()
+  cat.register(left)
+  cat.register(right)
+  let r = run_counted("SELECT l.c0 FROM l, r LIMIT 10", cat)
+  assert_eq(r.row_count(), 10)
+  assert_eq(cells_l[1], 2) // the build side is read whole
+  assert_eq(cells_r[1], 2)
 }
 
 ///|
 test "a derived table materializes before the outer LIMIT sees a row" {
   // The inner SELECT is a full query: the outer LIMIT arrives after the
-  // derived result exists, so both counts are the whole table.
+  // derived result exists, so the count is the whole table.
   let (cat, cells) = counting_catalog(8, 100)
   let r = run_counted("SELECT c0 FROM (SELECT c0 FROM t) s LIMIT 10", cat)
   assert_eq(r.row_count(), 10)
   assert_eq(cells[0], 1) // the inner scan opened once
   assert_eq(cells[1], 8)
-  assert_eq(cells[2], 800)
 }
 
 ///|

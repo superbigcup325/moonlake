@@ -163,6 +163,12 @@ fn run_parsed(
   let runner : SubqueryRunner = { catalog, opts, }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
   let bq = plan.bq
+  // A LIMIT that needs nothing but the rows it returns stops its scan instead
+  // of materializing the table and cutting the window out of the result.
+  match streaming_limit_source(bq, sources) {
+    Some(entry) => return stream_limit(bq, plan, entry, schemas[0].table, stats)
+    None => ()
+  }
   // Materialize each FROM item with only the columns the query reads. A base
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
