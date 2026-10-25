@@ -138,5 +138,8 @@ test {
   assert_false(glob_match("a*b.csv", "abcsv"))
   // pattern stem: star removed, suffix stripped, separator trimmed
   assert_eq(pattern_stem("parts/part-*.csv"), "part")
+  // a bare "*.csv" keeps no name: build_groups rejects it rather than register
+  // every file under table ""
+  assert_eq(pattern_stem("*.csv"), "")
   assert_eq(pattern_stem("data-*.csv"), "data") // trailing separator trimmed
 }

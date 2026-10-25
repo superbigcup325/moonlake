@@ -19,7 +19,15 @@ fn build_groups(
       let name = if hits.length() == 1 {
         table_stem(hits[0])
       } else {
-        pattern_stem(pair.1)
+        let stem = pattern_stem(pair.1)
+        // a bare "*.csv" keeps no name once the star and suffix go: the
+        // group would register table "" and every query would quote it
+        if stem == "" {
+          raise cli_fail(
+            "the --csv pattern \{pair.1} matched \{hits.length()} files and leaves no table name; give them a shared name prefix (part-*.csv) so they scan into a named table",
+          )
+        }
+        stem
       }
       groups.push((name, "csv", hits))
     } else {
@@ -38,7 +46,35 @@ fn register_inputs(
   date_cols : Array[String],
 ) -> @catalog.Catalog raise {
   let cat = @catalog.Catalog::new()
+  // --date-col has one job: type an unannotated integer epoch-day PARQUET
+  // column as DATE. CSV columns get their type from inference, so with no
+  // Parquet input the flag can only be a silent no-op
+  if date_cols.length() > 0 {
+    let mut parquet = false
+    for (_, kind, _) in groups {
+      if kind == "parquet" {
+        parquet = true
+      }
+    }
+    if !parquet {
+      raise cli_fail(
+        "--date-col types --parquet columns only; a CSV column gets its type from inference, so this flag would do nothing",
+      )
+    }
+  }
+  // a second file with the same stem must not silently replace the first:
+  // `--csv a/data.csv --csv b/data.csv` used to register both under "data"
+  // and answer from the last one only
+  let seen : Array[(String, String)] = []
   for (name, kind, files) in groups {
+    for prev in seen {
+      if prev.0 == name {
+        raise cli_fail(
+          "two inputs register as table \"\{name}\" (\{prev.1} and \{files[0]}); rename one file or load them into separate tables",
+        )
+      }
+    }
+    seen.push((name, files[0]))
     let entry = match kind {
       "parquet" =>
         @pq.scan_file(files[0], name, date_cols) catch {
@@ -76,10 +112,28 @@ fn register_inputs(
 }
 
 ///|
+/// argv as the subcommands expect it: args[0] is the launcher, args[1] the
+/// subcommand, everything after it that subcommand's own arguments. js runs
+/// the CLI through `node <script>.js`, which prepends the script path as a
+/// second launcher entry (native and wasm-gc prepend only the executable), so
+/// that entry is dropped here instead of shifting every index in the two
+/// commands — before, every js invocation fell through to the usage text.
+fn normalize_args(args : Array[String]) -> Array[String] {
+  if args.length() < 2 || !args[1].has_suffix(".js") {
+    return args
+  }
+  let out : Array[String] = [args[0]]
+  for i in 2..<args.length() {
+    out.push(args[i])
+  }
+  out
+}
+
+///|
 /// Entry point for the `moonlake` CLI.
 /// Run with `moon run cmd/main` from the project root.
 fn main raise {
-  let args = @env.args()
+  let args = normalize_args(@env.args())
   if args.contains("--version") {
     println("moonlake \{@moonlake.version()}")
     return
@@ -96,11 +150,17 @@ fn main raise {
     write_command(args)
     return
   }
-  // the classic first-commands slip: flags without the subcommand
-  if args.length() > 1 && (args[1] == "--csv" || args[1] == "--parquet") {
+  // the classic first-commands slip: options without the subcommand
+  if args.length() > 1 && args[1].has_prefix("--") {
     eprintln(
-      "it looks like you passed data flags without a subcommand; e.g.\n  moonlake exec --csv t.csv --file q.sql\n  moonlake exec --csv t.csv \"SELECT ...\"",
+      "it looks like you passed options without a subcommand; e.g.\n  moonlake exec --csv t.csv --file q.sql\n  moonlake exec --csv t.csv \"SELECT ...\"",
     )
+    @sys.exit(1)
+  }
+  // a misspelled command must not print the usage text and exit 0: a script
+  // that pipes the "result" of a typo would read the usage as data
+  if args.length() > 1 {
+    eprintln("unknown command \"\{args[1]}\"; try \"moonlake --help\"")
     @sys.exit(1)
   }
   println(usage())
@@ -357,24 +417,31 @@ fn run_query(
 }
 
 ///|
-/// Bytes with an optional K/M/G suffix (case-insensitive).
+/// Bytes with an optional K/M/G suffix (case-insensitive). The budget is an
+/// Int32, so a value past 2147483647 is an error: it used to wrap, and `4G`
+/// wrapped to 0, which means "no budget at all" — a request for a 4 GiB cap
+/// silently ran unbounded.
 fn parse_memory(text : String) -> Int32 raise @types.SqlError {
   if text.length() == 0 {
     raise @types.SqlError::Execute("--memory: empty value")
   }
   let last = text[text.length() - 1].to_int()
-  let mult = match last {
-    75 | 107 => Some(1024) // K / k
-    77 | 109 => Some(1024 * 1024) // M / m
-    71 | 103 => Some(1024 * 1024 * 1024) // G / g
-    _ => None
+  let mult : Int64 = match last {
+    75 | 107 => 1024L // K / k
+    77 | 109 => 1048576L // M / m
+    71 | 103 => 1073741824L // G / g
+    _ => 1L
   }
   let digits = match mult {
-    Some(_) => text[:text.length() - 1].to_owned()
-    None => text
+    1L => text
+    _ => text[:text.length() - 1].to_owned()
   }
-  let m = mult.unwrap_or(1)
-  let mut v = 0
+  if digits.length() == 0 {
+    raise @types.SqlError::Execute(
+      "--memory: expected <n>[K|M|G], got \"\{text}\"",
+    )
+  }
+  let mut v = 0L
   for ch in digits {
     let d = ch.to_int() - 48
     if d < 0 || d > 9 {
@@ -382,9 +449,20 @@ fn parse_memory(text : String) -> Int32 raise @types.SqlError {
         "--memory: expected <n>[K|M|G], got \"\{text}\"",
       )
     }
-    v = v * 10 + d
+    v = v * 10L + d.to_int64()
+    if v > 2147483647L {
+      raise @types.SqlError::Execute(
+        "--memory: \{text} is larger than 2147483647 bytes, the largest budget",
+      )
+    }
   }
-  v * m
+  let bytes = v * mult
+  if bytes > 2147483647L {
+    raise @types.SqlError::Execute(
+      "--memory: \{text} is larger than 2147483647 bytes, the largest budget",
+    )
+  }
+  bytes.to_int()
 }
 
 ///|
@@ -409,4 +487,53 @@ fn join_row(result : @engine.SelectResult, r : Int32) -> String {
     sb.write_string(result.get(r, c).to_string())
   }
   sb.to_string()
+}
+
+///|
+/// `parse_memory`'s value, for a test: a rejected value aborts the test.
+fn mem_ok(text : String) -> Int32 {
+  parse_memory(text) catch {
+    e => abort("\{e}")
+  }
+}
+
+///|
+/// `parse_memory`'s error message, for a test: an accepted value aborts.
+fn mem_err(text : String) -> String {
+  let _ = parse_memory(text) catch { e => return e.to_string() }
+  abort("expected --memory to reject \{text}")
+}
+
+///|
+test "parse_memory: suffixes, the int32 bound, malformed input" {
+  assert_eq(mem_ok("4096"), 4096)
+  assert_eq(mem_ok("1K"), 1024)
+  assert_eq(mem_ok("2M"), 2097152)
+  assert_eq(mem_ok("1G"), 1073741824)
+  assert_eq(mem_ok("0"), 0)
+  assert_eq(mem_ok("2147483647"), 2147483647)
+  // these used to wrap: 4G wrapped to 0 (no budget at all, so a 4 GiB cap ran
+  // unbounded) and 4294971392 wrapped to 4096 (a 4 GiB cap ran tiny)
+  assert_true(mem_err("4G").contains("2147483647"))
+  assert_true(mem_err("4294971392").contains("2147483647"))
+  assert_true(mem_err("2147483648").contains("2147483647"))
+  assert_true(mem_err("K").contains("<n>[K|M|G]"))
+  assert_true(mem_err("12x").contains("<n>[K|M|G]"))
+  assert_true(mem_err("").contains("empty"))
+}
+
+///|
+test "normalize_args: js prepends the script path, native does not" {
+  let native = ["moonlake", "exec", "--csv", "t.csv"]
+  let same = normalize_args(native)
+  assert_eq(same.length(), 4)
+  assert_eq(same[1], "exec")
+  // js argv is [node, script.js, ...]: the script path would shift every index
+  // and the subcommand would never be found
+  let js = ["/usr/bin/node", "/tmp/main.js", "exec", "--csv", "t.csv"]
+  let fixed = normalize_args(js)
+  assert_eq(fixed.length(), 4)
+  assert_eq(fixed[1], "exec")
+  // a bare js launch still reaches the usage text
+  assert_eq(normalize_args(["/usr/bin/node", "/tmp/main.js"]).length(), 1)
 }

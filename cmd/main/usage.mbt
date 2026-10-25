@@ -42,9 +42,9 @@ fn usage() -> String {
     #|Usage: moonlake [options] [command]
     #|
     #|Commands:
-    #|  exec (--csv <file> | --parquet <file> | --date-col <c])+ <sql>
+    #|  exec (--csv <file> | --parquet <file> | --date-col <c>)+ <sql>
     #|      Run a SELECT over CSV/Parquet files (one flag per table)
-    #|  write (--csv <file> | --parquet <file> | --date-col <c])+ --out <file>
+    #|  write (--csv <file> | --parquet <file> | --date-col <c>)+ --out <file>
     #|      Write one registered table back out as Parquet
     #|      --table <name>   pick the table (default: the only one)
     #|      --snappy         compress pages with Snappy
@@ -55,7 +55,8 @@ fn usage() -> String {
     #|      --analyze             run it: plan plus actual rows per stage
     #|      --json                emit the result as one JSON array line
     #|      --memory <n>[K|M|G]   budget for the blocking ORDER BY; beyond
-    #|                            it runs spill to disk (external sort)
+    #|                            it runs spill to disk (external sort).
+    #|                            At most 2147483647 bytes; 0 means no budget
     #|      --spill-dir <dir>     parent of this query's run files (default:
     #|                            TMPDIR); each query gets its own subdirectory
     #|
