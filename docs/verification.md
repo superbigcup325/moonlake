@@ -85,8 +85,13 @@ distinguishes key placement from delayed filtering).
 The `engine/e2e_test.mbt` overflow battery plus `types/types_test.mbt`:
 - CSV inference widens past the boundary instead of overflowing: 2147483648 stays
   exact (Int64), 9223372036854775808 becomes Float64 — **never wraps**
-- literal arithmetic wraps as **defined semantics**: 2147483647+1 → -2^31;
-  9223372036854775807+1 → -2^63
+- integer arithmetic refuses to wrap: 2147483647+1 and 9223372036854775807+1
+  are `sql error (execute): integer overflow: ...` (the same refusal `sum()`
+  makes; DuckDB raises `Overflow in addition`), and every in-range result
+  including the boundary itself keeps its value. The non-raising
+  `Scalar::arith` still wraps, documented as such; the executor evaluates
+  through `Scalar::arith_checked` on both the scalar and the vectorized path
+  (the per-lane check is why the fast path did not have to be turned off)
 - division is always DOUBLE: `x/0` → ±inf, `0/0` → nan; `%0` → NULL
 - an out-of-range CAST is a clean bind error (never wraps)
 - month arithmetic clamps to month end: 1996-03-31 + 1 month = 1996-04-30

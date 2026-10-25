@@ -57,6 +57,10 @@ REFUSALS = (
     "INT96 timestamps are not supported",
     "FIXED_LEN_BYTE_ARRAY is not supported",
     "data page v2 is not supported",
+    # a page whose declared bounds run past the end of the file: the file is
+    # truncated (apache/parquet-testing ships such fixtures), so the reader
+    # names the page instead of decoding whatever bytes follow it
+    "payload bytes, past the end of the file",
     "GZIP compression is not supported",
     "compression codec",
     "the dictionary page holds no entries",

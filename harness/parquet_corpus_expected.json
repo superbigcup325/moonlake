@@ -192,8 +192,8 @@
       "why": "1 columns, 1 sampled"
     },
     "nation.dict-malformed.parquet": {
-      "class": "decoded",
-      "why": "4 columns, 2 sampled"
+      "class": "refused",
+      "why": "page at offset 292 claims 28 payload bytes, past the end of the file"
     },
     "nested_lists.snappy.parquet": {
       "class": "refused",

@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `@types.Scalar::arith_checked` and `@types.int_arith_checked`: the same
+  arithmetic as `Scalar::arith`, but int32/int64 `+`/`-`/`*` raise
+  `SqlError::Execute` on overflow instead of wrapping. `Scalar::arith` keeps
+  its wrapping behaviour, documented as such; the engine now evaluates through
+  the checked form on both the scalar and the vectorized path, and a caller that
+  embeds the engine can pick either.
 - `@spill.run_file_name` and `@spill.is_run_file_name`. The files a spill
   directory holds are named by the store, and a host that points `--spill-dir`
   at a directory of its own has to tell them from its own files before removing
@@ -48,6 +54,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   drops from 333.0 MB to 289.2 MB, against 287.9 MB for pyarrow writing the
   same rows as plain+snappy. Only the encoder's tag choice changed, so the
   decoded bytes are the same ones as before.
+
+### Fixed
+
+- A CSV row with the wrong number of fields is a scan error naming the file and
+  the row (`part-3.csv: row 1201 has 1 field, expected 3`), on both the
+  registration path (the inference sample) and the scanning path (every row of
+  each 4 MB range). Before, a short row's cell offsets ran into the next row's
+  cells: a 5,000-row file answered with its neighbour's values, and a short row
+  that landed on the sampled boundary — or on a range's last row, where the
+  offsets run past the cell arrays — crashed the process (a 400-row file with
+  the short row at data row 100 exited 134). Every ragged fixture under
+  `sources/csv`'s blackbox tests and the release battery now fails cleanly, and
+  a file that is only *reached* past the sample is refused when its scan opens,
+  not silently.
+- A CSV header that repeats a name gets DuckDB's `read_csv` rename: the second
+  `a` becomes `a_1` (and a generated name never collides with one the header
+  already uses). Both columns used to bind to the first, so `a,a` over `1,2`
+  answered `1|1` and `--json` emitted `{"a":1,"a":2}`, a JSON object with a
+  repeated key. `SelectResult::to_json` makes a repeated output alias unique the
+  same way, so `SELECT a, b AS a` is strict JSON a parser can round-trip.
+- Non-finite float values read instead of degrading the column: `NaN`, `inf`,
+  `+inf`, `-inf` and the `Infinity` spellings (either case) are float64 in a CSV
+  cell and in `CAST(... AS DOUBLE)`, which is what pandas, numpy and the JSON
+  emitters write. The old parser also refused every finite value with an
+  exponent past 300 (`1e307` is a normal double) and now takes the whole double
+  range, overflowing to `inf` the way a DuckDB cast does.
+- A correlated `count(*)` (also `count(x)` and `count(DISTINCT x)`) over an
+  outer row with no matching inner row answers 0 instead of NULL. The
+  decorrelated form is a grouped LEFT JOIN, so the probe side saw NULL where SQL
+  says the aggregate's identity: `(SELECT count(*) FROM n1 WHERE n1.k = u3.k)`
+  over keys 1,2,3 against a one-key table answered `1|1`, `2|NULL`, `3|NULL`
+  and now matches DuckDB's `1,0,0`. `sum`/`min`/`max` keep NULL, which is
+  their empty-group value.
+- `--explain` and `--analyze` of a `SELECT` without `FROM` print the plan
+  instead of aborting. `explain` bound the query with no FROM item, so the plan
+  had no step and rendering indexed past the empty list (exit 134 on
+  `--explain "SELECT 1"`); it now uses the same zero-column `__one` dummy table
+  the executor already drove, and the plan reads `scan __one (0 cols)`.
+- The `js` build finds its subcommand. `node main.js exec …` fell through to the
+  usage text and exited 0: on js `@env.args()` prepends the script path as a
+  second launcher entry, so `args[1]` was never `exec`. The launcher entry is
+  dropped once, before the commands see the argument list, which also makes a
+  bare `node main.js` print usage like the other targets.
+- An unknown command exits 1 with `unknown command "…"` instead of printing the
+  usage text and exiting 0, where a pipeline would read the help as data.
+- `--memory` refuses a value past 2147483647 bytes instead of wrapping. `4G`
+  wrapped to 0, which means *no* budget, so a 4 GiB cap ran unbounded; a value
+  just past the bound wrapped to a few KB. The parse accumulates in int64 and
+  reports the value and the bound.
+- `--css`-style bare globs with no name are refused: a `--csv '*.csv'` that
+  matched several files used to register them all under table `""`, which only a
+  quoted empty identifier could reach. The error asks for a shared prefix
+  (`part-*.csv`); one match keeps its file stem, as before.
+- Two inputs that resolve to the same table name are refused
+  (`two inputs register as table "a" (x/a.csv and y/a.csv)`). `--csv x/a.csv
+  --csv y/a.csv` used to register both under `a`, last one wins, so a query
+  answered from one of the two files with nothing in the output saying which.
+- `--date-col` with no Parquet input is refused. On a CSV-only invocation the
+  flag was validated by name and then ignored: `--date-col k` over a CSV int
+  column left it an int (`EXTRACT` still said `got int32`), and a name that
+  matched nothing emitted no message at all.
 
 ## [0.5.0] - 2026-10-24
 
