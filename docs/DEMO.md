@@ -59,10 +59,11 @@ bash harness/check_all.sh
 
 `gen_tpch.py` generates TPC-H SF0.01 with DuckDB's dbgen, exports eight
 tables plus a Parquet file, and stores DuckDB's own answers as golden
-files. `check_all.sh` then runs all 27 golden queries through the CLI
-(22 TPC-H, the `q6p` Parquet variant and four multi-row-group Parquet
-fixtures) and diffs each against its golden (1e-9 relative tolerance on
-floats):
+files. `check_all.sh` then runs every golden comparison through the CLI
+(22 TPC-H, the `q6p` Parquet variant, four multi-row-group Parquet
+fixtures and the reader's codec variants — 33 comparisons, counted by the
+script itself) and diffs each against its golden (1e-9 relative tolerance
+on floats):
 
 ```
 == q6

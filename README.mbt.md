@@ -46,7 +46,7 @@ SQL correctness is validated by differential testing against DuckDB over the TPC
 
 ```bash
 uv run --with duckdb python harness/gen_tpch.py   # TPC-H SF0.01 data + goldens
-bash harness/check_all.sh                         # 27 goldens: all PASS (22 TPC-H + parquet + 4 multi-row-group)
+bash harness/check_all.sh                         # 33 goldens: all PASS (22 TPC-H + parquet + encoding variants)
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (regenerate first: gen_tpch.py 0.1)
 ```
 

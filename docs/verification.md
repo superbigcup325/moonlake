@@ -388,8 +388,9 @@ statistics is not, a column that is constant inside a group is skipped for
 refused, and a CSV column outside the projection is never parsed — a value that
 would fail its inferred type is only an error when a query actually reads it.
 
-**2. End to end**: all 27 golden queries (`harness/check_all.sh`: 22 TPC-H
-texts + the Parquet variant + four multi-row-group Parquet queries, plus the
+**2. End to end**: all 33 golden comparisons (`harness/check_all.sh`: 22
+TPC-H texts + the Parquet variant + four multi-row-group Parquet queries +
+the reader's codec variants, plus the
 external-sort / grace-join / grace-aggregation equivalence checks) still match
 DuckDB byte for byte, including `mgfilter`, whose predicate `v >= 200000 AND
 v < 300047` reads 2 of the 4 row groups; `--explain` names both pushdowns:
@@ -481,7 +482,7 @@ because `moonbitlang/x/fs` offers no range reads.
 moon test                                            # 201 items (all properties)
 uv run --with duckdb python harness/gen_tpch.py      # SF0.01 data + goldens
 uv run --with duckdb python harness/gen_parquet_fixtures.py  # parquet fixtures + goldens
-bash harness/check_all.sh                            # 27 goldens + parquet fixture checks
+bash harness/check_all.sh                            # 33 goldens + parquet fixture checks
 uv run --with duckdb python harness/gen_tpch.py 0.1  # SF0.1
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh
 uv run --with duckdb python harness/fuzz_pushdown.py 300 20261005
@@ -1930,3 +1931,11 @@ are these, and none of them is a wrong answer:
 
 The date-arithmetic, division and `%` groups were already recorded as deliberate
 divergences before this pass (sections 5 and 15); the pass added no new ones.
+
+The release gates were re-run whole, since two of the fixes touch the binder and
+one touches the Parquet writer's error path: `moon test` 276/276 (wasm-gc),
+`moon test --target native` 289/289, `moon check --deny-warn` clean,
+`harness/check_all.sh` 33/33 golden comparisons plus its three spill-equivalence
+checks (the script now counts them itself, so the "27" in this document can stop
+drifting), `harness/check_writer_interop.py` all checks, and
+`harness/check_cli.sh` on both the debug and the release binary.

@@ -21,6 +21,8 @@ check() { # <name> <csv...>
   check_in "$DATA" "$@"
 }
 
+goldens=0
+
 check_in() { # <golden-dir> <name> <csv...>
   local dir=$1 name=$2
   shift 2
@@ -28,6 +30,7 @@ check_in() { # <golden-dir> <name> <csv...>
   moon run cmd/main -- exec "$@" "$(cat "harness/queries/$name.sql")" \
     > "$work/$name.txt"
   python3 harness/compare.py "$dir/${name}_golden.txt" "$work/$name.txt"
+  goldens=$((goldens + 1))
 }
 
 check q6 --csv "$DATA/lineitem.csv"
@@ -92,11 +95,12 @@ python3 harness/compare.py "$work/spillagg_plain.txt" "$work/spillagg_spilled.tx
 echo "== pqall (plain, uncompressed)"
 moon run cmd/main -- exec --parquet harness/data/parquet/all_types/plain/t.parquet --date-col d "$(cat harness/queries/pqall.sql)" > "$work/pqall.txt"
 python3 harness/compare.py harness/data/parquet/all_types/pqall_golden.txt "$work/pqall.txt"
+goldens=$((goldens + 1))
 check_in harness/data/parquet/all_types pqall --parquet harness/data/parquet/all_types/snappy/t.parquet --date-col d
 check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/dict_types/dict_uncompressed/t.parquet
 check_in harness/data/parquet/dict_types pqdict --parquet harness/data/parquet/dict_types/dict/t.parquet
 check_in harness/data/parquet/dict_types pqdictagg --parquet harness/data/parquet/dict_types/dict/t.parquet
 check_in harness/data/parquet/multigroup pqgroups --parquet harness/data/parquet/multigroup/two_groups/t.parquet
-echo "all 27 golden queries pass (22 TPC-H + the parquet variant + 4 multi-row-group parquet)"
+echo "all $goldens golden comparisons pass (22 TPC-H + the q6p parquet variant + the reader's encoding variants and multi-row-group fixtures)"
 echo "plus the external-sort / grace-join / grace-aggregation equivalence checks"
 echo "and the in-house parquet reader fixture checks"
