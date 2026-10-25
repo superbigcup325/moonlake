@@ -63,7 +63,7 @@ COLUMNS = [
     ("cat", "str"),
     ("flag", "int"),
 ]
-TYPES = dict(COLUMNS) | {"n": "int"}  # `n` aliases COUNT(*)
+TYPES = dict(COLUMNS) | {"n": "int", "s": "int"}  # `n` aliases COUNT(*), `s` its SUM
 CATS = ["alpha", "beta", "gamma", "delta", "epsilon"]
 
 
@@ -180,6 +180,22 @@ def case_specs(rows: int) -> list[dict]:
             "cols": ["n"],
             "check": "exact",
             "scan_check": {"predicate": "i32 < 0"},
+        },
+        {
+            "id": "agg/group",
+            "what": "GROUP BY a five-value key over the whole file",
+            "sql": "select cat, count(*) as n, sum(i64) as s from t group by cat",
+            "cols": ["cat", "n", "s"],
+            "check": "exact",
+            "scan_check": "all",
+        },
+        {
+            "id": "agg/global",
+            "what": "a global aggregate: one row out of every row",
+            "sql": "select count(*) as n, sum(i64) as s from t",
+            "cols": ["n", "s"],
+            "check": "exact",
+            "scan_check": "all",
         },
         {
             "id": "scan/sort_limit",

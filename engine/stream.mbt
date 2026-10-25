@@ -33,8 +33,16 @@
 // before the first join step, so a source may skip rows that cannot satisfy
 // it (see scan.mbt for why probe filters, join residuals and the deferred
 // WHERE may not travel). What streams: scan, build filter, the deferred WHERE,
-// projection and an OFFSET/LIMIT window. What does not, because it must see
-// every row first: aggregation, a join, ORDER BY, and SELECT DISTINCT.
+// projection and an OFFSET/LIMIT window. What cannot, because its first output
+// row does not exist until every input row is in: a join, ORDER BY, and SELECT
+// DISTINCT.
+//
+// Aggregation is the case in between, and worth stating on its own: its output
+// is one batch, but its *input* need not be one array. The group state is built
+// from the batches as they arrive (`AggPull` below feeds `aggregate_seq`), so a
+// single-table GROUP BY or a global aggregate holds its state plus one batch,
+// not its input. It is the same fold the collected path uses, just not handed an
+// array first.
 //
 // The pull lives here, not in the executor: `scan_pull` opens one and
 // `ResultStream` hands its batches to a caller. Both result deliveries — the
@@ -68,6 +76,119 @@ fn streaming_source(
     Some(entry) => if entry.is_lazy() { Some(entry) } else { None }
     None => None
   }
+}
+
+///|
+/// The single-table shape an aggregate can be fed from the scan, if this query
+/// is one: one lazy table, an aggregate, and nothing above it that needs the row
+/// order or the whole row set first. GROUP BY is fine — the group state is built
+/// per batch — and so is HAVING, which runs on the finished groups.
+///
+/// A budget is what excludes the rest: under `--memory` the grace path chooses
+/// between memory and spill partitions from the size of the input it was handed,
+/// so it still needs that input collected first. A global aggregate never spills
+/// (one row is one row), so it streams under a budget too.
+fn streaming_agg_source(
+  bq : BoundQuery,
+  sources : Array[@catalog.TableEntry?],
+  opts : ExecOptions,
+) -> @catalog.TableEntry? {
+  if !bq.aggregate ||
+    bq.order_by.length() > 0 ||
+    bq.windows.length() > 0 ||
+    bq.distinct {
+    return None
+  }
+  if opts.budget > 0 && bq.group_exprs.length() > 0 {
+    return None
+  }
+  if bq.steps.length() != 1 || bq.steps[0].table != 0 {
+    return None
+  }
+  match sources[0] {
+    Some(entry) => if entry.is_lazy() { Some(entry) } else { None }
+    None => None
+  }
+}
+
+///|
+/// A scan cursor for an aggregate: the source's batches, this table's build
+/// filter and the query's deferred WHERE applied to each one before it is
+/// folded. `scanned` counts the rows the build filter kept, which is the number
+/// the collected path reports for the same table, so `--analyze` reads the same
+/// either way.
+///
+/// A batch that the filters empty is not handed on: the batch contract forbids
+/// handing out a zero-row batch, and a fold of nothing adds nothing.
+priv struct AggPull {
+  stream : &@catalog.BatchStream
+  build_filter : PhysExpr?
+  deferred : PhysExpr?
+  mut scanned : Int64
+}
+
+///|
+fn agg_pull(
+  bq : BoundQuery,
+  plan : PrunePlan,
+  entry : @catalog.TableEntry,
+) -> AggPull raise @types.SqlError {
+  {
+    stream: entry.stream(scan_request_of(bq, plan.table_cols[0], 0)),
+    build_filter: scan_filter_of(bq, 0),
+    deferred: bq.deferred,
+    scanned: 0L,
+  }
+}
+
+///|
+fn AggPull::next(self : AggPull) -> @types.DataBatch? raise @types.SqlError {
+  while self.stream.next() is Some(batch) {
+    let kept = match self.build_filter {
+      Some(p) => compact(batch, eval_mask(p, batch))
+      None => batch
+    }
+    self.scanned += kept.row_count().to_int64()
+    if kept.row_count() == 0 {
+      continue
+    }
+    let kept = match self.deferred {
+      Some(p) => compact(kept, eval_mask(p, kept))
+      None => kept
+    }
+    if kept.row_count() > 0 {
+      return Some(kept)
+    }
+  }
+  None
+}
+
+///|
+/// Run an aggregate from the scan instead of from a collected input: the same
+/// fold (`aggregate_seq`) over a sequence that opens the table once, then the
+/// same HAVING, projection and window the collected tail applies to an
+/// aggregate's one output batch.
+fn run_agg_pull(
+  entry : @catalog.TableEntry,
+  launch : Launch,
+  stats : Array[(String, Int64)],
+) -> SelectResult raise @types.SqlError {
+  let bq = launch.bq
+  let pull = agg_pull(bq, launch.plan, entry)
+  let seq : BatchSeq = {
+    next: fn() -> @types.DataBatch? raise @types.SqlError { pull.next() },
+  }
+  let grouped = aggregate_seq(seq, bq.group_exprs, bq.group_types, bq.aggs)
+  let grouped = match bq.having {
+    Some(h) => compact(grouped, eval_mask(h, grouped))
+    None => grouped
+  }
+  stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
+  stats.push(("aggregate", grouped.row_count().to_int64()))
+  let projected = project(grouped, bq.out_exprs, bq.out_types)
+  let batch = order_limit(projected, [], bq.limit, bq.offset)
+  stats.push(("result", batch.row_count().to_int64()))
+  { names: bq.names, types: bq.out_types, batch, }
 }
 
 ///|
@@ -208,7 +329,9 @@ fn drain_scan(
 /// - Every other shape (a join, an aggregate, ORDER BY, DISTINCT, a window
 ///   function, a derived table, a set operation) must see all rows first, so it
 ///   is executed eagerly here and `next` yields that result as one batch. The
-///   rows are the ones `execute` returns for the same query.
+///   rows are the ones `execute` returns for the same query. An aggregate folds
+///   those rows as they arrive rather than collecting them, so it is the answer
+///   that is one batch, not the input array.
 ///
 /// The lifecycle is short enough to state whole:
 ///

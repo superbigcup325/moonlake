@@ -171,9 +171,13 @@ Read them a batch at a time when the result may not fit: `@moonlake.stream`
 (or `stream_with` for `ExecOptions`) returns an `@engine.ResultStream` whose
 `names()` and `types()` describe the columns and whose `next()` yields one
 `@types.DataBatch` per call until it returns `None`. A single-table scan with
-its WHERE, projection and OFFSET/LIMIT streams; aggregation, joins, ORDER BY,
-DISTINCT and set operations are computed first and handed back as one batch,
-because their answer does not exist until every row has been seen. Both
+its WHERE, projection and OFFSET/LIMIT streams; joins, ORDER BY, DISTINCT and
+set operations are computed first and handed back as one batch, because their
+answer does not exist until every row has been seen. An aggregate is the case in
+between: its answer is one batch too, but its input need not be an array — a
+single-table GROUP BY or a global aggregate folds the scan's batches as they
+arrive, so it holds its group state and one batch instead of the rows it read
+(2,000,000 rows over 16 columns: 109.7 MB → 35.3 MB of peak RSS). Both
 deliveries run the same plan, so a pulled row and a collected row are the same
 row. `close()` stops the pull before the end, dropping the stream releases the
 scan cursor, a pull that raises ends the stream rather than leaving it

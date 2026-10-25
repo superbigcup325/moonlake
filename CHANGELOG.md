@@ -89,6 +89,16 @@ describe implemented changes; planned work is added here after verification.
 
 ### Changed
 
+- Aggregation folds its input as the scan delivers it. A single-table `GROUP BY`
+  or a global aggregate now builds its group state one batch at a time instead
+  of being handed the whole input, so the operator holds its state and one batch
+  rather than every row it read: `select cat, count(*) from t group by cat` over
+  2,000,000 rows and 16 columns went from 109.7 MB to 35.3 MB of peak RSS
+  (verification §32). A budgeted `GROUP BY` still collects its input, because the
+  grace path sizes its spill partitions from it, and `ORDER BY`, `SELECT
+  DISTINCT` and window functions still see the whole row set — those are E4b and
+  E4c. Answers, `--analyze` counters and the spill path are unchanged; the
+  TPC-H goldens compare the folded answer to DuckDB's.
 - `concat(a, b, ...)` is variadic, casts its arguments, and skips NULL ones:
   `concat(1, 2)` is `'12'` and `concat('a', NULL, 'b')` is `'ab'`, as in
   DuckDB. `||` keeps its own semantics (two string operands, NULL propagates)

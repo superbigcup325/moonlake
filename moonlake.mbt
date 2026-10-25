@@ -44,11 +44,14 @@ pub fn execute_with(
 /// A single-table scan is pulled: the filter, the projection and an
 /// OFFSET/LIMIT window run per batch, so a caller that wants the first few
 /// rows reads only the batches those rows live in, and nothing accumulates
-/// between the source and the caller. Every other shape — a join, an
-/// aggregate, ORDER BY, DISTINCT, a window function, a derived table, a set
-/// operation — has to see all rows before it can produce the first one, so it
-/// is executed eagerly and `next` hands that result back as one batch. Both
-/// deliveries run the same plan, so they agree on rows.
+/// between the source and the caller. Every other shape — a join, ORDER BY,
+/// DISTINCT, a window function, a derived table, a set operation — has to see
+/// all rows before it can produce the first one, so it is executed eagerly and
+/// `next` hands that result back as one batch. An aggregate is the case in
+/// between: it must see every row too, but a single-table GROUP BY or a global
+/// aggregate folds the scan's batches as they arrive, so it holds its group
+/// state and not its input — its answer is still one batch. Both deliveries run
+/// the same plan, so they agree on rows.
 ///
 /// ```mbt nocheck
 /// let s = @moonlake.stream("SELECT * FROM t LIMIT 3", cat)
@@ -65,9 +68,11 @@ pub fn stream(
 
 ///|
 /// `stream` under explicit options. A shape that needs the memory budget — a
-/// join, an aggregate, an external sort — is materialized before this returns,
-/// because a stream owns no spill files; `execute_with` is the right call when
-/// the caller wants the budget to do the work and the result whole.
+/// join, a budgeted GROUP BY, an external sort — is materialized before this
+/// returns, because a stream owns no spill files; `execute_with` is the right
+/// call when the caller wants the budget to do the work and the result whole.
+/// (A single-table aggregate that never spills is not one of those: a global
+/// aggregate folds the scan under a budget too and hands back one batch.)
 pub fn stream_with(
   sql : String,
   catalog : @catalog.Catalog,

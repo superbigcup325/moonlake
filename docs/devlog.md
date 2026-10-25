@@ -1680,3 +1680,71 @@ note. Gates: 303/303 native, 290/290 wasm-gc, 290/290 js, `moon check
 --deny-warn` and `moon fmt --check` clean, `.mbti` additions only, 33/33 goldens,
 spill acceptance, correlation differential and 66 Python harness tests unchanged
 and green.
+
+## Aggregation folds the scan as it arrives (2026-10-26): E4a
+
+### Goal
+
+The 0.6.0 plan's E4a: an aggregate should update its state as input arrives
+instead of being handed the input. E3 removed the result array; this removes the
+input array behind the same operator, and it is the first E4 step because it is
+the one where the fold already existed.
+
+### What landed
+
+Not a new aggregation algorithm. `aggregate_seq` in `engine/exec_agg.mbt` has
+pulled from a `BatchSeq` and folded batch by batch since the grace path needed
+to aggregate one spill partition at a time; every caller just handed it a
+collected array. So E4a is a producer for that sequence: `AggPull` in
+`engine/stream.mbt` wraps the scan's `BatchStream` with the table's build filter
+and the deferred `WHERE`, counts the rows the build filter kept (so `--analyze`
+reports what the collected path reports), and never hands on a batch the filters
+emptied. `run_agg_pull` runs `aggregate_seq` over it and then the same HAVING,
+projection and `OFFSET`/`LIMIT` window the eager tail applies to an aggregate's
+one output batch. The dispatch is one `match streaming_agg_source(...)` at the
+top of `run_pipeline`; every other shape keeps the path it had.
+
+`streaming_agg_source` is where the honesty lives. It allows one lazy table with
+`aggregate` set and no `ORDER BY`, `SELECT DISTINCT` or window function. It
+excludes a budgeted `GROUP BY`, because the grace path sizes its partitions from
+the input it was handed (`partition_count(batches_bytes(joined), ...)`), so that
+run still needs the input collected — the operator that spills cannot yet decide
+how much to spill while the input is still arriving. A global aggregate is
+included under a budget, since it can never spill.
+
+### The number
+
+Same 16-column, 2,000,000-row fixture, release build, one process per
+measurement, peak RSS from `os.wait4` (raw, floor ~22 MB):
+
+| case | before | after |
+|---|---|---|
+| `select cat, count(*) from t group by cat` | 337.7 ms / 109.7 MB | 323.1 ms / 35.3 MB |
+| `select cat, avg(f64), sum(i64) from t group by cat` | 437.7 ms / 149.9 MB | 414.3 ms / 35.2 MB |
+| `select count(distinct cat), sum(f64) from t` | 598.5 ms / 129.6 MB | 549.6 ms / 35.2 MB |
+
+`select count(*) from t` was already at 35 MB and stays there: it reads no
+columns, so there was nothing to retain. The grouped cases now sit on the
+plateau E3 measured for streamed results, and the table size stops mattering.
+
+### What the tests pin
+
+`engine/agg_pull_wbtest.mbt` is a lazy counting source over four batches of
+three rows whose keys repeat across batches, with NULLs in both keys and in the
+value column: the pull hands over the batches one at a time and skips the ones a
+`WHERE` empties; a `GROUP BY` a string key and one by an int32 key both put the
+NULL key in its own group and leave NULL values out of the sum; HAVING filters
+the finished groups; `COUNT(DISTINCT ...)` counts a value once across batches;
+an empty input answers one row globally and none grouped; a source that raises
+mid-input fails the aggregate instead of answering a partial row; a global
+aggregate answers under a budget without a store. The one parity test runs the
+same `GROUP BY` with and without a budget — pulled and collected — and requires
+the same rows and the same counters, because "the same fold" is the whole claim.
+
+### Evidence
+
+`docs/verification.md` §32. Gates: 315/315 native, 302/302 wasm-gc, 302/302 js,
+`moon check --deny-warn` and `moon fmt --check` clean, `.mbti` unchanged,
+33/33 goldens (q6's single-table aggregate now folds through the pull), spill
+acceptance, CLI checks, the correlation differential and 66 Python harness tests
+unchanged and green.

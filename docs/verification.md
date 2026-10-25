@@ -2284,3 +2284,130 @@ all checks (four new ones), `harness/check_all.sh` 33/33 golden comparisons plus
 its spill-equivalence checks, `harness/spill_accept.sh` all checks,
 `harness/check_correlation.py` unchanged (45 value cases, 11 refusals), and 66
 Python harness unit tests.
+
+## 32. Aggregation folds the scan as it arrives (2026-10-26)
+
+**The claim under test.** §31 removed the result array: a single-table result
+leaves the engine one batch at a time. Its *input* arrays were still there, and
+§25/§27 measured what they cost — an aggregate held every batch the scan handed
+it, then folded them. E4a takes the same pull one operator further in: a
+`GROUP BY` or a global aggregate folds the batches as they arrive, so the
+operator holds its group state and one batch instead of its input.
+
+**What was actually in the way.** The fold already worked batch by batch.
+`aggregate_seq(seq, group_exprs, group_types, aggs)` in `engine/exec_agg.mbt`
+pulls from a `BatchSeq` and updates group keys and accumulators per batch; it
+existed because the grace path aggregates one spill partition at a time
+(`aggregate_seq(BatchSeq::of_runs(...))`). What it was never handed was the
+*scan*: every caller passed a collected `Array[@types.DataBatch]`, because
+`run_pipeline` materialized each table before the operator ran. So the change is plumbing, not a new algorithm — and that matters, because
+a per-batch fold that is a second implementation would be the thing to get
+wrong.
+
+**What the pull is.** `engine/stream.mbt` gains three pieces next to `ScanPull`:
+
+- `streaming_agg_source(bq, sources, opts)` — the shape test. One lazy table,
+  `aggregate` set, no `ORDER BY`, no `SELECT DISTINCT`, no window function. A
+  budgeted `GROUP BY` is excluded on purpose: the grace path derives its
+  partition count from the size of the input it was handed
+  (`partition_count(batches_bytes(joined), budget, AGG_PARTITION_CAP)` in
+  `engine/extagg.mbt`), so that run still needs the input collected. A global
+  aggregate is included under a budget, because it can never spill — one row is
+  one row.
+- `AggPull` / `agg_pull` — a cursor over the table's stream with the build
+  filter and the deferred `WHERE` applied per batch, and `next` that never hands
+  out a zero-row batch, since a fold of nothing adds nothing and the batch
+  contract forbids it.
+- `run_agg_pull(entry, launch, stats)` — `aggregate_seq` over that cursor, then
+  HAVING, the projection and the `OFFSET`/`LIMIT` window, which is exactly what
+  the eager tail applies to an aggregate's one output batch. It is one
+  `match streaming_agg_source(...)` at the top of `run_pipeline`; everything
+  else keeps the collected path.
+
+The result is still one batch — an aggregate has no first row before the last
+input row — so `stream`/`stream_with` hand a group result out as one batch, as
+§31 already said. What changed is the memory the operator needs to get there.
+
+**The counters do not move.** `AggPull` counts the rows the build filter kept,
+which is the number `materialize_scan` reports for the same table, and
+`run_agg_pull` pushes `("scan t", n)`, `("aggregate", groups)` and
+`("result", rows)` in the same order the eager tail does. `--analyze` output is
+identical for both paths on a battery of shapes: global `COUNT`/`SUM`/`MIN`/
+`MAX`/`AVG`, `GROUP BY` a string key, `GROUP BY` an int32 key, `WHERE` before the
+group, `HAVING`, `LIMIT`/`OFFSET` on the group result, `COUNT(DISTINCT ...)`
+both global and grouped, and an empty table. `engine/agg_pull_wbtest.mbt` pins
+that: the same SQL run once without a budget (pulled) and once with a budget
+(collected, since a budgeted `GROUP BY` keeps the old path) must produce the
+same rows *and* the same counters, which they do —
+`[("scan t", 12), ("aggregate", 4), ("result", 4)]` for both.
+
+**The number.** 16-column, 2,000,000-row CSV fixture, release build, one process
+per measurement, peak RSS from `os.wait4` (raw; the floor is about 22 MB):
+
+| case | before | after |
+|---|---|---|
+| `select count(*) from t` | 231.4 ms / 35.4 MB | 227.1 ms / 35.2 MB |
+| `select cat, count(*) from t group by cat` | 337.7 ms / 109.7 MB | 323.1 ms / **35.3 MB** |
+| `select cat, avg(f64), sum(i64) from t group by cat` | 437.7 ms / 149.9 MB | 414.3 ms / **35.2 MB** |
+| `select count(distinct cat), sum(f64) from t` | 598.5 ms / 129.6 MB | 549.6 ms / **35.2 MB** |
+
+`count(*)` never moved because it reads no columns: there was nothing to
+retain. The grouped cases fall to the plateau §31 measured for streamed
+results — the process holds one batch and its group state, so the size of the
+table stops mattering. The wall time moves slightly the other way for the same
+reason (`DISTINCT` was also building the set while it retained the input).
+
+The pooled benchmark carries the same change as two new cases, and the before
+side was measured with the pre-E4a binary in the same session (floor 14.1 MB
+subtracted, two timed runs each):
+
+| case | before | after |
+|---|---|---|
+| `agg/group` (`select cat, count(*), sum(i64) ... group by cat`) | 445.8 ms / 115.1 MB | 380.4 ms / **19.6 MB** |
+| `agg/global` (`select count(*), sum(i64) from t`) | 291.4 ms / 39.4 MB | 264.1 ms / **19.7 MB** |
+
+`agg/global` moves too — the earlier `count(*)` case read no columns, but a
+`SUM` over a column had that column's every batch retained. The committed record
+is `harness/baseline/2026-10-26-aggregation-folded.json`; the rest of its table
+does not move in any way this change could explain (`scan/count` 19.0 → 19.3 MB,
+`scan/full` 18.7 → 20.3 MB, `scan/sort_limit` 51.6 → 58.2 MB, i.e. sampling
+noise between invocations of the same case).
+
+**What the tests pin.** `engine/agg_pull_wbtest.mbt` (10 tests) uses a lazy
+counting source over four batches of three rows with a string key, an int32 key
+and a value column, all three with NULLs, and keys that repeat across batches:
+
+- the pull itself: unfiltered it hands over four batches of three and counts 12
+  scanned rows; under `WHERE v > 90` it skips the three batches the build
+  filter empties and hands over only the last one, counting the 2 rows that
+  survived;
+- `GROUP BY` a string key with a NULL key: four groups, the NULL key its own
+  group, the NULL value left out of the sum, and the source opened once, pulled
+  four times and read 12 rows;
+- `GROUP BY` an int32 key with a NULL key: three groups;
+- HAVING filters the finished groups (3 of 4 survive `count(*) > 2`);
+- `COUNT(DISTINCT g)` and `COUNT(DISTINCT v)` count a value once across
+  batches — the set outlives the batch it was first seen in;
+- an empty input answers one row globally (`0` and a NULL sum) and no rows
+  grouped;
+- the counters match the collected run, as above;
+- a source that raises on its second batch fails the aggregate rather than
+  answering a partial row;
+- a global aggregate answers under a budget with no spill store, because it
+  never partitions.
+
+Parity with a second implementation is covered where it already was: the 33
+golden comparisons include single-table TPC-H aggregates (q6's shape has no
+`ORDER BY`, so it now folds through the pull and is compared to DuckDB's
+answer), `harness/check_all.sh`'s grace-aggregation equivalence checks still
+exercise the spill path against in-memory answers, `harness/spill_accept.sh`
+covers the store lifecycle, and the correlation differential is unchanged.
+
+**Gates.** `moon test` 302/302 (wasm-gc), `moon test --target native` 315/315,
+`moon test --target js` 302/302, `moon check --deny-warn` clean, `moon fmt
+--check` clean, `.mbti` unchanged (the new items are private to the package),
+`harness/check_all.sh` 33/33 golden comparisons plus the spill-equivalence and
+reader-fixture checks, `harness/spill_accept.sh` all checks,
+`harness/check_cli.sh` all five sections, `harness/check_correlation.py` fixed
+cases and `--random 400 --seed 20261025` both ok, 66 Python harness unit tests,
+and `harness/check_release.py` ok at 0.6.0.

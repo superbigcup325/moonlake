@@ -280,6 +280,15 @@ fn run_pipeline(
   let schemas = launch.schemas
   let sources = launch.sources
   let tables = launch.tables
+  // A single-table aggregate is fed from the scan instead of a collected
+  // input: the group state is built as batches arrive, so the operator holds
+  // its state and one batch rather than its input. Shapes that need the row
+  // order or the whole row set first (ORDER BY, DISTINCT, a window function)
+  // and budgeted GROUP BY inputs stay on the eager path below.
+  match streaming_agg_source(bq, sources, opts) {
+    Some(entry) => return run_agg_pull(entry, launch, stats)
+    None => ()
+  }
   // Materialize each FROM item with only the columns the query reads. A base
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
