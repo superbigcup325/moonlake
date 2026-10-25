@@ -1,6 +1,7 @@
 import {
   "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
+  "moonbitlang/core/double",
   "moonbitlang/core/encoding/utf8",
   "superbigcup325/colenc",
   "superbigcup325/colenc/types" @colenc_types,

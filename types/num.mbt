@@ -76,6 +76,10 @@ pub fn parse_f64(s : String) -> Double? {
   if n == 0 {
     return None
   }
+  match parse_nonfinite_chars(chars) {
+    Some(v) => return Some(v)
+    None => ()
+  }
   let mut i = 0
   let mut neg = false
   if chars[0] == '-' || chars[0] == '+' {
@@ -144,18 +148,32 @@ pub fn parse_f64(s : String) -> Double? {
     let mut exp = 0
     let mut exp_digits = 0
     while i < n && is_digit(chars[i]) {
-      exp = exp * 10 + (chars[i].to_int() - 48)
+      if exp <= 100000 {
+        exp = exp * 10 + (chars[i].to_int() - 48)
+      }
       exp_digits += 1
       i += 1
-      if exp > 300 {
-        return None
-      }
     }
     if exp_digits == 0 {
       return None
     }
+    // past the double range a cast returns inf (0 below the smallest
+    // subnormal): capping keeps a huge exponent from spinning, and `0e999`
+    // stays 0 rather than 0 * inf = nan
     if exp_neg {
-      value = value / pow10(exp)
+      // below 1e-308 the result is subnormal: one pow10 would be inf and the
+      // answer 0, so divide in two steps, and 0 only past 4.9e-324
+      value = if exp > 324 {
+        0.0
+      } else if exp <= 308 {
+        value / pow10(exp)
+      } else {
+        value / pow10(308) / pow10(exp - 308)
+      }
+    } else if value == 0.0 {
+      value = 0.0
+    } else if exp > 308 {
+      value = @double.infinity
     } else {
       value = value * pow10(exp)
     }
@@ -174,6 +192,29 @@ pub fn parse_bool(s : String) -> Bool? {
     Some(false)
   } else {
     None
+  }
+}
+
+///|
+/// NaN / inf spellings over a char buffer, case-insensitive: the same set the
+/// byte parser takes, so `CAST('NaN' AS DOUBLE)` and a CSV float column agree.
+fn parse_nonfinite_chars(chars : Array[Char]) -> Double? {
+  let lower : StringBuilder = StringBuilder()
+  for ch in chars {
+    let v = ch.to_int()
+    lower.write_char(
+      if v >= 65 && v <= 90 {
+        Int32::unsafe_to_char(v + 32)
+      } else {
+        ch
+      },
+    )
+  }
+  match lower.to_string() {
+    "nan" | "+nan" | "-nan" => Some(@double.not_a_number)
+    "inf" | "+inf" | "infinity" | "+infinity" => Some(@double.infinity)
+    "-inf" | "-infinity" => Some(@double.neg_infinity)
+    _ => None
   }
 }
 

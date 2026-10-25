@@ -75,6 +75,11 @@ fn cmp_i(x : Int32, y : Int32) -> Int32 {
 /// promotes both sides), so a zero divisor is IEEE ±inf (0/0 is nan),
 /// not an error; `%` is C fmod — the result takes the dividend's sign —
 /// and `x % 0` is NULL.
+///
+/// Integer add/sub/mul WRAP here (two's complement). This non-raising helper
+/// is what keeps that contract available; the executor does not use it — it
+/// evaluates through `arith_checked`, which turns the wrap into an error,
+/// because a wrapped value is a wrong number a query never asked for.
 pub fn Scalar::arith(op : ArithOp, a : Scalar, b : Scalar) -> Scalar {
   match (op, a, b) {
     (Add, Int32(x), Int32(y)) => Int32(x + y)
@@ -98,6 +103,93 @@ pub fn Scalar::arith(op : ArithOp, a : Scalar, b : Scalar) -> Scalar {
         Float64(x - y * (x / y).trunc())
       }
     _ => Null // mismatched or Null operands, or Date arithmetic (v1: unsupported)
+  }
+}
+
+///|
+/// Integer arithmetic that refuses to wrap: the result is computed in Int64
+/// (lossless for Int32) and the dtype picks the range it must stay in. Wrap is
+/// not a number a query can mean — `2147483647 + 1` answering -2147483648 is a
+/// silent wrong answer, and `sum()` already raises where it would overflow — so
+/// the executor raises the way DuckDB does instead of returning the wrap.
+/// Non-integer operators do not belong here: they go through `arith`.
+pub fn int_arith_checked(
+  op : ArithOp,
+  dt : DataType,
+  x : Int64,
+  y : Int64,
+) -> Int64 raise SqlError {
+  let (value, wrapped) = match op {
+    Add => {
+      let s = x + y
+      (s, (y > 0L && s < x) || (y < 0L && s > x))
+    }
+    Sub => {
+      let d = x - y
+      (d, (y > 0L && d > x) || (y < 0L && d < x))
+    }
+    Mul =>
+      if x == 0L || y == 0L {
+        (0L, false)
+      } else if (x == -1L && y == -9223372036854775808L) ||
+        (y == -1L && x == -9223372036854775808L) {
+        // the one product a division cannot verify: it wraps to the minimum
+        // and Int64 has no minimum/-1 quotient to divide back with
+        (0L, true)
+      } else {
+        let p = x * y
+        (p, p / x != y)
+      }
+    _ =>
+      raise SqlError::Execute(
+        "integer arithmetic called with a non-integer operator",
+      )
+  }
+  if wrapped {
+    raise int_overflow(op, dt)
+  }
+  match dt {
+    Int32 =>
+      if value < -2147483648L || value > 2147483647L {
+        raise int_overflow(op, dt)
+      }
+    _ => ()
+  }
+  value
+}
+
+///|
+fn int_overflow(op : ArithOp, dt : DataType) -> SqlError {
+  let target = match dt {
+    Int32 => "int32"
+    Int64 => "int64"
+    _ => "integer"
+  }
+  let symbol = match op {
+    Add => "+"
+    Sub => "-"
+    Mul => "*"
+    _ => "?"
+  }
+  SqlError::Execute(
+    "integer overflow: \{target} \{symbol} left the \{target} range (cast an operand to float64 to keep going)",
+  )
+}
+
+///|
+/// `Scalar::arith` with the integer cases checked: identical results for every
+/// in-range value, and an Execute error where `arith` would wrap.
+pub fn Scalar::arith_checked(
+  op : ArithOp,
+  a : Scalar,
+  b : Scalar,
+) -> Scalar raise SqlError {
+  match (op, a, b) {
+    (Add | Sub | Mul, Int32(x), Int32(y)) =>
+      Int32(int_arith_checked(op, Int32, x.to_int64(), y.to_int64()).to_int())
+    (Add | Sub | Mul, Int64(x), Int64(y)) =>
+      Int64(int_arith_checked(op, Int64, x, y))
+    _ => Scalar::arith(op, a, b)
   }
 }
 

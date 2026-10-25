@@ -241,3 +241,138 @@ test "parse_f64 keeps 20-digit integers exact" {
   // small integers stay exact too
   assert_eq(@types.parse_f64("42"), Some(42.0))
 }
+
+///|
+test "parse_f64 takes the whole double range, non-finite spellings included" {
+  // a CSV float column and CAST(... AS DOUBLE) both hold NaN and infinities;
+  // the parser used to reject every spelling, which made a valid float column
+  // infer as STRING and a cast of "NaN" an error
+  for text in ["nan", "NaN", "NAN", "-nan"] {
+    match @types.parse_f64(text) {
+      Some(x) => assert_true(x.is_nan())
+      None => fail("\{text} should parse as nan")
+    }
+  }
+  for text in ["inf", "Infinity", "INFINITY"] {
+    match @types.parse_f64(text) {
+      Some(x) => assert_true(x > 1.0e308)
+      None => fail("\{text} should parse as +inf")
+    }
+  }
+  match @types.parse_f64("-inf") {
+    Some(x) => assert_true(x < -1.0e308)
+    None => fail("-inf should parse")
+  }
+  // the exponent range is the double range: no 300 cutoff on the way in, inf
+  // past 1e308, subnormals kept, 0 past the smallest subnormal
+  match @types.parse_f64("1e307") {
+    Some(x) => assert_true(x > 0.999999999e307 && x < 1.000000001e307)
+    None => fail("1e307 should parse")
+  }
+  match @types.parse_f64("1e309") {
+    Some(x) => assert_true(x > 1.0e308)
+    None => fail("1e309 should overflow to inf")
+  }
+  match @types.parse_f64("1e999999999999") {
+    Some(x) => assert_true(x > 1.0e308)
+    None => fail("an absurd exponent should be inf, not an error")
+  }
+  assert_eq(@types.parse_f64("0e999"), Some(0.0))
+  match @types.parse_f64("1e-309") {
+    // below 1e-308 the value is subnormal: answering 0 would lose the value
+    Some(x) => assert_true(x > 0.0 && x < 1.0e-308)
+    None => fail("1e-309 should parse as a subnormal")
+  }
+  assert_eq(@types.parse_f64("1e-400"), Some(0.0))
+  assert_eq(@types.parse_f64("nanna"), None)
+  assert_eq(@types.parse_f64("1e"), None)
+}
+
+///|
+/// The error `arith_checked` raises; a test fails when an overflow wraps.
+fn arith_err(
+  op : @types.ArithOp,
+  a : @types.Scalar,
+  b : @types.Scalar,
+) -> String {
+  let _ = @types.Scalar::arith_checked(op, a, b) catch {
+    e => return e.to_string()
+  }
+  abort("expected an integer overflow error")
+}
+
+///|
+test "checked integer arithmetic refuses to wrap; arith still wraps" {
+  let add = @types.Add
+  let sub = @types.Sub
+  let mul = @types.Mul
+  let max = @types.Scalar::Int32(2147483647)
+  // in-range results are identical to arith's, the boundary included
+  let min = @types.Scalar::Int32(-2147483648)
+  assert_eq(
+    @types.Scalar::arith_checked(add, @types.Int32(2147483646), @types.Int32(1)) catch {
+      e => abort("\{e}")
+    },
+    max,
+  )
+  assert_eq(
+    @types.Scalar::arith_checked(
+      mul,
+      @types.Int32(-2147483648),
+      @types.Int32(1),
+    ) catch {
+      e => abort("\{e}")
+    },
+    min,
+  )
+  // the wrap positions raise, with the type and the operator in the message
+  assert_true(arith_err(add, max, @types.Int32(1)).contains("int32 +"))
+  assert_true(arith_err(sub, min, @types.Int32(1)).contains("int32 -"))
+  assert_true(
+    arith_err(mul, @types.Int32(2000000000), @types.Int32(2)).contains(
+      "int32 *",
+    ),
+  )
+  // an int32 product that only overflows past int32 is caught by the range
+  assert_true(arith_err(mul, min, @types.Int32(-1)).contains("int32 *"))
+  assert_true(
+    arith_err(add, @types.Int64(9223372036854775807L), @types.Int64(1L)).contains(
+      "int64 +",
+    ),
+  )
+  assert_true(
+    arith_err(sub, @types.Int64(-9223372036854775808L), @types.Int64(1L)).contains(
+      "int64 -",
+    ),
+  )
+  // the one product a division cannot verify back
+  assert_true(
+    arith_err(mul, @types.Int64(-9223372036854775808L), @types.Int64(-1L)).contains(
+      "int64 *",
+    ),
+  )
+  // non-integer operators and the Float64 path are untouched
+  let div = @types.Scalar::arith_checked(
+    @types.Div,
+    @types.Int32(1),
+    @types.Int32(0),
+  ) catch {
+    e => abort("\{e}")
+  }
+  match div {
+    @types.Float64(x) => assert_true(x > 1.0e308)
+    other => fail("expected +inf, got \{other.to_string()}")
+  }
+  // Scalar::arith keeps its documented wrapping contract
+  assert_eq(
+    @types.Scalar::arith(add, max, @types.Int32(1)),
+    @types.Int32(-2147483648),
+  )
+  // int_arith_checked is the Int64 core both paths share: same error there
+  assert_eq(
+    @types.int_arith_checked(sub, @types.Int64, 5L, 3L) catch {
+      e => abort("\{e}")
+    },
+    2L,
+  )
+}

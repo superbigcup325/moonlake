@@ -89,10 +89,56 @@ pub fn parse_i64_bytes(buf : Bytes, start : Int32, end : Int32) -> Int64? {
 }
 
 ///|
+/// Does `start..<end` spell `word` (given in lower case), ignoring ASCII case?
+fn ascii_ci_eq(buf : Bytes, start : Int32, end : Int32, word : String) -> Bool {
+  let w = @utf8.encode(word)
+  if end - start != w.length() {
+    return false
+  }
+  for i in 0..<w.length() {
+    let a = buf[start + i].to_int()
+    let ca = if a >= 65 && a <= 90 { a + 32 } else { a }
+    if ca != w[i].to_int() {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Non-finite spellings, case-insensitive. A float column legitimately holds
+/// NaN and infinities, and the writers people export from (pandas, numpy, the
+/// JSON emitters) spell them exactly this way; the reader used to reject every
+/// spelling, which turned a valid float column into a STRING column and made
+/// `CAST('NaN' AS DOUBLE)` an error.
+fn parse_nonfinite_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
+  if ascii_ci_eq(buf, start, end, "nan") ||
+    ascii_ci_eq(buf, start, end, "+nan") ||
+    ascii_ci_eq(buf, start, end, "-nan") {
+    return Some(@double.not_a_number)
+  }
+  if ascii_ci_eq(buf, start, end, "inf") ||
+    ascii_ci_eq(buf, start, end, "+inf") ||
+    ascii_ci_eq(buf, start, end, "infinity") ||
+    ascii_ci_eq(buf, start, end, "+infinity") {
+    return Some(@double.infinity)
+  }
+  if ascii_ci_eq(buf, start, end, "-inf") ||
+    ascii_ci_eq(buf, start, end, "-infinity") {
+    return Some(@double.neg_infinity)
+  }
+  None
+}
+
+///|
 pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
   let n = end - start
   if n == 0 {
     return None
+  }
+  match parse_nonfinite_bytes(buf, start, end) {
+    Some(v) => return Some(v)
+    None => ()
   }
   let mut i = start
   let mut neg = false
@@ -134,18 +180,34 @@ pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
     let mut exp = 0
     let mut exp_digits = 0
     while i < end && is_digit_byte(buf[i]) {
-      exp = exp * 10 + (buf[i].to_int() - 48)
+      if exp <= 100000 {
+        exp = exp * 10 + (buf[i].to_int() - 48)
+      }
       exp_digits += 1
       i += 1
-      if exp > 300 {
-        return None
-      }
     }
     if exp_digits == 0 {
       return None
     }
+    // past the double range a cast returns inf (0 below the smallest
+    // subnormal), which is what DuckDB returns; the shortcut also keeps an
+    // absurd exponent from spinning pow10, and `0e999` stays 0 rather than
+    // 0 * inf = nan
     if exp_neg {
-      value = value / pow10(exp)
+      // a negative exponent below 1e-308 lands in the subnormals, where one
+      // pow10 lands on inf and would answer 0: divide in two steps, and 0 only
+      // past the smallest subnormal (4.9e-324)
+      value = if exp > 324 {
+        0.0
+      } else if exp <= 308 {
+        value / pow10(exp)
+      } else {
+        value / pow10(308) / pow10(exp - 308)
+      }
+    } else if value == 0.0 {
+      value = 0.0
+    } else if exp > 308 {
+      value = @double.infinity
     } else {
       value = value * pow10(exp)
     }
