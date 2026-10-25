@@ -200,6 +200,7 @@ fn prune_bound(
       },
       out_type: spec.out_type,
       sep: spec.sep,
+      q: spec.q,
     })
   }
   let out_exprs = if bq.aggregate {
@@ -236,6 +237,7 @@ fn prune_bound(
           },
           out_type: w.spec.out_type,
           sep: w.spec.sep,
+          q: w.spec.q,
         },
         partition: rewrite_all(w.partition, fn(i) { flat_map[i] }),
         order: rewrite_order_exprs(w.order, fn(i) { flat_map[i] }),

@@ -1338,6 +1338,23 @@ fn parse_function(p : Parser, name : String) -> LExpr raise @types.SqlError {
       p.expect(RParen)
       LExpr::Agg(AggFn::StringAgg, Some(Func("__string_agg", [value, sep])))
     }
+    "approx_count_distinct" => {
+      let inner = parse_or(p)
+      p.expect(RParen)
+      LExpr::Agg(AggFn::ApproxCountDistinct, Some(inner))
+    }
+    "approx_quantile" => {
+      // two arguments; the constant q is carried inside a marker call for
+      // the binder to fold and validate
+      let value = parse_or(p)
+      p.expect(Comma)
+      let q = parse_or(p)
+      p.expect(RParen)
+      LExpr::Agg(
+        AggFn::ApproxQuantile,
+        Some(Func("__approx_quantile", [value, q])),
+      )
+    }
     "count" =>
       if p.eat(Star) {
         p.expect(RParen)

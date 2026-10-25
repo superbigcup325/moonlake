@@ -2,8 +2,9 @@
 
 **0.6.0 is unreleased.** Its executor delivery plan passed local acceptance on
 `3ab2634` (verification §36). The current tree also carries the Parquet fix in
-`ae6a28c` (§37) and consumes colenc 0.1.1 (§38); the next step is to refresh
-acceptance on that final candidate, as specified
+`ae6a28c` (§37), consumes colenc 0.1.1 (§38) and the two approximate aggregates
+built on it (§39); the next step is to refresh acceptance on that final
+candidate, as specified
 [below](#follow-up-after-colenc-011). The completed executor tasks stay complete;
 their evidence belongs to the revision on which it was collected. Push, tag,
 publication and deployment require explicit authorization. Directions waiting
@@ -15,8 +16,10 @@ Native CSV and Parquet sources read byte ranges, the native Parquet writer
 streams its output, and spill directories are reclaimed when ownership evidence
 proves the process is dead. These shipped in 0.5.0. The 0.6.0 changes add files
 past 2 GiB, smaller Snappy output, a single-table LIMIT that stops its scan,
-checked SQL integer arithmetic, CSV and CLI fixes, and more general correlated
-subqueries. [CHANGELOG](../CHANGELOG.md) lists implemented changes;
+checked SQL integer arithmetic, CSV and CLI fixes, more general correlated
+subqueries, and two explicit approximate aggregates
+(`approx_count_distinct`, `approx_quantile`; [sketches](sketches.md), §39).
+[CHANGELOG](../CHANGELOG.md) lists implemented changes;
 [verification](verification.md) records the evidence for each.
 
 Sources read incrementally, and the operators that can work a batch at a time
@@ -142,24 +145,28 @@ approximate state does not belong in the reversible spill-column encoding API.
 
 ### Work order and exit criteria
 
-R2 closes the current candidate; C0 is done. The feature packages are the proposed
-follow-up queue; no later version number or release date is assigned here.
-Selecting one for the still-unreleased 0.6.0 means rerunning its final acceptance
-after that code lands. The earlier 0.6.0 scope and completed R0 through R1 are
-preserved. A0 precedes A1, A1 precedes A2; I0 can be investigated independently
-after C0, and E5 addresses a separate exact-query limit.
+R2 closes the current candidate; C0, A0, A1 and A2 are done and their code is in
+the tree. Selecting a further feature for the still-unreleased 0.6.0 means
+rerunning its final acceptance after that code lands. The earlier 0.6.0 scope and
+completed R0 through R1 are preserved; I0 can be investigated independently, and
+E5 addresses a separate exact-query limit.
 
 | Task | Deliverable | Depends on | Exit |
 |---|---|---|---|
 | C0 | Consume colenc 0.1.1 | Published registry artifact | **Done** (verification §38): the manifest, the README instructions and the AGENTS.md notes name 0.1.1 together; `moon tree` resolves it with no workspace override, after the registry index and the cached 0.1.0 copy were cleared. The new `Encoding` / `EncodingError` variants needed no consumer edit, because the engine translates errors through `EncodingError::message` and never matches on `Encoding`. Three-target suites, page fixtures, writer interoperability, spill round trips, the goldens on wasm-gc, js and the release binary, and `check_release.py --check-consumer` with fresh caches pass. It enables APIs; it introduces no approximate SQL or automatic index |
 | R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | Preserve the short-chunk and genuine-truncation regressions; corpus remains 17 decoded / 51 deliberately refused / 0 failing on the current corpus revision. Rerun §36's correctness, archive-consumer, >2 GiB, host-free wasm and browser gates on one final revision and record it. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks. The final performance update is the last checklist item below |
-| A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | Specify input/output types, NULL and empty-input behavior, float normalization, parameter validation, update/finalize behavior, ownership and error translation. Measure actual state per group, account for keys and containers, and state budget behavior. Reuse the existing fold; design a partial-state merge only where execution uses one |
-| A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | Global and grouped aggregates consume batches through the same accumulator. Start with fixed precision 14 and an Int64 result with documented rounding/range handling; empty/all-NULL input returns 0. Keep exact `COUNT(DISTINCT ...)` exact. Validate input adaptation and NULL behavior exactly, statistical error against exact distinct counts over fixed trials, and register-equivalent partition merges separately. Cover native/wasm-gc/js and a packaged consumer; report group-count memory growth |
-| A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | Start with fixed compression 100, numeric input and a constant finite `q` in [0,1], Float64 output and NULL for empty/all-NULL input. Reject non-finite input with a SQL error. Decide how Int64 values outside the exact Double range are handled before coding. Cover grouped/global paths, q=0/1, ties, order and merge sensitivity, early close and errors. Judge rank error against exact sorted inputs using the named distribution/order/merge matrix; retain exact `median()` |
+| A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | **Done** (verification §39): [docs/sketches.md](sketches.md) states input and output types, NULL and empty-input behavior, the value equivalence (type-tagged, `-0.0`/`0.0` one value, every NaN one value, strings as UTF-8 bytes, dates as epoch days), parameter validation, update/finalize, ownership and error translation, plus the measured state per group (HLL 65,536 B, t-digest 52–73 centroids) and the crossover against the exact set (about 750 distinct values per group). It reuses the one fold and states that no partial-state merge is used |
+| A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | **Done** (verification §39): a new `Acc` variant on the same fold, so the in-memory gather, the streaming pull and the grace partitions all reach it, and the window path too. Fixed precision 14, Int64 result rounded to nearest, empty/all-NULL input 0, NULL skipped; canonicalization matches `scalar_key` (type-tagged, both zeros one value, all NaN payloads one value). 1,000,000 distinct strings: 1,010,708 (+1.07%); peak RSS 56.6 MB against 144.7 MB for the exact count and 56.6 MB for a decode-only `count(s)`. Exact `COUNT(DISTINCT ...)` unchanged, no optimizer rewrite, no partition merge. Suites cover native/wasm-gc/js; the grouped shape shows where a sketch loses (1,000 groups × 1,000 distinct: 145.8 MB against 152.8 MB) |
+| A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | **Done** (verification §39): compression 100, numeric input, a constant `q` in [0, 1] folded into `AggSpec.q` and validated at bind time (so an empty input or a LIMIT fails the same way), Float64 output and NULL for empty/all-NULL input. Non-finite input is a SQL error raised at the finish step, because the fold cannot raise; int64 beyond 2^53 is documented as a Double conversion rather than detected. q = 0.5 and 0.9 over 0..999,999 match the exact median and 90th percentile; peak RSS 33.9 MB against 44.4 MB for `median()`. Exact `median()` unchanged |
 | E5 | Budgeted GROUP BY consumes scan batches | R2; separate from approximate SQL | Replace input collection before grace partitioning with bounded input/run buffering, retaining exact grouped answers. Compare fixed group counts over increasing inputs and separately test many groups and skew. A hot group with exact distinct/median/string state needs an explicit over-budget policy; a sketch does not bound the number of groups. Verify spill ownership, cleanup, counters and existing goldens before broadening other eager shapes |
 | I0 | One measured Roaring use case | C0, immutable row identity and scan-use contract | Prototype repeated predicate-set intersection on an immutable registered table and compare with an exact scan. Test selective and unselective predicates, NULLs, duplicate values, multi-batch/multi-file row identities and stale indexes. Count build/load time, query time, decoded bytes, peak RSS and index size, with build amortization. Complete the investigation even if the answer is to retain the scan |
 
-### Semantic and memory decisions before implementation
+### Semantic and memory decisions
+
+A1 and A2 answered the two sketch questions below, and their answers are the
+contract now recorded in [docs/sketches.md](sketches.md) and the evidence in
+§39. The Roaring paragraph is still a proposal. Keeping the reasoning here makes
+the settled choices visible next to the one that is not settled.
 
 **HLL.** The [colenc contract](https://github.com/superbigcup325/colenc/blob/v0.1.1/docs/SKETCHES.md)
 hashes typed bytes and distinguishes signed zero and NaN payloads. A SQL

@@ -68,6 +68,8 @@ priv enum AggKind {
   Median
   Min
   Max
+  ApproxCountDistinct
+  ApproxQuantile
 } derive(Debug)
 
 ///|
@@ -76,6 +78,7 @@ priv struct AggSpec {
   input : PhysExpr? // None only for CountStar
   out_type : @types.DataType
   sep : String? // string_agg's literal separator
+  q : Double? // approx_quantile's constant quantile
 } derive(Debug)
 
 ///|
@@ -585,6 +588,8 @@ fn agg_label(fn_ : @sql.AggFn) -> String {
     Median => "median"
     Min => "min"
     Max => "max"
+    ApproxCountDistinct => "approx_count_distinct"
+    ApproxQuantile => "approx_quantile"
   }
 }
 
@@ -626,6 +631,8 @@ fn agg_label_of_kind(kind : AggKind) -> String {
     Median => "median"
     Min => "min"
     Max => "max"
+    ApproxCountDistinct => "approx_count_distinct"
+    ApproxQuantile => "approx_quantile"
   }
 }
 
@@ -1208,7 +1215,13 @@ fn Binder::bind_agg(
   space : Space,
 ) -> AggSpec raise @types.SqlError {
   if fn_ is CountStar {
-    return { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
+    return {
+      kind: CountStar,
+      input: None,
+      out_type: @types.Int64,
+      sep: None,
+      q: None,
+    }
   }
   let lexpr = match inner {
     Some(e) => e
@@ -1231,11 +1244,54 @@ fn Binder::bind_agg(
           input: Some(pe),
           out_type: @types.Str,
           sep: Some(sep),
+          q: None,
         }
       }
       _ =>
         raise @types.SqlError::Bind(
           "string_agg() separator must be a string literal",
+        )
+    }
+  }
+  if fn_ is ApproxQuantile {
+    // approx_quantile(value, q): the parser wraps both args in a marker. q
+    // is validated here, before any row is read, so the same statement
+    // fails the same way on an empty input or under a LIMIT.
+    match inner {
+      Some(Func("__approx_quantile", [v, qexpr])) => {
+        let q = match qexpr {
+          Lit(@types.Float64(x)) => x
+          Lit(@types.Int32(x)) => x.to_double()
+          Lit(@types.Int64(x)) => x.to_double()
+          _ =>
+            raise @types.SqlError::Bind(
+              "approx_quantile() q must be a constant literal in [0, 1]",
+            )
+        }
+        if q.is_nan() || q < 0.0 || q > 1.0 {
+          raise @types.SqlError::Bind(
+            "approx_quantile() q must be in [0, 1], got \{q}",
+          )
+        }
+        let (pe, dt) = self.bind(v, space)
+        match dt {
+          @types.Int32 | @types.Int64 | @types.Float64 => ()
+          other =>
+            raise @types.SqlError::Bind(
+              "approx_quantile() does not support input type \{other.to_string()} (cast it to a numeric type explicitly)",
+            )
+        }
+        return {
+          kind: ApproxQuantile,
+          input: Some(pe),
+          out_type: @types.Float64,
+          sep: None,
+          q: Some(q),
+        }
+      }
+      _ =>
+        raise @types.SqlError::Bind(
+          "approx_quantile() takes two arguments: a value and a constant q in [0, 1]",
         )
     }
   }
@@ -1282,7 +1338,9 @@ fn Binder::bind_agg(
         other => other
       }
     CountStar => @types.DataType::Int64 // unreachable: handled above
-  }
+    ApproxCountDistinct => @types.DataType::Int64
+    ApproxQuantile => @types.Float64
+  } // unreachable: returned early with q
   let kind : AggKind = match fn_ {
     Sum => Sum
     Avg => Avg
@@ -1297,8 +1355,10 @@ fn Binder::bind_agg(
     Min => Min
     Max => Max
     StringAgg => StringAgg // unreachable: returned early
+    ApproxCountDistinct => ApproxCountDistinct
+    ApproxQuantile => ApproxQuantile // unreachable: returned early
   }
-  { kind, input: Some(pe), out_type, sep: None, }
+  { kind, input: Some(pe), out_type, sep: None, q: None, }
 }
 
 ///|
@@ -1314,7 +1374,13 @@ fn Binder::bind_window(
 ) -> BoundWin raise @types.SqlError {
   let spec : AggSpec = match w.fn_ {
     RowNumber | Rank | DenseRank =>
-      { kind: CountStar, input: None, out_type: @types.Int64, sep: None, }
+      {
+        kind: CountStar,
+        input: None,
+        out_type: @types.Int64,
+        sep: None,
+        q: None,
+      }
     @sql.WinFn::Agg(f, inner) => self.bind_agg(f, inner, space)
   }
   fn check_no_nesting(e : @sql.LExpr) -> Unit raise @types.SqlError {

@@ -16,6 +16,8 @@ pub(all) enum AggFn {
   Median
   Min
   Max
+  ApproxCountDistinct // approx_count_distinct(expr): HyperLogLog, p = 14
+  ApproxQuantile // approx_quantile(value, q): t-digest, q folded at bind
 } derive(Eq, Debug)
 
 ///|

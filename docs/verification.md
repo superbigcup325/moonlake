@@ -3004,3 +3004,70 @@ still proposals. Acceptance of the final 0.6.0 candidate is R2, which reruns
 §36's gates on one revision — including the >2 GiB file, the host-free wasm
 build and the browser playground — and the performance pair is re-recorded
 last. Push, tag, publication and deployment remain unauthorized.
+
+## 39. Approximate aggregates with a contract (2026-10-26): A0, A1, A2
+
+Two explicit aggregates land: `approx_count_distinct(expr)` over a HyperLogLog
+and `approx_quantile(expr, q)` over a t-digest, both from `colenc/sketches`
+0.1.1. [docs/sketches.md](sketches.md) is the contract (types, NULL rules, value
+equivalence, parameters, errors, cost); this section is the evidence.
+
+**Where it goes.** `sql/ast.mbt` gains the two `AggFn` variants (the only public
+interface change: `sql/pkg.generated.mbti`), `sql/parser.mbt` parses them, and
+`engine/binder.mbt` binds them: any scalar input for the distinct count, a
+numeric one for the quantile, `q` folded from a literal into `AggSpec.q`. The
+fold lives in `engine/exec_agg.mbt` as two new `Acc` variants, so the in-memory
+gather, the streaming pull in `engine/stream.mbt` and the grace path in
+`engine/extagg.mbt` all reach it without a second implementation; the window
+path calls the same `acc_step`/`acc_finish`, and `engine/prune.mbt` carries the
+new field through. Both kinds stay on the boxed fold path.
+
+**Two decisions worth their own line.** The distinct sketch is fed the exact
+path's equivalence, not colenc's raw bytes: the fold canonicalizes `-0.0` to
+`+0.0`, every NaN payload to one canonical NaN (the two properties their text
+form has in `scalar_key`), and hashes strings as UTF-8 bytes and dates as their
+epoch day. And because `acc_step` cannot raise, a non-finite quantile input sets
+a flag on the accumulator and `acc_finish` raises the SQL error, so the query
+fails at the same boundary as `sum()`'s overflow instead of inside the fold.
+
+**Correctness.**
+
+| Check | Result |
+|---|---|
+| `moon test` (wasm-gc / native / js) | 348 / 361 / 348 passed, 18 of them new |
+| `approx_count_distinct` on 1..100 (100 values) | 100, exactly |
+| on five values, and on an empty or all-NULL input | 5, 0 and 0 |
+| on 10,000 distinct values | within three standard errors of 10,000 |
+| on 1,000,000 distinct strings | 1,010,708 (+1.07%) against the exact 1,000,000 |
+| `approx_quantile(d, 0.5)` over 0..999,999 | 499,999.5, equal to `median()` |
+| `approx_quantile(d, 0.9)` over the same column | 899,999.5, the exact 90th percentile |
+| `q = 0` / `q = 1` | the minimum / the maximum |
+| `q = 1.5`, `q = -0.1`, `q = v`, `q = 2.0` with no rows | bind errors, the last one before any row is read |
+| NaN input to the quantile | `sql error (execute): approx_quantile() requires finite input` |
+| whitebox: `-0.0`/`0.0`, two NaN payloads, int32 vs int64, strings, booleans, dates | one, one, two, two, two, two values |
+
+**Cost**, on the 1,000,000-row Parquet file, native release binary, one process
+per query (a `count(col)` decodes the same column without state):
+
+| Shape | Peak RSS | Exact counterpart |
+|---|---|---|
+| `approx_count_distinct(s)` | 56.6 MB | 144.7 MB for `count(DISTINCT s)`; 56.6 MB for `count(s)` |
+| `approx_quantile(d, 0.5)` | 33.9 MB | 44.4 MB for `median(d)`; 34.1 MB for `count(d)` |
+| `k, approx_count_distinct(s) GROUP BY k`, 1,000 groups × 1,000 distinct | 145.8 MB | 152.8 MB for the exact grouped count |
+
+The ungrouped wins are the sketch's 64 KiB against a map that keeps every value
+(88 B per distinct value here) and an array that keeps every row (8 B per row
+plus growth). The grouped row is the honest other half: 1,000 sketches are
+64 MB whatever their groups hold, so below roughly 750 distinct values per group
+the exact path is still the cheaper one. `docs/sketches.md` records the
+crossover and what an adaptive representation would have to wait for.
+
+**What it does not close.** No optimizer rewrite, so `COUNT(DISTINCT ...)` and
+`median()` stay exact and neither aggregate is chosen for the user. No
+partial-state merge: the grouped path keys partitions by group key, so a group's
+state is never split, and input-partitioned aggregation would need one. No
+persisted sketch state and no approximate type in a result. The statistics are
+the estimator's standard error and colenc's measured t-digest rank error, not a
+universal bound. The 0.6.0 candidate now carries both functions, so R2 must run
+its acceptance on the revision that includes them, and the release pair at the
+end of `docs/bench-baseline.md` still belongs to the earlier revision.

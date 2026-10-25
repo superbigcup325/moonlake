@@ -2118,3 +2118,41 @@ is worth knowing before starting one.
 None of this uses the new surface. The next task is R2, the same gates again on
 the final candidate, and the feature work behind it still starts from A0's
 semantics and state costs.
+
+## Two approximate aggregates, and the cost that keeps them honest (2026-10-26): A0, A1, A2
+
+The surface is small — `approx_count_distinct(expr)` and
+`approx_quantile(expr, q)` — and the implementation follows the shape the
+executor already had: two new accumulator variants on the one fold in
+`engine/exec_agg.mbt`, reached from the in-memory gather, the streaming pull, the
+grace partitions and the window path without a second copy of anything. The
+parser and binder additions are the boring half. The contract is
+`docs/sketches.md`, and §39 of `verification.md` is the evidence.
+
+Two decisions were not mechanical. First, the distinct sketch has to see what
+the exact path calls one value, or the two answers disagree on the same column
+for no reason a user could see: the fold canonicalizes `-0.0` to `+0.0` and
+every NaN payload to one NaN, because that is what the exact key's text form
+does, and hashes strings as UTF-8 bytes and dates as epoch days. Second, a
+t-digest refuses non-finite values and `acc_step` cannot raise, so the fold sets
+a flag and the finish step raises; the query fails whole, at the same boundary
+as `sum()`'s overflow.
+
+Then the measurements, which are the part that decides how the feature is
+described. On 1,000,000 distinct strings, `count(DISTINCT s)` peaks at 144.7 MB
+while `approx_count_distinct(s)` peaks at 56.6 MB — and `count(s)`, which
+decodes the same column and keeps no state, is also 56.6 MB, so the sketch is
+its 64 KiB and the 88 MB was the map. `median(d)` on the same file's double
+column is 44.4 MB against `approx_quantile`'s 33.9 MB. Ungrouped, the sketches
+win by a wide margin.
+
+Grouped, they can lose, and that belongs in the first paragraph rather than in
+a footnote: 1,000 groups holding 1,000 distinct values each cost 145.8 MB with
+the sketch against 152.8 MB exact, because 1,000 dense sketches are 64 MB
+whatever they hold and the exact set only pays for what it has. About 750
+distinct values per group is where they cross. That is why there is no
+optimizer rewrite and no default: the feature is explicit because the engine
+cannot know which side of that line a query is on.
+
+Suites are at 348 wasm-gc / 361 native / 348 js, 18 of them new. What is left
+for 0.6.0 is R2, the acceptance rerun on this revision.

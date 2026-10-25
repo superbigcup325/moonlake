@@ -61,6 +61,17 @@ priv struct AccMinMax {
 }
 
 ///|
+priv struct AccHll {
+  sketch : @sketches.HllSketch
+}
+
+///|
+priv struct AccQuant {
+  digest : @sketches.TDigest
+  mut bad_input : Bool // a NaN or infinity reached the digest
+}
+
+///|
 priv enum Acc {
   SumI(AccSumI)
   SumF(AccSumF)
@@ -71,6 +82,8 @@ priv enum Acc {
   MedV(AccMed)
   StrAgg(AccStrAgg)
   MinMax(AccMinMax)
+  Hll(AccHll)
+  Quant(AccQuant)
 }
 
 ///|
@@ -92,6 +105,10 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
           VarF({ mean: 0.0, m2: 0.0, count: 0L, })
         Median => MedV({ vals: [], })
         Min | Max => MinMax({ cur: @types.Null, seen: false, })
+        ApproxCountDistinct =>
+          Hll({ sketch: @sketches.HllSketch::new_default(), })
+        ApproxQuantile =>
+          Quant({ digest: @sketches.TDigest::new_default(), bad_input: false, })
       },
     )
   }
@@ -206,6 +223,21 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Unit {
               _ => ()
             }
           }
+        Hll(a) => hll_add(a.sketch, v)
+        Quant(a) =>
+          match as_double(v) {
+            Some(x) =>
+              if x.is_nan() || x.is_inf() {
+                // the digest rejects non-finite values; the fold cannot
+                // raise, so the finish step reports it for the query
+                a.bad_input = true
+              } else {
+                a.digest.update(x) catch {
+                  _ => a.bad_input = true
+                }
+              }
+            None => ()
+          }
       }
   }
 }
@@ -269,6 +301,69 @@ fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError 
     CountOf(a) => @types.Int64(a.count)
     Distinct(a) => @types.Int64(a.seen.length().to_int64())
     MinMax(a) => if a.seen { a.cur } else { @types.Null }
+    Hll(a) => @types.Int64(hll_round(a.sketch.estimate()))
+    Quant(a) => {
+      if a.bad_input {
+        raise @types.SqlError::Execute(
+          "approx_quantile() requires finite input; the column holds NaN or infinity",
+        )
+      }
+      let q = match spec.q {
+        Some(q) => q
+        None =>
+          raise @types.SqlError::Execute(
+            "internal: approx_quantile() bound without a quantile",
+          )
+      }
+      if a.digest.count() == 0.0 {
+        @types.Null
+      } else {
+        @types.Float64(
+          a.digest.quantile(q) catch {
+            e =>
+              raise @types.SqlError::Execute(
+                "approx_quantile(): \{@colenc_types.EncodingError::message(e)}",
+              )
+          },
+        )
+      }
+    }
+  }
+}
+
+///|
+/// Feed one value to the distinct sketch in the canonical form the exact
+/// path's `scalar_key` uses: floats by value (both zeros are one value,
+/// every NaN is one value), strings as their UTF-8 bytes, dates as their
+/// epoch day.
+fn hll_add(sketch : @sketches.HllSketch, v : @types.Scalar) -> Unit {
+  match v {
+    @types.Boolean(b) => sketch.add_bool(b)
+    @types.Int32(x) => sketch.add_int32(x)
+    @types.Int64(x) => sketch.add_int64(x)
+    @types.Date(d) => sketch.add_int32(d)
+    @types.Str(s) => sketch.add_bytes(@utf8.encode(s))
+    @types.Float64(x) =>
+      if x.is_nan() {
+        // one canonical NaN whatever the payload or sign: the exact path
+        // compares their text form, which is "NaN" for all of them
+        sketch.add_double(0x7FF8000000000001L.reinterpret_as_double())
+      } else if x == 0.0 {
+        sketch.add_double(0.0) // -0.0 and 0.0 print the same
+      } else {
+        sketch.add_double(x)
+      }
+    @types.Null => ()
+  }
+}
+
+///|
+/// Round a cardinality estimate to the nearest integer, never below zero.
+fn hll_round(v : Double) -> Int64 {
+  if v <= 0.0 {
+    0L
+  } else {
+    (v + 0.5).to_int64()
   }
 }
 

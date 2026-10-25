@@ -12,12 +12,34 @@ candidate passed the whole acceptance list, recorded in `verification.md` §36 a
 in the performance pair at the end of `docs/bench-baseline.md`. The later Parquet
 fix has targeted evidence in §37. The [colenc 0.1.1 follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011)
 calls for a dependency upgrade and acceptance on the final candidate. The
-entries below describe implemented changes; proposed sketch and index work stays
+entries below describe implemented changes; proposed index work stays
 in the roadmap. Push, tag, publication and deployment follow authorization, and
 the release date is set then.
 
 ### Added
 
+- `approx_count_distinct(expr)`: a HyperLogLog estimate of the distinct
+  non-NULL count, at fixed precision 14 (16,384 registers, about 0.81%
+  standard error), returning int64. It hashes the same value equivalence the
+  exact path keeps — type-tagged, so int32 1 and int64 1 differ; both zeros are
+  one value and every NaN is one value, matching what their text form does —
+  and it skips NULL, so an empty or all-NULL input answers 0. One 64 KiB sketch
+  per non-empty group. `COUNT(DISTINCT ...)` stays exact and no optimizer
+  rewrites one into the other. On a 1,000,000-row string column where every
+  value is distinct it reports 1,010,708 against the exact 1,000,000, at
+  56.6 MB of peak RSS against the exact path's 144.7 MB (a `count(s)` over the
+  same file, which decodes the column without keeping state, is 56.6 MB, so the
+  sketch itself is the 64 KiB one, not the 88 MB the map needs)
+- `approx_quantile(expr, q)`: a t-digest estimate of a quantile at fixed
+  compression 100, returning float64. `q` must be a constant literal in [0, 1]
+  and is checked at bind time, so a query with no rows or under a LIMIT fails
+  the same way; a non-numeric input is a bind error; NULL is skipped and an
+  empty or all-NULL input answers NULL, like `median()`. NaN and infinity input
+  is a SQL error raised when the aggregate finishes, because the fold itself
+  cannot raise. On 1,000,000 doubles (0..999,999) `q = 0.5` and `q = 0.9`
+  matched `median()` and the exact 90th percentile, at 33.9 MB of peak RSS
+  against `median()`'s 44.4 MB. [docs/sketches.md](docs/sketches.md) is the
+  contract: input types, equivalence, parameters, and the measured state costs
 - `moonlake exec` runs an expression-only query with no input files. It used
   to print the usage text and exit 1 when no `--csv`/`--parquet` was given, so
   checking a formula (`moonlake exec "SELECT 1 + 1"`) needed a dummy file; the

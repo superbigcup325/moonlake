@@ -2,7 +2,10 @@ import {
   "superbigcup325/moonlake/sql",
   "superbigcup325/moonlake/types",
   "superbigcup325/moonlake/catalog",
+  "superbigcup325/colenc/sketches",
+  "superbigcup325/colenc/types" @colenc_types,
   "moonbitlang/core/debug",
+  "moonbitlang/core/encoding/utf8",
 }
 
 import {
