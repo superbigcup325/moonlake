@@ -59,18 +59,119 @@ pub fn run_select_opts(
 }
 
 ///|
-/// Execute a parsed select. FROM items resolve to schemas and batches —
-/// base tables come from the catalog, derived tables recurse and
-/// materialize (everything in the engine is eager, so this is direct).
+/// Execute a parsed select and collect the whole result. The preparation and
+/// the pipeline below are shared with `run_select_stream`, so a query means
+/// the same thing whether its rows are collected or pulled.
 fn run_parsed(
   sel : @sql.Select,
   catalog : @catalog.Catalog,
   stats : Array[(String, Int64)],
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
+  match prepare_select(sel, catalog, opts) {
+    Setop(result) => result
+    Ready(launch) =>
+      match streaming_source(launch.bq, launch.sources) {
+        // A single-table scan is pulled even when the caller wants the
+        // result whole: the LIMIT window then stops the scan instead of
+        // materializing the table and cutting the window out of the result.
+        Some(entry) => {
+          let result = drain_scan(
+            scan_pull(
+              launch.bq,
+              launch.plan,
+              entry,
+              launch.schemas[0].table,
+              stats,
+            ),
+            launch.bq,
+          )
+          if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
+            stats.push(("result", result.row_count().to_int64()))
+          }
+          result
+        }
+        None => run_pipeline(launch, opts, stats)
+      }
+  }
+}
+
+///|
+/// Execute a parsed select and hand the rows out as they come. See
+/// `ResultStream` for what a caller may assume.
+pub fn run_select_stream(
+  sql : String,
+  catalog : @catalog.Catalog,
+) -> ResultStream raise @types.SqlError {
+  run_select_stream_opts(sql, catalog, ExecOptions::in_memory())
+}
+
+///|
+/// `run_select_stream` under explicit options. A shape that needs the budget
+/// (a join, an aggregate, an external sort) is materialized here, before the
+/// stream is handed out, because a stream owns no spill files.
+pub fn run_select_stream_opts(
+  sql : String,
+  catalog : @catalog.Catalog,
+  opts : ExecOptions,
+) -> ResultStream raise @types.SqlError {
+  let sel = @sql.parse_select(sql)
+  match prepare_select(sel, catalog, opts) {
+    Setop(result) => ResultStream::materialized(result)
+    Ready(launch) =>
+      match streaming_source(launch.bq, launch.sources) {
+        Some(entry) =>
+          {
+            names: launch.bq.names,
+            types: launch.bq.out_types,
+            pull: Scanned(
+              scan_pull(
+                launch.bq,
+                launch.plan,
+                entry,
+                launch.schemas[0].table,
+                [],
+              ),
+            ),
+            done: false,
+          }
+        None => ResultStream::materialized(run_pipeline(launch, opts, []))
+      }
+  }
+}
+
+///|
+/// Everything the executor needs once the query is bound: the query, each FROM
+/// item's schema and batches, and — for a base table — the entry that can
+/// still be scanned lazily.
+priv struct Launch {
+  bq : BoundQuery
+  plan : PrunePlan
+  schemas : Array[@catalog.TableSchema]
+  sources : Array[@catalog.TableEntry?]
+  tables : Array[Array[@types.DataBatch]]
+}
+
+///|
+/// A prepared query: ready for the pipeline, or already answered — a set
+/// operation runs its two halves itself.
+priv enum Prepared {
+  Ready(Launch)
+  Setop(SelectResult)
+}
+
+///|
+/// Decorrelate, dispatch a set operation, resolve every FROM item (base tables
+/// keep their source; derived and synthetic tables are materialized here),
+/// then bind and prune.
+fn prepare_select(
+  sel_in : @sql.Select,
+  catalog : @catalog.Catalog,
+  opts : ExecOptions,
+) -> Prepared raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
   // pre-executed synthetic tables before anything else runs
-  let (sel, extra_schemas, extra_batches) = decorrelate(sel, catalog, opts)
+  let (sel, extra_schemas, extra_batches) = decorrelate(sel_in, catalog, opts)
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   // base tables keep their entry so the scan can go through its source;
@@ -78,7 +179,7 @@ fn run_parsed(
   let sources : Array[@catalog.TableEntry?] = []
   match sel.setop {
     Some((kind, all, right_sel)) =>
-      return run_setop(sel, kind, all, right_sel, catalog, opts)
+      return Setop(run_setop(sel, kind, all, right_sel, catalog, opts))
     None => ()
   }
   if sel.from.length() == 0 {
@@ -162,13 +263,23 @@ fn run_parsed(
   }
   let runner : SubqueryRunner = { catalog, opts, }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
-  let bq = plan.bq
-  // A LIMIT that needs nothing but the rows it returns stops its scan instead
-  // of materializing the table and cutting the window out of the result.
-  match streaming_limit_source(bq, sources) {
-    Some(entry) => return stream_limit(bq, plan, entry, schemas[0].table, stats)
-    None => ()
-  }
+  Ready({ bq: plan.bq, plan, schemas, sources, tables, })
+}
+
+///|
+/// The eager pipeline: materialize what the FROM items need, join, aggregate,
+/// sort, project and window. `launch` decided what the query means; nothing
+/// here re-reads it.
+fn run_pipeline(
+  launch : Launch,
+  opts : ExecOptions,
+  stats : Array[(String, Int64)],
+) -> SelectResult raise @types.SqlError {
+  let bq = launch.bq
+  let plan = launch.plan
+  let schemas = launch.schemas
+  let sources = launch.sources
+  let tables = launch.tables
   // Materialize each FROM item with only the columns the query reads. A base
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
@@ -772,52 +883,105 @@ pub fn explain(
 /// get a `_1` suffix (a CSV header's rename) instead of a key that silently
 /// overwrites its neighbour in a JSON parser.
 pub fn SelectResult::to_json(self : SelectResult) -> String {
+  let writer = JsonRow::new(self.names())
   let sb = StringBuilder()
-  let keys = unique_keys(self.names())
   sb.write_char('[')
   for r in 0..<self.row_count() {
     if r > 0 {
       sb.write_char(',')
     }
-    sb.write_char('{')
-    for c in 0..<self.names().length() {
-      if c > 0 {
-        sb.write_char(',')
-      }
-      sb.write_char('"')
-      sb.write_string(json_escape(keys[c]))
-      sb.write_string("\":")
-      match self.get(r, c) {
-        @types.Null => sb.write_string("null")
-        @types.Str(v) => {
-          sb.write_char('"')
-          sb.write_string(json_escape(v))
-          sb.write_char('"')
-        }
-        @types.Date(v) => {
-          sb.write_char('"')
-          sb.write_string(@types.epoch_to_string(v))
-          sb.write_char('"')
-        }
-        @types.Float64(v) =>
-          if v.is_nan() {
-            sb.write_string("\"NaN\"")
-          } else if v.is_inf() {
-            if v > 0.0 {
-              sb.write_string("\"Infinity\"")
-            } else {
-              sb.write_string("\"-Infinity\"")
-            }
-          } else {
-            sb.write_string(v.to_string())
-          }
-        other => sb.write_string(other.to_string())
-      }
-    }
-    sb.write_char('}')
+    write_json_row(sb, writer.keys, self.batch, r)
   }
   sb.write_char(']')
   sb.to_string()
+}
+
+///|
+/// A result row as a JSON object, in the layout `to_json` prints. The caller
+/// supplies the surrounding `[`, the commas between batches and the `]`, so a
+/// result can be written as its batches arrive instead of being collected
+/// first. Keys are made unique exactly as `to_json` makes them.
+pub struct JsonRow {
+  priv keys : Array[String]
+}
+
+///|
+pub fn JsonRow::new(names : Array[String]) -> JsonRow {
+  { keys: unique_keys(names), }
+}
+
+///|
+/// One row as JSON: `{"a":1,"b":null}`.
+pub fn JsonRow::render(
+  self : JsonRow,
+  batch : @types.DataBatch,
+  row : Int32,
+) -> String {
+  let sb = StringBuilder()
+  write_json_row(sb, self.keys, batch, row)
+  sb.to_string()
+}
+
+///|
+/// The rows of `batch` as comma-separated JSON objects, without brackets: a
+/// writer that prints `[`, each batch of the stream in turn, and `]` prints
+/// exactly what `to_json` prints for the whole result.
+pub fn JsonRow::batch(self : JsonRow, batch : @types.DataBatch) -> String {
+  let sb = StringBuilder()
+  for r in 0..<batch.row_count() {
+    if r > 0 {
+      sb.write_char(',')
+    }
+    write_json_row(sb, self.keys, batch, r)
+  }
+  sb.to_string()
+}
+
+///|
+/// Append one row's JSON object. `keys` is the unique key list, so the caller
+/// computes it once per result rather than per row.
+fn write_json_row(
+  sb : StringBuilder,
+  keys : Array[String],
+  batch : @types.DataBatch,
+  row : Int32,
+) -> Unit {
+  sb.write_char('{')
+  for c in 0..<keys.length() {
+    if c > 0 {
+      sb.write_char(',')
+    }
+    sb.write_char('"')
+    sb.write_string(json_escape(keys[c]))
+    sb.write_string("\":")
+    match batch.columns()[c].get(row) {
+      @types.Null => sb.write_string("null")
+      @types.Str(v) => {
+        sb.write_char('"')
+        sb.write_string(json_escape(v))
+        sb.write_char('"')
+      }
+      @types.Date(v) => {
+        sb.write_char('"')
+        sb.write_string(@types.epoch_to_string(v))
+        sb.write_char('"')
+      }
+      @types.Float64(v) =>
+        if v.is_nan() {
+          sb.write_string("\"NaN\"")
+        } else if v.is_inf() {
+          if v > 0.0 {
+            sb.write_string("\"Infinity\"")
+          } else {
+            sb.write_string("\"-Infinity\"")
+          }
+        } else {
+          sb.write_string(v.to_string())
+        }
+      other => sb.write_string(other.to_string())
+    }
+  }
+  sb.write_char('}')
 }
 
 ///|

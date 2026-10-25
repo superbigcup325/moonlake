@@ -173,12 +173,21 @@ fn main raise {
     println(usage())
     return
   }
+  // A failure inside a command must leave through the same door as a usage
+  // error: message on stderr, exit 1. Reading the inputs raises before the
+  // query runs (a CSV whose rows do not parse), and an uncaught raise ends the
+  // process with a panic trace and exit 134, which a shell pipeline cannot
+  // tell apart from a crash.
   if args.length() > 1 && args[1] == "exec" {
-    exec_command(args)
+    exec_command(args) catch {
+      e => raise cli_fail(e.to_string())
+    }
     return
   }
   if args.length() > 1 && args[1] == "write" {
-    write_command(args)
+    write_command(args) catch {
+      e => raise cli_fail(e.to_string())
+    }
     return
   }
   // the classic first-commands slip: options without the subcommand
@@ -371,18 +380,49 @@ fn exec_command(args : Array[String]) -> Unit raise {
     println(rendered)
     return
   }
-  let result = run_query(sql, cat, memory, spill_dir) catch {
+  // Rows are printed as their batches arrive, so a large scan never becomes a
+  // string in memory: what is held is one batch, not one result. A failure
+  // after the first batch leaves what was already printed on stdout, then the
+  // error on stderr and exit 1 — a pipeline that checks the exit status sees
+  // the failure, and one that does not still gets the rows it could have had.
+  let stream = run_query_stream(sql, cat, memory, spill_dir) catch {
     err => raise cli_fail(err.to_string())
   }
   if json {
-    println(result.to_json())
+    // One JSON array, whose rows arrive a batch at a time. A batch is printed
+    // as its own line only once there is a following one, so the document
+    // stays one line per batch and a single-batch result is byte-identical to
+    // the whole-result encoding.
+    let writer = @engine.JsonRow::new(stream.names())
+    let mut pending : String? = None
+    let mut printed = false
+    while stream.next() is Some(batch) {
+      match pending {
+        Some(prev) => {
+          // the opening bracket belongs to whichever line comes first
+          let prefix = if printed { "" } else { "[" }
+          println(prefix + prev + ",")
+          printed = true
+        }
+        None => ()
+      }
+      pending = Some(writer.batch(batch))
+    }
+    let head = if printed { "" } else { "[" }
+    match pending {
+      Some(last) => println(head + last + "]")
+      None => println(if printed { "]" } else { "[]" })
+    }
   } else {
     // pipe-friendly output: header row, then '|' separated values
-    println(join_names(result.names()))
-    for r in 0..<result.row_count() {
-      println(join_row(result, r))
+    println(join_names(stream.names()))
+    while stream.next() is Some(batch) {
+      for r in 0..<batch.row_count() {
+        println(join_batch_row(batch, r))
+      }
     }
   }
+  stream.close()
 }
 
 ///|
@@ -444,21 +484,26 @@ fn analyze_query(
 }
 
 ///|
-/// Run the query under the memory options: a positive budget lets the
-/// blocking operators (ORDER BY, grace join, grace aggregation) spill into a
-/// per-run directory under `--spill-dir` or TMPDIR, which `with_spill_run`
-/// removes once the query ends, on both the success and the error path.
-fn run_query(
+/// Run the query under the memory options, handing the rows back as they come:
+/// a positive budget lets the blocking operators (ORDER BY, grace join, grace
+/// aggregation) spill into a per-run directory under `--spill-dir` or TMPDIR,
+/// which `with_spill_run` removes once the query ends, on both the success and
+/// the error path.
+///
+/// A query that can be pulled (a single-table scan) spills nothing, and a query
+/// that cannot is materialized inside `stream_with` before the stream is
+/// returned, so the purge above never removes a file the stream still needs.
+fn run_query_stream(
   sql : String,
   cat : @catalog.Catalog,
   memory : Int32,
   spill_dir : String?,
-) -> @engine.SelectResult raise @types.SqlError {
+) -> @engine.ResultStream raise @types.SqlError {
   if memory <= 0 {
-    return @moonlake.execute(sql, cat)
+    return @moonlake.stream(sql, cat)
   }
   with_spill_run(spill_dir, memory, opts => {
-    @moonlake.execute_with(sql, cat, opts)
+    @moonlake.stream_with(sql, cat, opts)
   })
 }
 
@@ -524,13 +569,14 @@ fn join_names(names : Array[String]) -> String {
 }
 
 ///|
-fn join_row(result : @engine.SelectResult, r : Int32) -> String {
+fn join_batch_row(batch : @types.DataBatch, r : Int32) -> String {
   let sb = StringBuilder()
-  for c in 0..<result.names().length() {
+  let cols = batch.columns()
+  for c in 0..<cols.length() {
     if c > 0 {
       sb.write_char('|')
     }
-    sb.write_string(result.get(r, c).to_string())
+    sb.write_string(cols[c].get(r).to_string())
   }
   sb.to_string()
 }

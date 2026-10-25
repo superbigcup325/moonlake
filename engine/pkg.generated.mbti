@@ -23,6 +23,10 @@ pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlErro
 
 pub fn run_select_opts(String, @catalog.Catalog, ExecOptions) -> SelectResult raise @types.SqlError
 
+pub fn run_select_stream(String, @catalog.Catalog) -> ResultStream raise @types.SqlError
+
+pub fn run_select_stream_opts(String, @catalog.Catalog, ExecOptions) -> ResultStream raise @types.SqlError
+
 // Errors
 
 // Types and methods
@@ -36,6 +40,13 @@ pub(all) struct ExecOptions {
   spill : SpillStore?
 }
 pub fn ExecOptions::in_memory() -> Self
+
+pub struct JsonRow {
+  // private fields
+}
+pub fn JsonRow::batch(Self, @types.DataBatch) -> String
+pub fn JsonRow::new(Array[String]) -> Self
+pub fn JsonRow::render(Self, @types.DataBatch, Int32) -> String
 
 pub(all) enum PhysExpr {
   ColRef(Int32, @types.DataType)
@@ -57,6 +68,14 @@ pub(all) enum PhysExpr {
   WinRef(Int32, @types.DataType)
 } derive(@debug.Debug)
 pub fn PhysExpr::to_repr(Self) -> @debug.Repr
+
+pub struct ResultStream {
+  // private fields
+}
+pub fn ResultStream::close(Self) -> Unit
+pub fn ResultStream::names(Self) -> Array[String]
+pub fn ResultStream::next(Self) -> @types.DataBatch? raise @types.SqlError
+pub fn ResultStream::types(Self) -> Array[@types.DataType]
 
 pub struct SelectResult {
   // private fields

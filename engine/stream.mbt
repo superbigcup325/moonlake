@@ -32,24 +32,27 @@
 // before any join: the table's build filter is applied to that table's rows
 // before the first join step, so a source may skip rows that cannot satisfy
 // it (see scan.mbt for why probe filters, join residuals and the deferred
-// WHERE may not travel). What streams today: scan, build filter, the deferred
-// WHERE, projection and a LIMIT window. What does not, because it must see
+// WHERE may not travel). What streams: scan, build filter, the deferred WHERE,
+// projection and an OFFSET/LIMIT window. What does not, because it must see
 // every row first: aggregation, a join, ORDER BY, and SELECT DISTINCT.
+//
+// The pull lives here, not in the executor: `scan_pull` opens one and
+// `ResultStream` hands its batches to a caller. Both result deliveries — the
+// collected one the engine still returns and the incremental one a caller can
+// ask for — read the same pull, so they cannot disagree about rows.
 
 ///|
-/// The single-table LIMIT that can stop its scan, if this query is one: one
-/// lazy table, nothing above the projection that needs every row, and a LIMIT.
+/// The single-table shape that can be pulled instead of collected, if this
+/// query is one: one lazy table, and nothing above the projection that has to
+/// see every row first.
 ///
-/// A LIMIT over `select *` is the case this exists for: the scan used to
-/// materialize the whole table and the window was cut from the result, which
-/// cost one pass over every column to return ten rows.
-fn streaming_limit_source(
+/// A LIMIT is not required and does not change the answer: the window is
+/// applied to the batches as they arrive, so a windowed query stops reading as
+/// soon as it is full and an unbounded one reads the table once.
+fn streaming_source(
   bq : BoundQuery,
   sources : Array[@catalog.TableEntry?],
 ) -> @catalog.TableEntry? {
-  if bq.limit is None {
-    return None
-  }
   if bq.aggregate ||
     bq.order_by.length() > 0 ||
     bq.windows.length() > 0 ||
@@ -68,56 +71,226 @@ fn streaming_limit_source(
 }
 
 ///|
-/// Run a streamable LIMIT: pull one batch at a time, keep the window, and stop
-/// as soon as the window is full.
-fn stream_limit(
+/// A live pull over one table: the source cursor, the stages that run per
+/// batch, and how much of the OFFSET/LIMIT window is still untaken.
+///
+/// State is the struct's own (`mut`), so a caller mutates the pull it was
+/// given rather than replacing it: `next` may be resumed, abandoned, or never
+/// called, and the source cursor is dropped with the struct.
+priv struct ScanPull {
+  stream : &@catalog.BatchStream
+  build_filter : PhysExpr?
+  deferred : PhysExpr?
+  out_exprs : Array[PhysExpr]
+  out_types : Array[@types.DataType]
+  table_name : String
+  stats : Array[(String, Int64)]
+  mut offset_left : Int64
+  mut limit_left : Int64 // negative means the query has no LIMIT
+  mut scanned : Int64
+}
+
+///|
+/// Open the pull for a streamable query: one scan request, one source cursor,
+/// and the per-batch stages the query needs.
+fn scan_pull(
   bq : BoundQuery,
   plan : PrunePlan,
   entry : @catalog.TableEntry,
   table_name : String,
   stats : Array[(String, Int64)],
-) -> SelectResult raise @types.SqlError {
-  let limit = match bq.limit {
-    Some(n) => n
-    None => 0
-  }
-  let offset = match bq.offset {
-    Some(n) => n
-    None => 0
-  }
-  // In Int64: offset and limit are Int32 each and their sum need not fit
-  let window = offset.to_int64() + limit.to_int64()
+) -> ScanPull raise @types.SqlError {
   let request = scan_request_of(bq, plan.table_cols[0], 0)
-  let build_filter = scan_filter_of(bq, 0)
   let stream = entry.stream(request)
-  let chunks : Array[@types.DataBatch] = []
-  let mut scanned = 0L
-  let mut got = 0L
-  while got < window {
-    match stream.next() {
+  let offset = match bq.offset {
+    Some(n) => n.to_int64()
+    None => 0L
+  }
+  let limit = match bq.limit {
+    Some(n) => n.to_int64()
+    None => -1L
+  }
+  {
+    stream,
+    build_filter: scan_filter_of(bq, 0),
+    deferred: bq.deferred,
+    out_exprs: bq.out_exprs,
+    out_types: bq.out_types,
+    table_name,
+    stats,
+    offset_left: offset,
+    limit_left: limit,
+    scanned: 0L,
+  }
+}
+
+///|
+/// The next batch inside the window, or `None` once the scan is exhausted or
+/// the window is full. A batch that the window empties is not returned: the
+/// contract forbids handing out a zero-row batch.
+fn ScanPull::next(self : ScanPull) -> @types.DataBatch? raise @types.SqlError {
+  while self.limit_left != 0 {
+    let raw = match self.stream.next() {
       None => break
-      Some(batch) => {
-        let kept = match build_filter {
-          Some(p) => compact(batch, eval_mask(p, batch))
-          None => batch
-        }
-        scanned += kept.row_count().to_int64()
-        if kept.row_count() > 0 {
-          let rows = filter_batches([kept], bq.deferred)
-          if rows.length() > 0 && rows[0].row_count() > 0 {
-            let projected = project(rows[0], bq.out_exprs, bq.out_types)
-            got += projected.row_count().to_int64()
-            chunks.push(projected)
-          }
+      Some(batch) => batch
+    }
+    // the build filter travels to the source; rows that cannot match never
+    // reach the stages below
+    let kept = match self.build_filter {
+      Some(p) => compact(raw, eval_mask(p, raw))
+      None => raw
+    }
+    self.scanned += kept.row_count().to_int64()
+    if kept.row_count() == 0 {
+      continue
+    }
+    let rows = filter_batches([kept], self.deferred)
+    if rows.length() == 0 || rows[0].row_count() == 0 {
+      continue
+    }
+    let projected = project(rows[0], self.out_exprs, self.out_types)
+    let n = projected.row_count().to_int64()
+    let mut start = 0L
+    if self.offset_left > 0 {
+      start = if self.offset_left < n { self.offset_left } else { n }
+      self.offset_left -= start
+    }
+    let mut take = n - start
+    if self.limit_left >= 0 && take > self.limit_left {
+      take = self.limit_left
+    }
+    if take <= 0 {
+      continue
+    }
+    if self.limit_left >= 0 {
+      self.limit_left -= take
+    }
+    if start == 0 && take == n {
+      return Some(projected)
+    }
+    return Some(
+      order_limit(projected, [], Some(take.to_int()), Some(start.to_int())),
+    )
+  }
+  None
+}
+
+///|
+/// Drain the pull into one batch — what a caller that wants the whole result
+/// gets, and how the collected API stays the same one-row-set answer as the
+/// stream.
+fn drain_scan(
+  pull : ScanPull,
+  bq : BoundQuery,
+) -> SelectResult raise @types.SqlError {
+  let chunks : Array[@types.DataBatch] = []
+  while pull.next() is Some(batch) {
+    chunks.push(batch)
+  }
+  // what the query cost its source, reported once the pull is over: a scan
+  // cut short by its window still says how much it read
+  pull.stats.push(("scan \{pull.table_name}", pull.scanned))
+  // the window was taken per batch, so there is nothing left to trim here
+  let batch = concat_batches(chunks, bq.out_types)
+  { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// A result the caller consumes batch by batch.
+///
+/// What the batches promise is the batch contract above: whole batches only,
+/// `None` exactly once at the end, no zero-row batch, and a batch belongs to
+/// the caller. What the *shape* promises:
+///
+/// - A single-table scan is pulled: a filter, the projection and an
+///   OFFSET/LIMIT window run per batch, so the caller never holds more than one
+///   batch and a windowed query stops reading when the window is full.
+/// - Every other shape (a join, an aggregate, ORDER BY, DISTINCT, a window
+///   function, a derived table, a set operation) must see all rows first, so it
+///   is executed eagerly here and `next` yields that result as one batch. The
+///   rows are the ones `execute` returns for the same query.
+///
+/// The lifecycle is short enough to state whole:
+///
+/// - Exhaustion: `next` returns `None` at the end and keeps returning `None`;
+///   there is no second end and no reset.
+/// - Early stop: `close` stops the pull, is idempotent, is safe before the
+///   first `next`, and leaves `next` returning `None`.
+/// - Failure: a pull that raises ends the stream, so a retry after an error
+///   reports the end rather than resuming a scan whose state is unknown.
+/// - Cleanup: dropping the stream releases the scan cursor. A stream owns no
+///   spill files — a shape that needs a memory budget is materialized before
+///   the stream is handed out — so there is nothing else to release, and a
+///   consumer that vanishes costs nothing but the cursor. `catalog.BatchStream`
+///   gains no `close` method for this: exhaustion is its whole protocol, and
+///   adding one would break every implementation outside this module.
+pub struct ResultStream {
+  priv names : Array[String]
+  priv types : Array[@types.DataType]
+  priv pull : StreamPull
+  priv mut done : Bool
+}
+
+///|
+priv enum StreamPull {
+  Scanned(ScanPull)
+  Materialized(@types.DataBatch?)
+}
+
+///|
+/// The stream for a result that is already computed: one batch, then `None`.
+fn ResultStream::materialized(result : SelectResult) -> ResultStream {
+  {
+    names: result.names,
+    types: result.types,
+    pull: Materialized(Some(result.batch)),
+    done: false,
+  }
+}
+
+///|
+pub fn ResultStream::names(self : ResultStream) -> Array[String] {
+  self.names
+}
+
+///|
+pub fn ResultStream::types(self : ResultStream) -> Array[@types.DataType] {
+  self.types
+}
+
+///|
+/// The next batch, or `None` once the result is exhausted or `close` was
+/// called. A pull that raises ends the stream: the stream is finished either
+/// way, and a caller that retries after an error gets the end, not a resumed
+/// scan.
+pub fn ResultStream::next(
+  self : ResultStream,
+) -> @types.DataBatch? raise @types.SqlError {
+  if self.done {
+    return None
+  }
+  errdefer {
+    self.done = true
+  }
+  match self.pull {
+    Materialized(batch) => {
+      self.done = true
+      batch
+    }
+    Scanned(pull) =>
+      match pull.next() {
+        Some(batch) => Some(batch)
+        None => {
+          self.done = true
+          None
         }
       }
-    }
   }
-  stats.push(("scan \{table_name}", scanned))
-  let all = concat_batches(chunks, bq.out_types)
-  let batch = order_limit(all, [], bq.limit, bq.offset)
-  if stats.length() > 0 {
-    stats.push(("result", batch.row_count().to_int64()))
-  }
-  { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// Stop the pull. Idempotent, and early: a caller that has what it needs says
+/// so instead of draining the scan.
+pub fn ResultStream::close(self : ResultStream) -> Unit {
+  self.done = true
 }

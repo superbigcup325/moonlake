@@ -31,6 +31,25 @@ describe implemented changes; planned work is added here after verification.
   both gates agree on what "equal", "refused" and "failure" mean; a wrong
   answer, a missing fixture, a referee error, a refusal without its message or a
   run with no value cases fails. Committing it found three defects (below).
+- `@moonlake.stream` / `stream_with`: a result can be consumed a batch at a
+  time. `@engine.ResultStream` reports `names()` and `types()` before the first
+  row and `next()` yields one `@types.DataBatch` per call until it returns
+  `None`. A single-table query whose remaining work is a pushed build filter, a
+  `WHERE`, a projection or an `OFFSET`/`LIMIT` window is pulled from the source,
+  so no caller collects it and a windowed query stops reading when its window is
+  full. Aggregation, joins, `ORDER BY`, `SELECT DISTINCT` and set operations are
+  computed first and handed back as one batch, because their answer does not
+  exist until every row is in. `execute` / `execute_with` keep their signatures
+  and read the same pull, so the collected and streamed deliveries cannot
+  disagree; `run_select_stream` / `run_select_stream_opts` are the engine-level
+  names. `close()` stops the pull, a pull that raises ends the stream, and a
+  stream owns no spill files, so dropping an unfinished one releases everything
+  it held. On a 2,000,000-row 16-column result, `--json` went from 1,090.6 MB of
+  peak RSS to 35.2 MB (verification §31).
+- `@engine.JsonRow`: the JSON row encoder the CLI and `SelectResult::to_json`
+  share (`new(names)`, `render(batch, row)`, `batch(batch)`), so a caller that
+  prints a batch at a time does not build the whole document as one string. The
+  output bytes are unchanged.
 - `@types.round_half_away`, the rounding convention `round()` and the
   float → integer casts use.
 - Decorrelation is general: the correlation no longer has to be an
@@ -119,7 +138,18 @@ describe implemented changes; planned work is added here after verification.
   aggregate, `ORDER BY` or `DISTINCT` above it, or a derived table on the outer
   side — behaves exactly as before, and all eleven benchmark shapes return the
   same rows as 0.5.0 when checked against DuckDB on the same fixture. Nothing
-  public changed.
+  public changed then; the pull it introduced is the public `stream` path for
+  every single-table scan now (see Added).
+- `--json` prints its array as it arrives: one line per batch instead of one
+  line for the whole result. It is still one JSON array — a result that fits one
+  batch is byte-identical to 0.5.0's output — but 2,000,000 rows now print as
+  489 lines while the rows are still being read, and the CLI never concatenates
+  the document. Text output keeps its header plus one line per row and is
+  consumed the same way.
+- A CLI failure exits 1 with its message on stderr even when it happens after
+  output began, and an input that cannot be parsed no longer ends the process
+  with a panic trace and status 134. Rows already printed stay on stdout, which
+  is what the README now states.
 - `--snappy` output is about 13% smaller. The compressor wrote every match as a
   three-byte `copy2` tag even when the match was short and close behind, which
   is what most of a text page looks like; a length of 4–11 at an offset below

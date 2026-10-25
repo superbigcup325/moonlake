@@ -1592,3 +1592,91 @@ levels out is still refused by the binder (`unknown table or alias "o" in FROM`)
 not by a named message, and both the README and the gate now say so instead of
 claiming otherwise. Naming it belongs to E4c, which owns the join contract this
 path needs anyway.
+
+## Results that leave one batch at a time (2026-10-26): E3
+
+### Goal
+
+The 0.6.0 plan's E3: an additive consumption API and a CLI that prints through
+it. The repository already had one early stop (§27, a single-table `LIMIT`), but
+it lived inside the executor: the result still left as one materialized batch,
+`select * from t` over a table bigger than memory printed only after holding
+every row, and `--json` built the whole document as a string. E3 moves the same
+pull to the result boundary and lets the CLI consume it.
+
+### What landed
+
+`engine/stream.mbt` grew a `ScanPull` (source cursor, per-batch build filter,
+deferred `WHERE`, projection, `OFFSET`/`LIMIT` window) and `ResultStream`, and
+`moonlake.mbt` exposes `stream` / `stream_with`. The important structural
+decision is that `run_parsed` splits into `prepare_select` (bind, then either a
+set-operation result or a `Launch`) and two consumers: `drain_scan` for the
+collected result and `scan_pull` for the streamed one. The old eager body moved
+into `run_pipeline` untouched. So `execute` and `stream` cannot disagree — they
+are the same scan read twice, not two implementations — and the eager path stays
+where it was for every shape that must see all rows.
+
+The CLI's print path switched from `SelectResult` to `ResultStream`, which is
+where the JSON shape had to be decided. One array, one line per batch: the first
+line carries `[`, the last carries `]`, and a single-batch result is
+byte-identical to the whole-array encoding. A batch line is printed only once a
+following batch exists, which is what keeps a trailing comma off the last line;
+the first attempt emitted `{...},` on every line and closed with `[...]`, and
+`json.loads` rejected it with `Extra data`. Text output needed no shape change —
+header, one row per line — and that the two are byte-identical to 0.5.0 for the
+same 2,000,000-row result is now pinned by hand and by `harness/check_cli.sh`.
+
+### Lifecycle, before writing it down
+
+The batch contract at the top of `engine/stream.mbt` already said early stop
+needs no protocol: a consumer stops calling `next` and the unfinished stream is
+safe to drop. At the result boundary that sentence needs two more clauses,
+because a caller can hold a stream across failures. A pull that raises *ends* the
+stream — `errdefer` sets the finished flag — so a retry reports the end instead
+of resuming a scan whose state is unknown. And `catalog.BatchStream` gained no
+method: it is an open public trait, exhaustion is its whole protocol, and a
+`close` would have broken every implementation outside this repository. The
+stream itself owns nothing but the cursor, which is why the CLI's spill purge can
+never take a file it still needs: a shape that needs a budget is materialized
+inside `stream_with`, before a stream exists.
+
+### The number that made it worth doing
+
+Same 2,000,000-row, 16-column fixture, same release build mode, one process per
+measurement, peak RSS from `os.wait4` (the floor is ~22 MB):
+
+| output | case | before | after |
+|---|---|---|---|
+| text | `select * from t` | 1,265 ms / 347.8 MB | 1,102 ms / 35.2 MB |
+| `--json` | `select * from t` | 2,419 ms / 1,090.6 MB | 1,878 ms / 35.2 MB |
+
+The after column does not move with the result size, which is the claim. `--json`
+is also faster because it no longer concatenates a document. The pooled
+benchmark's `scan/full` case moved 31.4 → 21.3 MB (the 8 MB the projected column
+occupied) and, correctly, nothing else in that table moved: aggregation, `ORDER
+BY` and derived tables still retain their input, and E4a/E4b/E4c are what remove
+that.
+
+### What the tests and the gate pin
+
+`engine/pull_wbtest.mbt` now covers both deliveries through its counting source:
+one pulled batch stops the scan at one read, `LIMIT 250` reads exactly three
+batches and returns 100 + 100 + 50, `LIMIT 5 OFFSET 495` drops four whole
+batches, an empty pulled result ends at once while a materialized empty answer is
+one empty batch, seven shapes return identical scalars pulled and collected, and
+a source that fails on its second batch ends the stream for good. Two CLI cases
+came out of writing the last one. First, a bind error must arrive at `stream()`
+with zero rows read, so a `LIMIT` that never reads its tail cannot hide a type
+error. Second — found by the gate, not by design — a failure after output began
+ended in `PanicError` and exit 134, because `main` is `raise` and a raise from
+inside the print loop escaped the command's own `catch`. Both subcommands are
+wrapped now, so any stage's failure exits 1 with its message on stderr.
+
+### Evidence
+
+`docs/verification.md` §31, `harness/baseline/2026-10-26-results-streamed.json`
+(the pooled record), `README.mbt.md`'s API tour and `docs/DEMO.md`'s `--json`
+note. Gates: 303/303 native, 290/290 wasm-gc, 290/290 js, `moon check
+--deny-warn` and `moon fmt --check` clean, `.mbti` additions only, 33/33 goldens,
+spill acceptance, correlation differential and 66 Python harness tests unchanged
+and green.

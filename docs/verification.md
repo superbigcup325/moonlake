@@ -2181,3 +2181,106 @@ matched and 11 refusals as documented (and the same on the 400-row seeded
 fixture, plus seeds 1/2/3 at 120 rows), `harness/check_windows.py` still ok,
 `harness/check_all.sh` 33/33 golden comparisons plus its spill-equivalence
 checks, `harness/spill_accept.sh` all checks, and 66 Python harness unit tests.
+
+## 31. Results leave the engine as they arrive (2026-10-26)
+
+**The claim under test.** §27 gave one shape an early stop: a single-table
+`LIMIT` pulled batches and stopped when its window was full. It did that inside
+the executor, and the *result* still left as one materialized batch — so
+`select * from t` over a table larger than memory printed two million rows only
+after holding all of them, and `--json` built the whole document as one string.
+E3 puts the pull at the result boundary: a caller can read the schema and
+consume the rows, and the CLI does.
+
+**What streams, and what cannot.** A query streams when it is one lazy table
+with nothing above the projection that must see every row first: the build
+filter pushed into the scan, the deferred `WHERE`, the projection, and an
+`OFFSET`/`LIMIT` window applied per batch. A `LIMIT` is no longer required, and
+its absence does not change the answer — the window applies to whichever batches
+arrive. Everything else is materialized before the stream is handed out:
+aggregation, a join, `ORDER BY`, `SELECT DISTINCT` and set operations, plus
+anything over a non-lazy table (`scan_string`, a derived table, an in-memory
+catalog). The reason is not conservatism: an aggregate has no first row until
+the last input row is in, and `ORDER BY` cannot know its first row either. The
+distinction is one function, `streaming_source` in `engine/stream.mbt`, whose
+shape test is three lines and whose comment says why each clause is there.
+
+**One pull, two deliveries.** `run_select` and `run_select_stream` both go
+through `prepare_select` and then `drain_scan` or `scan_pull`, so a collected
+result and a pulled one cannot disagree about a row — the collected path
+concatenates what the pulled path hands out. That is what makes the second
+delivery safe to add: it is the same code reading the same scan, not a second
+implementation to keep in step. `@moonlake.execute` keeps its signature and its
+answer; `@moonlake.stream` / `stream_with` add the incremental one.
+
+**Lifecycle, written down.** `engine/stream.mbt` and the `ResultStream` doc
+comment state the whole contract: `next` returns whole batches and `None` once,
+at the end, and keeps returning `None`; `close` stops the pull, is idempotent
+and is safe before the first call; a pull that raises **ends** the stream rather
+than leaving it resumable (an `errdefer` sets the finished flag), because a scan
+whose state is unknown must not pretend it can continue; and dropping the
+stream releases the scan cursor. `catalog.BatchStream` gained no method: it stays
+exhaustion-only, so an implementation outside this repository keeps compiling.
+A stream also owns no spill files — a shape that needs a `--memory` budget is
+materialized inside `stream_with`, before the stream exists — which is why an
+unfinished stream is safe to drop and why the CLI's spill purge can never take a
+file the stream still needs.
+
+**Eager shapes keep their numbers.** The pooled benchmark case `scan/full`
+(`select id from t` over 2,000,000 rows, the whole result printed) moved
+410.0 ms / 31.4 MB to 412.3 ms / 21.3 MB — the 8 MB that used to hold the
+projected column, plus its copies. Nothing else in the table moved: `scan/count`
+21.5 → 21.2 MB, `scan/sort_limit` 53.4 → 53.3 MB, `scan/limit` 13.4 → 13.3 MB,
+so the shapes that still materialize still cost what they did
+(`harness/baseline/2026-10-26-results-streamed.json` is the record;
+`harness/bench_early_stop.py` is the case list).
+
+Where the difference is visible is a result large enough to notice. Same
+fixture, same build, one process per measurement, peak RSS from `os.wait4`
+(raw, the floor is about 22 MB — `bench_early_stop.py` subtracts it):
+
+| output | case | before | after |
+|---|---|---|---|
+| text | `select id from t` | 405 ms / 53.3 MB | 402 ms / 35.3 MB |
+| text | `select * from t` (16 columns) | 1,265 ms / 347.8 MB | 1,102 ms / **35.2 MB** |
+| `--json` | `select id from t` | 426 ms / 147.7 MB | 398 ms / 35.3 MB |
+| `--json` | `select * from t` | 2,419 ms / **1,090.6 MB** | 1,878 ms / **35.2 MB** |
+
+The after column is flat: whatever the query returns, the process holds one
+batch, which is the point of the change. `--json` also got faster because it no
+longer concatenates a document — the encoder writes one line per batch. The rows
+are unchanged: text output is byte-identical for both cases, and the JSON
+document parses to the same 2,000,000 rows in the same order (489 lines instead
+of 1). Both engines' answers are still checked against DuckDB by the benchmark
+for its own cases.
+
+**What the tests pin.** `engine/pull_wbtest.mbt` (which §27 started) now covers
+both deliveries with the counting source: one pulled batch stops the scan at one
+batch read and `close` keeps it there; `LIMIT 250` returns 100 + 100 + 50 and
+reads three batches; `LIMIT 5 OFFSET 495` drops four whole batches and returns
+five rows; an empty result ends at once; seven shapes (scan, filter, offset,
+group by, order by, distinct, derived) return the same scalars pulled and
+collected; an aggregate arrives as one batch; a materialized empty answer is one
+empty batch while a pulled empty one is no batch at all; a source that raises on
+its second batch ends the stream and closing it is still safe; and a bind error
+is raised by `stream()` with zero rows read, so a `LIMIT` that never reads its
+tail cannot hide a type error. `harness/check_cli.sh` drives the native binary:
+20,000 rows to `--json` must be one parseable array of 20,000 rows across more
+than one line, a two-row result must be byte-identical to the whole-array
+encoding, text output must be a header plus 20,000 rows, and a scan that fails
+after the first batch must leave the rows it printed on stdout, the message on
+stderr and exit 1 without a panic trace.
+
+**A CLI exit path found on the way.** The failure test above first ended in
+`PanicError` and exit 134: `main` is `raise`, and a raise from inside the print
+loop or from input registration escaped every `catch` the command had. Both
+subcommands are now wrapped, so a failure exits 1 with its message on stderr and
+no stack trace, whatever stage it came from.
+
+**Gates.** `moon test` 290/290 (wasm-gc), `moon test --target native` 303/303,
+`moon test --target js` 290/290, `moon check --deny-warn` clean, `moon fmt
+--check` clean, `.mbti` gains exactly the new functions, `harness/check_cli.sh`
+all checks (four new ones), `harness/check_all.sh` 33/33 golden comparisons plus
+its spill-equivalence checks, `harness/spill_accept.sh` all checks,
+`harness/check_correlation.py` unchanged (45 value cases, 11 refusals), and 66
+Python harness unit tests.

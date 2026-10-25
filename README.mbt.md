@@ -111,7 +111,7 @@ install -m755 _build/native/release/build/cmd/main/main.exe ~/.local/bin/moonlak
 moonlake exec --csv lineitem.csv --file q6.sql     # SQL from a file: no shell quoting
 ```
 
-Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns of an *unannotated* file with `--date-col` — a file that carries the standard DATE annotation needs nothing); a `--csv` argument may carry one `*`, and only in its final path segment (`data/part-*.csv`): the matches are read as one table, named after the file stem when there is one match and after the pattern's own stem when there are several (a bare `*.csv` is refused, since it leaves no name); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine), and with no `--csv`/`--parquet` at all the query runs against an empty catalog, so `moonlake exec "SELECT 1 + 1"` needs no data file; `--explain` prints the physical plan; `--json` emits machine-readable output — one JSON array line per result, where SQL NULL is `null`, DATE is a quoted calendar date, and the non-finite doubles JSON cannot spell are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`. `moonlake write --csv in.csv --out out.parquet [--snappy]` converts a registered table to Parquet; it refuses an `--out` that is one of its own inputs (the write would replace the source), a failed write is reported as `sql error (execute):` and leaves any previous file intact, and a write killed outright can leave a `<out>.moonlake-tmp-<pid>-<n>` file beside the target — the publication is a `rename`, so that leftover is a partial temp file, never a half-written `--out`
+Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns of an *unannotated* file with `--date-col` — a file that carries the standard DATE annotation needs nothing); a `--csv` argument may carry one `*`, and only in its final path segment (`data/part-*.csv`): the matches are read as one table, named after the file stem when there is one match and after the pattern's own stem when there are several (a bare `*.csv` is refused, since it leaves no name); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine), and with no `--csv`/`--parquet` at all the query runs against an empty catalog, so `moonlake exec "SELECT 1 + 1"` needs no data file; `--explain` prints the physical plan; `--json` emits machine-readable output — one JSON array per result, printed as it arrives: the opening `[` starts the first line and each batch is one more line, so a scan never has to become one string (a result that fits one batch is a single line, byte-identical to the encoding of the whole array); SQL NULL is `null`, DATE is a quoted calendar date, and the non-finite doubles JSON cannot spell are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`. Text and JSON output are consumed batch by batch, so neither accumulates the result, and a query that fails after printing rows leaves those rows on stdout, the message on stderr and exit status 1. `moonlake write --csv in.csv --out out.parquet [--snappy]` converts a registered table to Parquet; it refuses an `--out` that is one of its own inputs (the write would replace the source), a failed write is reported as `sql error (execute):` and leaves any previous file intact, and a write killed outright can leave a `<out>.moonlake-tmp-<pid>-<n>` file beside the target — the publication is a `rename`, so that leftover is a partial temp file, never a half-written `--out`
 
 As a library:
 
@@ -163,6 +163,34 @@ fn main raise {
   )
   for r in 0..<result.row_count() {
     println(result.get(r, 0).to_string() + "|" + result.get(r, 1).to_string())
+  }
+}
+```
+
+Read them a batch at a time when the result may not fit: `@moonlake.stream`
+(or `stream_with` for `ExecOptions`) returns an `@engine.ResultStream` whose
+`names()` and `types()` describe the columns and whose `next()` yields one
+`@types.DataBatch` per call until it returns `None`. A single-table scan with
+its WHERE, projection and OFFSET/LIMIT streams; aggregation, joins, ORDER BY,
+DISTINCT and set operations are computed first and handed back as one batch,
+because their answer does not exist until every row has been seen. Both
+deliveries run the same plan, so a pulled row and a collected row are the same
+row. `close()` stops the pull before the end, dropping the stream releases the
+scan cursor, a pull that raises ends the stream rather than leaving it
+resumable, and a stream owns no spill files — a shape that needs a memory
+budget is materialized before the stream is returned.
+
+```moonbit nocheck
+///|
+fn main raise {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("id,name\n1,ada\n2,grace\n", "people"))
+  let stream = @moonlake.stream("SELECT id FROM people", cat)
+  println(stream.names()) // ["id"]
+  while stream.next() is Some(batch) {
+    for r in 0..<batch.row_count() {
+      println(batch.columns()[0].get(r).to_string())
+    }
   }
 }
 ```

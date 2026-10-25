@@ -45,8 +45,10 @@ moon run cmd/main -- exec --explain \
   --csv harness/data/sf001/lineitem.csv "$(cat harness/queries/q3.sql)"
 ```
 
-`--json` emits the result as one JSON array line (strings escaped, SQL
-NULL as `null`).
+`--json` emits the result as one JSON array, printed as it arrives: the
+opening `[` starts the first line and each batch adds one more, so a 2,000,000-row
+result is 489 lines that `json.load` reads as one document (a result that fits
+one batch is a single line). Strings are escaped and SQL NULL is `null`.
 
 ## 2. Cross-validate against DuckDB (the correctness claim)
 

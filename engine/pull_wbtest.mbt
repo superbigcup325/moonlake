@@ -1,11 +1,15 @@
-// Whitebox tests for how much of a source a query actually pulls. The scan
-// materializes every batch of a table before anything downstream — a filter,
-// a LIMIT, an aggregate — gets to look at a row, so the counts below are the
-// baseline a batched executor has to move: `scan pulls` and `scan rows` say
-// what the query cost its source, which is not the same thing as what it
-// returned. The `limit` case is the one that should flip; the rest say which
-// shapes must keep reading everything, so a later change cannot shrink one
-// count by dropping rows it still owes.
+// Whitebox tests for how much of a source a query actually pulls. The counts
+// say what the query cost its source, which is not the same thing as what it
+// returned: `scan pulls` and `scan rows` are the price, and the tests below
+// pin both the shapes that may stop early and the shapes that must keep
+// reading everything, so a later change cannot shrink one count by dropping
+// rows it still owes.
+//
+// The first half goes through the collected API, the second through
+// `ResultStream`. They share one pull, so the point of the second half is not
+// that its rows agree — that follows — but that a caller who stops after one
+// batch really does stop the source, and that a window taken per batch returns
+// the same rows a window taken from the whole result would.
 
 ///|
 /// A lazy table over in-memory batches that counts what the engine asks of it.
@@ -260,4 +264,278 @@ test "a batch-at-a-time source is what the counts above are counting" {
   assert_eq(r.row_count(), 10)
   assert_eq(cells[1], 1)
   assert_eq(cells[2], 10)
+}
+
+///|
+/// Open the pulled delivery for `sql`, aborting on error: a test that raises
+/// reports nothing useful.
+fn open_stream(sql : String, cat : @catalog.Catalog) -> ResultStream {
+  run_select_stream(sql, cat) catch {
+    e => abort("\{e}")
+  }
+}
+
+///|
+fn pull(stream : ResultStream) -> @types.DataBatch? {
+  stream.next() catch {
+    e => abort("\{e}")
+  }
+}
+
+///|
+/// The rows of a batch array as scalars, so two deliveries can be compared
+/// row by row without caring how the rows were grouped into batches.
+fn scalars_of(batches : Array[@types.DataBatch]) -> Array[Array[@types.Scalar]] {
+  let out : Array[Array[@types.Scalar]] = []
+  for b in batches {
+    let cols = b.columns()
+    for r in 0..<b.row_count() {
+      let row : Array[@types.Scalar] = []
+      for c in 0..<cols.length() {
+        row.push(cols[c].get(r))
+      }
+      out.push(row)
+    }
+  }
+  out
+}
+
+///|
+test "a pulled scan hands out one batch at a time and stops when closed" {
+  let (cat, cells) = counting_catalog(8, 100)
+  let stream = open_stream("SELECT c0 FROM t", cat)
+  let first = pull(stream)
+  assert_true(first is Some(_))
+  assert_eq(first.unwrap().row_count(), 100)
+  assert_eq(cells[1], 1) // one pull: the consumer has 100 of 800 rows
+  let second = pull(stream)
+  assert_true(second is Some(_))
+  assert_eq(cells[1], 2)
+  // the caller has what it needed; the remaining six batches are never read
+  stream.close()
+  assert_true(pull(stream) is None)
+  assert_eq(cells[1], 2)
+}
+
+///|
+test "a pulled LIMIT takes its window batch by batch and stops at the end" {
+  // 250 rows over batches of 100: 100 + 100 + 50, and the last batch is short
+  // because the window ends inside it. A zero-row tail is not returned.
+  let (cat, cells) = counting_catalog(8, 100)
+  let stream = open_stream("SELECT c0 FROM t LIMIT 250", cat)
+  let chunks : Array[@types.DataBatch] = []
+  while pull(stream) is Some(batch) {
+    chunks.push(batch)
+  }
+  assert_eq(chunks.length(), 3)
+  assert_eq(chunks[0].row_count(), 100)
+  assert_eq(chunks[1].row_count(), 100)
+  assert_eq(chunks[2].row_count(), 50)
+  let rows = scalars_of(chunks)
+  assert_eq(rows.length(), 250)
+  assert_eq(rows[0][0], @types.Scalar::Int32(0))
+  assert_eq(rows[249][0], @types.Scalar::Int32(249))
+  assert_eq(cells[1], 3) // three batches read, five never touched
+}
+
+///|
+test "a pulled OFFSET skips whole batches without returning them" {
+  // 495 rows of offset then 5: four whole batches are dropped and the fifth
+  // contributes five rows, so the consumer never sees the skipped rows.
+  let (cat, cells) = counting_catalog(8, 100)
+  let stream = open_stream("SELECT c0 FROM t LIMIT 5 OFFSET 495", cat)
+  let batch = pull(stream).unwrap()
+  assert_eq(batch.row_count(), 5)
+  assert_eq(batch.columns()[0].get(0), @types.Scalar::Int32(495))
+  assert_true(pull(stream) is None)
+  assert_eq(cells[1], 5)
+}
+
+///|
+test "an empty pulled result reads the whole table and returns nothing" {
+  let (cat, cells) = counting_catalog(8, 100)
+  let stream = open_stream("SELECT c0 FROM t WHERE c0 < 0", cat)
+  assert_true(pull(stream) is None)
+  assert_eq(cells[1], 8)
+}
+
+///|
+test "pulled and collected deliveries return the same rows" {
+  let shapes = [
+    "SELECT c0 FROM t", "SELECT c0, c1 FROM t WHERE c0 >= 650", "SELECT c0 FROM t LIMIT 7 OFFSET 393",
+    "SELECT c1, count(*) FROM t GROUP BY c1", "SELECT c0 FROM t ORDER BY c0 DESC LIMIT 4",
+    "SELECT DISTINCT c1 FROM t", "SELECT c0 FROM (SELECT c0 FROM t) s LIMIT 3",
+  ]
+  for sql in shapes {
+    let (pulled_cat, _) = counting_catalog(8, 100)
+    let (collected_cat, _) = counting_catalog(8, 100)
+    let stream = open_stream(sql, pulled_cat)
+    let pulled : Array[@types.DataBatch] = []
+    while pull(stream) is Some(batch) {
+      pulled.push(batch)
+    }
+    let collected = run_counted(sql, collected_cat)
+    assert_eq(scalars_of(pulled), scalars_of([collected.batch()]))
+  }
+}
+
+///|
+test "a shape that cannot stream arrives as one batch, which is the answer" {
+  // An aggregate has to see every row before it produces one, so the pulled
+  // delivery is the eager result: one batch, then the end.
+  let (cat, cells) = counting_catalog(8, 100)
+  let stream = open_stream("SELECT count(*), sum(c0) FROM t", cat)
+  let batch = pull(stream).unwrap()
+  assert_eq(batch.row_count(), 1)
+  assert_eq(batch.columns()[0].get(0), @types.Scalar::Int64(800L))
+  assert_true(pull(stream) is None)
+  assert_eq(cells[1], 8)
+}
+
+///|
+test "an empty answer is no batch at all when pulled, one empty batch when materialized" {
+  // The batch contract says `Some` carries a live row and a zero-row batch may
+  // arrive from a source. A pulled scan therefore ends at once, while an eager
+  // result hands back the empty batch it computed — and the caller learns the
+  // shape from `names`/`types` either way.
+  let (cat, cells) = counting_catalog(8, 100)
+  let pulled = open_stream("SELECT c0 FROM t WHERE c0 < 0 LIMIT 10", cat)
+  assert_true(pull(pulled) is None)
+  assert_true(pull(pulled) is None) // still the end, not an error
+  assert_eq(cells[1], 8) // the table was read to know it is empty
+  let (derived_cat, _) = counting_catalog(8, 100)
+  let materialized = open_stream(
+    "SELECT c0 FROM (SELECT c0 FROM t WHERE c0 < 0) s", derived_cat,
+  )
+  let empty = pull(materialized).unwrap()
+  assert_eq(empty.row_count(), 0)
+  assert_true(pull(materialized) is None)
+}
+
+///|
+/// A lazy table whose second batch fails to decode. The failure matters
+/// because a batch has already been handed out when it arrives: the stream
+/// must end there rather than pretend the scan can be resumed.
+priv struct FailingStream {
+  batches : Array[@types.DataBatch]
+  mut pos : Int32
+}
+
+///|
+impl @catalog.BatchStream for FailingStream with fn next(self) -> @types.DataBatch? raise @types.SqlError {
+  if self.pos >= self.batches.length() {
+    None
+  } else if self.pos == 1 {
+    raise @types.SqlError::Execute("boom: the second batch could not be read")
+  } else {
+    let batch = self.batches[self.pos]
+    self.pos = self.pos + 1
+    Some(batch)
+  }
+}
+
+///|
+priv struct FailingSource {
+  batches : Array[@types.DataBatch]
+}
+
+///|
+impl @catalog.ScanSource for FailingSource with fn open(
+  self,
+  request : @catalog.ScanRequest,
+) -> &@catalog.BatchStream raise @types.SqlError {
+  let kept : Array[@types.DataBatch] = []
+  for batch in self.batches {
+    let cols : Array[@types.ColumnVector] = []
+    for c in request.projection {
+      cols.push(batch.columns()[c])
+    }
+    kept.push(@types.DataBatch::new(cols, batch.row_count()))
+  }
+  FailingStream::{ batches: kept, pos: 0, }
+}
+
+///|
+impl @catalog.ScanSource for FailingSource with fn plan(
+  self,
+  _request : @catalog.ScanRequest,
+) -> @catalog.ScanPlan {
+  let mut rows = 0L
+  for batch in self.batches {
+    rows += batch.row_count().to_int64()
+  }
+  {
+    files: 1,
+    row_groups: self.batches.length(),
+    row_groups_skipped: 0,
+    rows: Some(rows),
+  }
+}
+
+///|
+fn failing_catalog() -> @catalog.Catalog {
+  let schema : @catalog.TableSchema = {
+    table: "f",
+    columns: [{ name: "c0", dtype: @types.Int32, }],
+  }
+  let source : FailingSource = { batches: counted_batches(3, 10), }
+  let cat = @catalog.Catalog::new()
+  cat.register(@catalog.TableEntry::from_source(schema, source))
+  cat
+}
+
+///|
+/// The error message of a pull that is expected to raise, aborting when it
+/// does not: `catch` here keeps the abort out of the expression's type.
+fn pull_error(stream : ResultStream) -> String {
+  let mut message = ""
+  let got = stream.next() catch {
+    e => {
+      message = e.to_string()
+      None
+    }
+  }
+  ignore(got) // only the message matters; a `None` here means the pull was the end
+  if message == "" {
+    abort("expected the pull to fail")
+  }
+  message
+}
+
+///|
+test "a failing pull ends the stream, and closing it stays safe" {
+  let stream = open_stream("SELECT c0 FROM f", failing_catalog())
+  let first = pull(stream).unwrap()
+  assert_eq(first.row_count(), 10) // the batch that arrived before the failure
+  let message = pull_error(stream)
+  assert_true(message.contains("boom"))
+  // the scan's state after a partial read is not known, so the stream must not
+  // offer a resumed read: it is finished, and says so
+  assert_true(pull(stream) is None)
+  stream.close()
+  assert_true(pull(stream) is None)
+}
+
+///|
+/// Open a stream and throw it away, so a caller can observe whether opening it
+/// raised without holding on to a result type.
+fn open_and_drop(
+  sql : String,
+  cat : @catalog.Catalog,
+) -> Unit raise @types.SqlError {
+  let stream = run_select_stream(sql, cat)
+  stream.close()
+}
+
+///|
+test "a bind error arrives at the call, not at the first pulled batch" {
+  // A LIMIT that would stop the scan early must not delay a type error to the
+  // tail it never reads: the query is bound before any row is pulled.
+  let (cat, cells) = counting_catalog(8, 100)
+  let mut message = ""
+  open_and_drop("SELECT nope FROM t LIMIT 1", cat) catch {
+    e => message = e.to_string()
+  }
+  assert_true(message.contains("nope"))
+  assert_eq(cells[1], 0) // nothing was read to find out
 }

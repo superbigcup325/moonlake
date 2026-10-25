@@ -16,6 +16,10 @@ pub fn execute(String, @catalog.Catalog) -> @engine.SelectResult raise @types.Sq
 
 pub fn execute_with(String, @catalog.Catalog, @engine.ExecOptions) -> @engine.SelectResult raise @types.SqlError
 
+pub fn stream(String, @catalog.Catalog) -> @engine.ResultStream raise @types.SqlError
+
+pub fn stream_with(String, @catalog.Catalog, @engine.ExecOptions) -> @engine.ResultStream raise @types.SqlError
+
 pub fn version() -> String
 
 // Errors

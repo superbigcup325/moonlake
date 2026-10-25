@@ -16,11 +16,13 @@ correlated subqueries. [CHANGELOG](../CHANGELOG.md) lists implemented changes;
 [verification](verification.md) records the evidence for each.
 
 Sources read incrementally, but most executor paths still accumulate their
-input batches before the parent operator runs. The public `execute` and
-`execute_with` functions return a complete `SelectResult`. A single-table LIMIT
-avoids reading the tail; an unrestricted result still occupies memory
-proportional to that result. `--memory` budgets blocking operators and is not a
-process RSS cap. This is the next implementation problem for 0.6.0.
+input batches before the parent operator runs. `execute` and `execute_with`
+return a complete `SelectResult`; `stream` and `stream_with` hand out batches
+instead, and the CLI prints through them, so a single-table scan with its
+`WHERE`, projection and `OFFSET`/`LIMIT` window no longer holds its result.
+Aggregation, joins, `ORDER BY` and set operations still do — each needs its
+state built from batches first, which is what E4a/E4b/E4c are. `--memory`
+budgets blocking operators and is not a process RSS cap.
 
 ## 0.6.0 delivery plan
 
@@ -29,19 +31,21 @@ before another executor change, E3 adds result consumption, and E4 changes one
 blocking operator at a time. The existing early-stop measurements, batch
 contract and single-table LIMIT implementation cover the earlier E0/E1/E2
 milestone; extend them rather than implementing that milestone again.
-R0 and S0 are complete. E3, E4a/E4b/E4c, W0 and R1 remain
+R0, S0 and E3 are complete. E4a/E4b/E4c, W0 and R1 remain
 open; their inclusion in 0.6.0 is a delivery commitment, not a claim that the
 features already exist. S0's gate is `harness/check_correlation.py` with its
 fixtures, wired into the fixed-case CI job and the seeded nightly; verification
 §30 records what it found while being committed — two wrong answers in
 three-valued `IN` / `NOT IN` and one shape whose refusal message is still the
-binder's.
+binder's. E3's contract is stated in `engine/stream.mbt` and its evidence in
+verification §31; E4a starts from `engine/exec_agg.mbt` and `engine/extagg.mbt`
+with that pull in place.
 
 | Task | Delivery | Depends on | Acceptance |
 |---|---|---|---|
 | R0 | One unreleased 0.6.0 scope in the changelog, roadmap and handoff | Current-state check | Every pending changelog entry belongs to 0.6.0; implemented work and remaining work have distinct status; the latest published release stays identified as 0.5.0 |
 | S0 | Reproducible regression evidence for the latest SQL and CLI changes | R0 | Commit the correlation differential fixtures and runner, including duplicate outer rows, NULLs, empty inputs and deliberate refusals; normalize dates and non-finite values and compare unordered answers as row multisets; an oracle error, missing fixture, wrong answer or zero value cases fails; run fixed cases in CI and add seeded cases to nightly |
-| E3 | An additive result-consumption API and a CLI that consumes batches | S0 | A caller can read the schema and consume a supported scan/filter/projection query without collecting its full result; existing `execute` / `execute_with` consumers still work; stopping early and failures release resources; text and JSON output do not accumulate the entire result |
+| E3 | An additive result-consumption API and a CLI that consumes batches | S0 | **Done** (verification §31): a caller reads the schema and consumes a single-table scan/filter/projection/`OFFSET`-`LIMIT` query batch by batch without collecting it; `execute` / `execute_with` keep their signatures and run the same pull; `close` and a failed pull release the scan; text and JSON output are consumed per batch (a 16-column 2,000,000-row result: 1,090.6 MB → 35.2 MB of peak RSS for `--json`) |
 | E4a | Aggregation consumes batches | E3 | Global and grouped aggregates update state as input arrives; remove the full input array on the supported path; empty groups, DISTINCT aggregates and NULLs match the oracle; budgeted cases really spill and match in-memory answers |
 | E4b | External sort consumes batches and feeds the result consumer | E3 | Build sorted runs directly from batches and consume the final merge incrementally; cover multi-batch runs, ties, NULL order, OFFSET and LIMIT at several budgets; success, error and early-stop paths remove owned run files |
 | E4c | Join input and output use the batch contract | E3, established spill lifecycle | Start with hash-build state and a streaming probe, then feed grace partitions incrementally; cover duplicate keys, empty sides, outer joins, residual predicates and semi/anti NULL semantics against the oracle; identify eager correlation paths explicitly |
@@ -102,7 +106,7 @@ refused:
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
-| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table LIMIT already stops its scan. Other paths still retain projected input before their parent operator runs; SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen. E3 and E4a/E4b/E4c above are scheduled for 0.6.0 to remove that retention on the specified paths. Aggregation and sorting still need to consume all relevant rows, but can build their state from batches. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
+| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). Aggregation, joins and `ORDER BY` still retain their input before their parent operator runs; SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen. E4a/E4b/E4c above are scheduled for 0.6.0 to remove that retention on those paths. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes, §30 the gate that now preserves their answers; E4c must name any eager fallback. |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |
