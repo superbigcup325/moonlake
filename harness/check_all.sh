@@ -5,13 +5,37 @@
 # All queries are the official TPC-H texts (annex parameter values;
 # q15 in its sanctioned WITH form — see harness/queries/q15.sql).
 #
-# Usage: bash harness/check_all.sh   (data must exist: see README)
+# Usage: bash harness/check_all.sh
+#
+#   MOONLAKE_TARGET=native|wasm-gc|js  (default wasm-gc, this module's
+#                                       preferred target)
+#   MOONLAKE_BIN=/path/to/main         run a built binary instead of the
+#                                       toolchain, which is how the release
+#                                       gates compare one candidate
+#   MOONLAKE_DATA=...                  the TPC-H data directory
+#
+# Every golden runs through the same CLI arguments either way, so a pass on
+# one target says the answer is the target's answer, not the interpreter's.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The diff tool below judges every golden, so pin its own edges first
 # (NULL vs empty string, whitespace, integer width, NaN/inf, blank rows).
 python3 harness/check_compare.py
+
+TARGET=${MOONLAKE_TARGET:-wasm-gc}
+case $TARGET in native|wasm-gc|js) ;; *)
+  echo "unknown MOONLAKE_TARGET: $TARGET (native, wasm-gc or js)" >&2
+  exit 2
+  ;;
+esac
+if [[ -n ${MOONLAKE_BIN:-} ]]; then
+  echo "== binary $MOONLAKE_BIN"
+  moonlake() { "$MOONLAKE_BIN" "$@"; }
+else
+  echo "== target $TARGET"
+  moonlake() { moon run cmd/main --target "$TARGET" -- "$@"; }
+fi
 
 DATA=${MOONLAKE_DATA:-harness/data/sf001}
 work=$(mktemp -d)
@@ -27,7 +51,7 @@ check_in() { # <golden-dir> <name> <csv...>
   local dir=$1 name=$2
   shift 2
   echo "== $name"
-  moon run cmd/main -- exec "$@" "$(cat "harness/queries/$name.sql")" \
+  moonlake exec "$@" "$(cat "harness/queries/$name.sql")" \
     > "$work/$name.txt"
   python3 harness/compare.py "$dir/${name}_golden.txt" "$work/$name.txt"
   goldens=$((goldens + 1))
@@ -66,34 +90,34 @@ check_in harness/data/multigroup mgwin --parquet harness/data/multigroup/multigr
 # external-sort equivalence: the same non-aggregate ORDER BY under a
 # tiny memory budget must match the in-memory run row-for-row
 echo "== spillorder (external sort == in-memory)"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" "$(cat harness/queries/spillorder.sql)" \
+moonlake exec --csv "$DATA/lineitem.csv" "$(cat harness/queries/spillorder.sql)" \
   > "$work/spillorder_plain.txt"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
+moonlake exec --csv "$DATA/lineitem.csv" --memory 200K \
   "$(cat harness/queries/spillorder.sql)" > "$work/spillorder_spilled.txt"
 python3 harness/compare.py "$work/spillorder_plain.txt" "$work/spillorder_spilled.txt"
 # grace hash join equivalence: the same join under a tiny memory budget
 # must match the in-memory run row-for-row (the join inputs are ~10x the
 # budget, so the spilled run partitions across many files)
 echo "== spilljoin (grace hash join == in-memory)"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" \
+moonlake exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" \
   "$(cat harness/queries/spilljoin.sql)" > "$work/spilljoin_plain.txt"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --memory 200K \
+moonlake exec --csv "$DATA/lineitem.csv" --csv "$DATA/orders.csv" --memory 200K \
   "$(cat harness/queries/spilljoin.sql)" > "$work/spilljoin_spilled.txt"
 python3 harness/compare.py "$work/spilljoin_plain.txt" "$work/spilljoin_spilled.txt"
 # grace hash aggregation equivalence: the same GROUP BY under a tiny
 # memory budget must match the in-memory run row-for-row (the input is
 # ~35x the budget, so the aggregation partitions across many files)
 echo "== spillagg (grace hash aggregation == in-memory)"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" \
+moonlake exec --csv "$DATA/lineitem.csv" \
   "$(cat harness/queries/spillagg.sql)" > "$work/spillagg_plain.txt"
-moon run cmd/main -- exec --csv "$DATA/lineitem.csv" --memory 200K \
+moonlake exec --csv "$DATA/lineitem.csv" --memory 200K \
   "$(cat harness/queries/spillagg.sql)" > "$work/spillagg_spilled.txt"
 python3 harness/compare.py "$work/spillagg_plain.txt" "$work/spillagg_spilled.txt"
 # in-house parquet reader: the fixture shapes, one check per codec and
 # encoding variant, all diffed against the same duckdb golden per shape
 # (the golden directory is the shape, so variants share it)
 echo "== pqall (plain, uncompressed)"
-moon run cmd/main -- exec --parquet harness/data/parquet/all_types/plain/t.parquet --date-col d "$(cat harness/queries/pqall.sql)" > "$work/pqall.txt"
+moonlake exec --parquet harness/data/parquet/all_types/plain/t.parquet --date-col d "$(cat harness/queries/pqall.sql)" > "$work/pqall.txt"
 python3 harness/compare.py harness/data/parquet/all_types/pqall_golden.txt "$work/pqall.txt"
 goldens=$((goldens + 1))
 check_in harness/data/parquet/all_types pqall --parquet harness/data/parquet/all_types/snappy/t.parquet --date-col d

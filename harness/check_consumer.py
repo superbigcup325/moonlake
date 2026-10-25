@@ -84,9 +84,23 @@ def fresh_moon_home(dest: pathlib.Path) -> None:
         (dest / name).symlink_to(source, target_is_directory=True)
 
 
+STREAM_SHAPES = ("stream-scan", "stream-join", "stream-agg", "stream-order")
+
+
 def check_output(output: str, version: str) -> None:
+    # The four `stream-*` lines say the pulled delivery printed exactly what the
+    # collected one printed for the same query; `close` says one batch arrived
+    # before the caller stopped it. Not a literal JSON comparison: the shapes
+    # have no total order, so the stream and `to_json` must be compared with each
+    # other rather than against a fixed string.
     expected = "\n".join(
-        [f"version|{version}", *(f"{name}|{ROWS}" for name in ("csv", "raw", "snappy")), "drop|ok"]
+        [
+            f"version|{version}",
+            *(f"{name}|{ROWS}" for name in ("csv", "raw", "snappy")),
+            "drop|ok",
+            *(f"{name}|same" for name in STREAM_SHAPES),
+            "close|1",
+        ]
     )
     if output != expected:
         raise ValueError(f"consumer output differs:\nexpected:\n{expected}\ngot:\n{output}")
@@ -141,7 +155,11 @@ def check_consumer(
             output = command(["moon", "run", "--target", target, "--deny-warn", "."], consumer, env)
             check_output(output, version)
             record["targets"][target] = "passed"
-            print(f"ok: consumer {target} — version, CSV, Parquet raw/Snappy, DATE/NULL, drop", flush=True)
+            print(
+                f"ok: consumer {target} — version, CSV, Parquet raw/Snappy, DATE/NULL, "
+                f"drop, and four streamed shapes agreeing with the collected ones",
+                flush=True,
+            )
     return record
 
 
