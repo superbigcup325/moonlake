@@ -124,9 +124,10 @@ moon add superbigcup325/moonlake
 > playground, the Parquet writer and the spill/JSON fixes recorded in
 > [CHANGELOG.md](CHANGELOG.md).
 > The next release is 0.6.0: every change since 0.5.0 and the whole
-> [delivery plan](docs/ROADMAP.md#060-delivery-plan) are complete and accepted
-> on one candidate (`verification.md` §36). It is unreleased until it is
-> published, so `moon add` still gives you 0.5.0.
+> [delivery plan](docs/ROADMAP.md#060-delivery-plan) passed on one candidate
+> (`verification.md` §36). A later reader fix and the planned colenc 0.1.1
+> upgrade require [final-candidate verification](docs/ROADMAP.md#follow-up-after-colenc-011).
+> It is unreleased, so `moon add` still gives you 0.5.0.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:

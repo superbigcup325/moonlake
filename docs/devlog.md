@@ -2059,3 +2059,34 @@ DuckDB cell for cell.
 The lesson is about the gate, not the file: a `refused` class is only honest for
 a file a reference reader also refuses. Two of three readers disagreeing with us
 is a bug report about our reader. That is what §37 of `verification.md` records.
+
+## After colenc 0.1.1 (planning snapshot, 2026-10-25)
+
+colenc 0.1.1 is published with Roaring and the dedicated HLL/t-digest package.
+The source inspection found moonlake still importing 0.1.0, while colenc's old
+NEXT-STEPS still scheduled the now-implemented sketches. The follow-up plan in
+[the roadmap](ROADMAP.md#follow-up-after-colenc-011) starts from the released
+APIs and separates the kernel's state/byte contracts from SQL and scan behavior.
+
+The first work is C0, consuming the registry dependency without a sibling
+workspace override, followed by R2, refreshing the final 0.6.0 candidate.
+The full local acceptance belongs to `3ab2634`; `ae6a28c` adds the reader fix
+recorded in verification §37. Live remote main is still `750b98c`, and its latest
+nightly is red on that locally fixed corpus case. Neither earlier acceptance
+nor colenc's green CI establishes that the final engine revision passes.
+
+The feature queue starts with a SQL/state-cost contract, then explicit HLL
+and t-digest aggregates. Dense HLL's default register payload is about 64 KiB
+per group in memory, rather than its 16 KiB serialized payload; signed zero,
+NaN and typed hashing need an engine adapter. t-digest needs a numeric-conversion
+policy and an update-error path through the aggregate fold. Exact distinct and
+median remain available. Budgeted GROUP BY input streaming is a separate task;
+Roaring starts with an immutable-table experiment because row identity,
+invalidation and a scan-selection contract are still engine work.
+
+This pass inspected current source and existing evidence and queried live
+release, branch and CI metadata. It changed planning/status documents only;
+no dependency, SQL function or index implementation was changed. Historical
+suite, registry-consumer and performance results were not rerun. The final
+roadmap checklist reminds the maintainer to update both projects' benchmarks
+after the last code and dependency changes.

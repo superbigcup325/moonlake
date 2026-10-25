@@ -9,9 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 Everything since 0.5.0 belongs to this version, and its
 [0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan) is complete: one
 candidate passed the whole acceptance list, recorded in `verification.md` §36 and
-in the performance pair at the end of `docs/bench-baseline.md`. The entries below
-describe implemented changes. What remains is release work — push, tag,
-publication, deployment — and the date is set when that happens.
+in the performance pair at the end of `docs/bench-baseline.md`. The later Parquet
+fix has targeted evidence in §37. The [colenc 0.1.1 follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011)
+calls for a dependency upgrade and acceptance on the final candidate. The
+entries below describe implemented changes; proposed sketch and index work stays
+in the roadmap. Push, tag, publication and deployment follow authorization, and
+the release date is set then.
 
 ### Added
 

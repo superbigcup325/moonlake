@@ -1,10 +1,13 @@
 # Roadmap
 
-**0.6.0 is accepted locally and unreleased.** All changes since 0.5.0 and the
-work below belong to it, and its acceptance checks have cleared (verification
-§36); what is left is release work — push, tag, publication and deployment —
-which happens only on explicit authorization. Directions waiting for evidence
-stay on the hold list until their trigger fires.
+**0.6.0 is unreleased.** Its executor delivery plan passed local acceptance on
+`3ab2634` (verification §36). The current tree also carries the Parquet fix in
+`ae6a28c` (§37), and colenc 0.1.1 is now available. The next steps are to consume
+that dependency and refresh acceptance on the final candidate, as specified
+[below](#follow-up-after-colenc-011). The completed executor tasks stay complete;
+their evidence belongs to the revision on which it was collected. Push, tag,
+publication and deployment require explicit authorization. Directions waiting
+for evidence stay on the hold list until their trigger fires.
 
 ## Current implementation
 
@@ -118,6 +121,87 @@ emitting its final answer early. Neither batch consumption nor a small
 `--memory` value alone proves bounded total RSS. Broader SQL types, codecs,
 optimizers, adapters and platform work still follow the triggers below.
 
+## Follow-up after colenc 0.1.1
+
+Planning snapshot: 2026-10-25 (Asia/Shanghai). This is a plan based on source
+inspection and live release/CI queries; it adds no implemented SQL or index API.
+
+### Baseline and ownership
+
+| Project | Current evidence | Consequence for the plan |
+|---|---|---|
+| colenc | [0.1.1 is released](https://github.com/superbigcup325/colenc/releases/tag/v0.1.1); `main` is `c04d7e1`, whose [CI passed](https://github.com/superbigcup325/colenc/actions/runs/40205435645). The release records registry-consumer acceptance on three targets. The artifact was built from `504092a`; the tag adds documentation and consumer coverage, with identical library code | Roaring, HLL and t-digest are available. Their implementation and the bitmap rewrites are completed work. The companion colenc NEXT-STEPS now tracks consumer adoption and conditional library work |
+| moonlake | Local `main` is `ae6a28c`, version 0.6.0, with a clean tracked tree at inspection. `moon.mod` still selects colenc 0.1.0; no `moon.work` or `.colenc` override exists. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | Upgrade the dependency explicitly before claiming that this consumer uses the 0.1.1 surface. Existing page-decoder, writer and spill integration does not establish sketch or bitmap integration |
+| moonlake verification | The full local acceptance and performance pair are on `3ab2634` (§36). The later reader fix has targeted evidence in §37. Remote `main` is still `750b98c`, 40 commits behind the inspected local tree; its [latest nightly failed](https://github.com/superbigcup325/moonlake/actions/runs/40177160450) on the corpus regression fixed locally | Refresh the final candidate. The old acceptance and remote CI cannot certify the later reader fix or a dependency upgrade |
+
+colenc owns buffer encodings, bitmap operations, sketch state and their typed
+errors. moonlake owns SQL types and NULL semantics, accumulator state, memory
+accounting, row identities, index validity, scan planning and file I/O. Import
+`colenc/sketches` directly into the aggregate implementation when it is used;
+approximate state does not belong in the reversible spill-column encoding API.
+
+### Work order and exit criteria
+
+C0 and R2 close the current candidate. The feature packages are the proposed
+follow-up queue; no later version number or release date is assigned here.
+Selecting one for the still-unreleased 0.6.0 means rerunning its final acceptance
+after that code lands. The earlier 0.6.0 scope and completed R0 through R1 are
+preserved. A0 precedes A1, A1 precedes A2; I0 can be investigated independently
+after C0, and E5 addresses a separate exact-query limit.
+
+| Task | Deliverable | Depends on | Exit |
+|---|---|---|---|
+| C0 | Consume colenc 0.1.1 | Published registry artifact | Change the manifest and current dependency instructions together; build without a sibling override and verify the resolved version. Check new `Encoding` / `EncodingError` variants against consumer matches. Run the three-target suites, page fixtures, writer interoperability, spill-format round trips and golden queries; `check_release.py --check-consumer` must pass with fresh caches. This change enables APIs; it introduces no approximate SQL or automatic index |
+| R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | Preserve the short-chunk and genuine-truncation regressions; corpus remains 17 decoded / 51 deliberately refused / 0 failing on the current corpus revision. Rerun §36's correctness, archive-consumer, >2 GiB, host-free wasm and browser gates on one final revision and record it. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks. The final performance update is the last checklist item below |
+| A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | Specify input/output types, NULL and empty-input behavior, float normalization, parameter validation, update/finalize behavior, ownership and error translation. Measure actual state per group, account for keys and containers, and state budget behavior. Reuse the existing fold; design a partial-state merge only where execution uses one |
+| A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | Global and grouped aggregates consume batches through the same accumulator. Start with fixed precision 14 and an Int64 result with documented rounding/range handling; empty/all-NULL input returns 0. Keep exact `COUNT(DISTINCT ...)` exact. Validate input adaptation and NULL behavior exactly, statistical error against exact distinct counts over fixed trials, and register-equivalent partition merges separately. Cover native/wasm-gc/js and a packaged consumer; report group-count memory growth |
+| A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | Start with fixed compression 100, numeric input and a constant finite `q` in [0,1], Float64 output and NULL for empty/all-NULL input. Reject non-finite input with a SQL error. Decide how Int64 values outside the exact Double range are handled before coding. Cover grouped/global paths, q=0/1, ties, order and merge sensitivity, early close and errors. Judge rank error against exact sorted inputs using the named distribution/order/merge matrix; retain exact `median()` |
+| E5 | Budgeted GROUP BY consumes scan batches | R2; separate from approximate SQL | Replace input collection before grace partitioning with bounded input/run buffering, retaining exact grouped answers. Compare fixed group counts over increasing inputs and separately test many groups and skew. A hot group with exact distinct/median/string state needs an explicit over-budget policy; a sketch does not bound the number of groups. Verify spill ownership, cleanup, counters and existing goldens before broadening other eager shapes |
+| I0 | One measured Roaring use case | C0, immutable row identity and scan-use contract | Prototype repeated predicate-set intersection on an immutable registered table and compare with an exact scan. Test selective and unselective predicates, NULLs, duplicate values, multi-batch/multi-file row identities and stale indexes. Count build/load time, query time, decoded bytes, peak RSS and index size, with build amortization. Complete the investigation even if the answer is to retain the scan |
+
+### Semantic and memory decisions before implementation
+
+**HLL.** The [colenc contract](https://github.com/superbigcup325/colenc/blob/v0.1.1/docs/SKETCHES.md)
+hashes typed bytes and distinguishes signed zero and NaN payloads. A SQL
+adapter must define its own accepted value equivalence before feeding those
+bytes: pin numeric widening, DATE representation, string encoding, signed zero
+and NaN behavior against moonlake's distinct semantics. Compare the adapter's
+canonical values with an exact set; use statistical trials to judge the
+estimator. Matching another approximate estimator exactly is not an oracle.
+The default sketch has 16,384 machine-word registers in memory, about 64 KiB
+of register payload, although its serialized registers occupy only 16 KiB.
+One dense sketch per group can cost more than an exact set for small groups.
+Measure that crossover and establish accounting before selecting an adaptive
+small-group representation or exposing a precision option.
+
+**t-digest.** Carry the existing colenc acceptance contract forward: the 1%
+interior and 0.5% tail rank-error ceilings describe its named empirical matrix
+at compression 100. They are not universal bounds. Report the independent
+reference comparison and order/merge spread; do not demand byte or numerical
+identity with another implementation. SQL tests must validate the q parameter
+even when a LIMIT or empty input would avoid every update. The current
+`acc_step` cannot raise; error translation for invalid updates must be designed
+alongside the fold and stream-failure contract. Windows, weighted inputs and
+persisted SQL sketch states need separate contracts.
+
+**Roaring.** The current surface accepts IDs in 0..2^31-1. Give every prototype
+a checked per-table mapping, including multi-file offsets and a defined response
+when that range is exhausted. Define source identity and invalidation before
+reusing an index. `ScanRequest` currently carries projection and advisory
+conjuncts, with no row-selection/gather contract, so a bitmap intersection alone
+does not prove fewer Parquet bytes are decoded. Begin with an opt-in immutable
+table experiment; persistent sidecars, automatic index selection and broader
+predicate syntax wait for useful end-to-end evidence. Apply residual predicates
+and preserve SQL's NULL rules and duplicate rows.
+
+**colenc follow-through.** Its ROADMAP/NEXT-STEPS now distinguish the published
+sketches from engine adoption and document the engine seam above. Retain zero
+runtime dependencies and zero FFI. Further kernel changes need a consumer measurement: sparse HLL
+only if per-group memory is the limiting cost, t-digest scaling/compression
+changes only if the measured accuracy or merge spread matters, and additional
+bitmap APIs only if I0 needs them. Preserve the recorded contracts and existing
+byte/statistical gates when evaluating a new implementation.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
@@ -192,3 +276,26 @@ Open an issue with the case that is expensive: the file (or its shape and size),
 the query, and the number that matters — memory, wall time, or a file that
 cannot be written at all. A limit with a reproduction beats a limit with a
 theory.
+
+## Final reminder: update benchmarks
+
+**Pending.** Update the benchmark records after the final dependency and code
+changes, before calling the new candidate accepted. This planning pass did not
+rerun them; `3ab2634`'s release pair and colenc scoreboard revision `0cb57e9`
+remain historical measurements.
+
+- colenc: regenerate `docs/scoreboard.md` with `python3 harness/scoreboard.py`;
+  retain `harness/perf` query-operation measurements and report parse,
+  `to_array` and parse-plus-expand separately. Record HLL/t-digest update,
+  merge, query, state size and accuracy separately from encoding throughput.
+- moonlake: record the final native release binary with
+  `python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.json`,
+  compare with a same-session control using `--compare`, and update
+  `docs/bench-baseline.md`. Keep data/SQL/answer hashes, toolchain, consumption
+  mode, wall/CPU spread, peak RSS and spill bytes with the record.
+- For implemented A1/A2/I0 work, add workload-specific evidence beside the
+  existing exact controls. Report accuracy and group cardinality for sketches;
+  include index construction and reuse for Roaring. An encoding-kernel win
+  becomes an engine-performance claim only after the engine is measured.
+
+**Reminder to the maintainer: update both projects' benchmarks last.**
