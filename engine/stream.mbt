@@ -39,7 +39,7 @@
 //
 // Aggregation is the case in between, and worth stating on its own: its output
 // is one batch, but its *input* need not be one array. The group state is built
-// from the batches as they arrive (`AggPull` below feeds `aggregate_seq`), so a
+// from the batches as they arrive (`InputPull` below feeds `aggregate_seq`), so a
 // single-table GROUP BY or a global aggregate holds its state plus one batch,
 // not its input. It is the same fold the collected path uses, just not handed an
 // array first.
@@ -112,15 +112,109 @@ fn streaming_agg_source(
 }
 
 ///|
-/// A scan cursor for an aggregate: the source's batches, this table's build
-/// filter and the query's deferred WHERE applied to each one before it is
-/// folded. `scanned` counts the rows the build filter kept, which is the number
-/// the collected path reports for the same table, so `--analyze` reads the same
-/// either way.
+/// The single-table shape an `ORDER BY` can be handed from the scan, if this
+/// query is one: one lazy table, a sort, and a memory budget to spill runs
+/// against. DISTINCT is fine — it is applied while the merge hands rows back —
+/// and so is an OFFSET/LIMIT window, which is what lets a windowed sort stop
+/// merging early.
+///
+/// A budget is required because that is the only reason to sort in runs: with
+/// no budget the in-memory sort has to see every row anyway, and building runs
+/// would be work for nothing.
+fn streaming_sort_source(
+  bq : BoundQuery,
+  sources : Array[@catalog.TableEntry?],
+  opts : ExecOptions,
+) -> @catalog.TableEntry? {
+  if bq.aggregate ||
+    bq.order_by.length() == 0 ||
+    bq.windows.length() > 0 ||
+    opts.budget <= 0 {
+    return None
+  }
+  if bq.steps.length() != 1 || bq.steps[0].table != 0 {
+    return None
+  }
+  match sources[0] {
+    Some(entry) => if entry.is_lazy() { Some(entry) } else { None }
+    None => None
+  }
+}
+
+///|
+/// This query's ORDER BY keys in the shape the sort compares.
+fn order_keys(bq : BoundQuery) -> Array[(PhysExpr, Bool, Bool?)] {
+  let keys : Array[(PhysExpr, Bool, Bool?)] = []
+  for spec in bq.order_by {
+    keys.push((spec.expr, spec.desc, spec.nulls_first))
+  }
+  keys
+}
+
+///|
+/// What a spilled sort handed back: the run files it still owns, and either the
+/// pre-projection input (everything fit the accumulator, so no file was
+/// written) or the merge inputs to read.
+priv enum SortedInput {
+  InMemory(Array[@types.DataBatch])
+  Runs(Array[Int32])
+}
+
+///|
+/// The outcome of feeding a sort from the scan: how many rows the build filter
+/// kept, how many runs were written (zero means the input fit the accumulator
+/// and no file exists), and what to do with it.
+priv struct SortInput {
+  scanned : Int64
+  runs : Int32
+  input : SortedInput
+}
+
+///|
+/// Build the sort's runs from the scan and answer what to do next. The pull is
+/// consumed here, so the scan's rows are never an array; on the error path the
+/// runs already written are removed before the error leaves.
+fn sort_input(
+  entry : @catalog.TableEntry,
+  launch : Launch,
+  opts : ExecOptions,
+  store : SpillStore,
+  owned : Array[Int32],
+) -> SortInput raise @types.SqlError {
+  let bq = launch.bq
+  let pull = input_pull(bq, launch.plan, entry)
+  let built = build_runs(
+    fn() -> @types.DataBatch? raise @types.SqlError { pull.next() },
+    order_keys(bq),
+    opts.budget,
+    store,
+  )
+  if built.ids.length() == 0 {
+    return { scanned: pull.scanned, runs: 0, input: InMemory(built.acc), }
+  }
+  errdefer remove_ids(store, owned)
+  // the primary runs are this sort's files too: `reduce_runs` only adds the
+  // intermediates it writes, and a run set small enough to skip reduction would
+  // otherwise have no owner at all
+  let runs = built.ids.length()
+  for id in built.ids {
+    owned.push(id)
+  }
+  let inputs = reduce_runs(built.ids, order_keys(bq), store, owned)
+  { scanned: pull.scanned, runs, input: Runs(inputs), }
+}
+
+///|
+/// A scan cursor for the two operators that fold their input as it arrives: the
+/// source's batches, this table's build filter and the query's deferred WHERE
+/// applied to each one before it is folded (by `aggregate_seq`) or written to a
+/// sorted run. `scanned` counts the rows the build filter kept, which is the
+/// number the collected path reports for the same table, so `--analyze` reads
+/// the same either way.
 ///
 /// A batch that the filters empty is not handed on: the batch contract forbids
-/// handing out a zero-row batch, and a fold of nothing adds nothing.
-priv struct AggPull {
+/// handing out a zero-row batch, and a fold or a run of nothing adds nothing.
+priv struct InputPull {
   stream : &@catalog.BatchStream
   build_filter : PhysExpr?
   deferred : PhysExpr?
@@ -128,11 +222,11 @@ priv struct AggPull {
 }
 
 ///|
-fn agg_pull(
+fn input_pull(
   bq : BoundQuery,
   plan : PrunePlan,
   entry : @catalog.TableEntry,
-) -> AggPull raise @types.SqlError {
+) -> InputPull raise @types.SqlError {
   {
     stream: entry.stream(scan_request_of(bq, plan.table_cols[0], 0)),
     build_filter: scan_filter_of(bq, 0),
@@ -142,7 +236,7 @@ fn agg_pull(
 }
 
 ///|
-fn AggPull::next(self : AggPull) -> @types.DataBatch? raise @types.SqlError {
+fn InputPull::next(self : InputPull) -> @types.DataBatch? raise @types.SqlError {
   while self.stream.next() is Some(batch) {
     let kept = match self.build_filter {
       Some(p) => compact(batch, eval_mask(p, batch))
@@ -174,7 +268,7 @@ fn run_agg_pull(
   stats : Array[(String, Int64)],
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
-  let pull = agg_pull(bq, launch.plan, entry)
+  let pull = input_pull(bq, launch.plan, entry)
   let seq : BatchSeq = {
     next: fn() -> @types.DataBatch? raise @types.SqlError { pull.next() },
   }
@@ -189,6 +283,82 @@ fn run_agg_pull(
   let batch = order_limit(projected, [], bq.limit, bq.offset)
   stats.push(("result", batch.row_count().to_int64()))
   { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// The layout the sort's input has: the columns the scan was asked for, in
+/// request order. Read from the schema rather than from a batch, so an input of
+/// no batches still has the layout its empty answer needs.
+fn sort_pre_types(launch : Launch) -> Array[@types.DataType] {
+  let out : Array[@types.DataType] = []
+  for c in launch.plan.table_cols[0] {
+    out.push(launch.schemas[0].columns[c].dtype)
+  }
+  out
+}
+
+///|
+/// Run a spilled ORDER BY from the scan and hand the whole result back as one
+/// batch — what `execute` wants. The win is on the input side: the runs are
+/// built from the scan, so the table is never an array, and with a LIMIT the
+/// merge stops as soon as the window is full.
+fn run_sort_pull(
+  entry : @catalog.TableEntry,
+  launch : Launch,
+  opts : ExecOptions,
+  stats : Array[(String, Int64)],
+) -> SelectResult raise @types.SqlError {
+  let bq = launch.bq
+  let store = budget_store(opts)
+  let owned : Array[Int32] = []
+  errdefer remove_ids(store, owned)
+  let built = sort_input(entry, launch, opts, store, owned)
+  stats.push(("scan \{launch.schemas[0].table}", built.scanned))
+  let batch = match built.input {
+    InMemory(batches) => {
+      // no run was written: the batches are the input, and the in-memory tail
+      // sorts, projects, dedupes and windows exactly as it does without a budget
+      let pre = concat_batches(batches, sort_pre_types(launch))
+      let sorted = sort_exprs(pre, order_keys(bq), None, None)
+      finish_sorted(
+        sorted,
+        bq.out_exprs,
+        bq.out_types,
+        bq.distinct,
+        bq.offset,
+        bq.limit,
+      )
+    }
+    Runs(inputs) => {
+      stats.push(("spill runs", built.runs.to_int64()))
+      let out = final_merge(
+        inputs,
+        order_keys(bq),
+        bq.out_exprs,
+        bq.out_types,
+        bq.distinct,
+        bq.offset,
+        bq.limit,
+        store,
+      )
+      out
+    }
+  }
+  remove_ids(store, owned)
+  stats.push(("result", batch.row_count().to_int64()))
+  { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
+/// The spill store a budgeted shape needs, or the error that says so.
+fn budget_store(opts : ExecOptions) -> SpillStore raise @types.SqlError {
+  match opts.spill {
+    Some(store) => store
+    None =>
+      raise @types.SqlError::Execute(
+        "query has a memory budget but no spill store is configured (pass --spill-dir)",
+      )
+  }
 }
 
 ///|
@@ -341,12 +511,16 @@ fn drain_scan(
 ///   first `next`, and leaves `next` returning `None`.
 /// - Failure: a pull that raises ends the stream, so a retry after an error
 ///   reports the end rather than resuming a scan whose state is unknown.
-/// - Cleanup: dropping the stream releases the scan cursor. A stream owns no
-///   spill files — a shape that needs a memory budget is materialized before
-///   the stream is handed out — so there is nothing else to release, and a
-///   consumer that vanishes costs nothing but the cursor. `catalog.BatchStream`
-///   gains no `close` method for this: exhaustion is its whole protocol, and
-///   adding one would break every implementation outside this module.
+/// - Cleanup: dropping the stream releases the scan cursor. That was the whole
+///   of it until a spilled sort became streamable: a sort under a budget writes
+///   run files and hands out their merge, so it owns files this stream removes
+///   when the merge ends, when `close` stops it, and when it raises. A consumer
+///   that vanishes without either leaves them to the store's owner — the CLI
+///   deletes its per-query directory at exit, and a library caller's `SpillStore`
+///   is the caller's to sweep. Exhaust the stream or close it and nothing is
+///   left behind. `catalog.BatchStream` gains no `close` method for this:
+///   exhaustion is its whole protocol, and adding one would break every
+///   implementation outside this module.
 pub struct ResultStream {
   priv names : Array[String]
   priv types : Array[@types.DataType]
@@ -357,7 +531,83 @@ pub struct ResultStream {
 ///|
 priv enum StreamPull {
   Scanned(ScanPull)
+  Sorted(SortedPull)
   Materialized(@types.DataBatch?)
+}
+
+///|
+/// A stream over a spilled sort's merge. This is the one pull that owns files:
+/// the run files the sort wrote are removed when the merge ends, when `close`
+/// stops it, and when the merge raises — the three ways a stream stops. A
+/// caller that drops one unfinished leaves them to the store's owner (the CLI's
+/// per-query directory goes away with the process); `close` is the way to
+/// release them early.
+priv struct SortedPull {
+  cursor : MergeCursor
+  store : SpillStore
+  mut owned : Array[Int32]
+}
+
+///|
+fn SortedPull::release(self : SortedPull) -> Unit {
+  // best-effort on purpose: `close` cannot raise, and on the error path a
+  // second failure must not replace the one that ended the merge
+  remove_ids(self.store, self.owned) catch {
+    _ => ()
+  }
+  self.owned = []
+}
+
+///|
+/// The stream for a spilled ORDER BY: the runs are built here (the scan has to
+/// be read to sort it), and then the merge is handed out batch by batch, so the
+/// caller never holds the sorted row set. An input that fit the accumulator has
+/// no merge and no files — it is one sorted batch, which is what `execute`
+/// returns for the same query.
+fn ResultStream::sorted(
+  entry : @catalog.TableEntry,
+  launch : Launch,
+  opts : ExecOptions,
+) -> ResultStream raise @types.SqlError {
+  let bq = launch.bq
+  let store = budget_store(opts)
+  let owned : Array[Int32] = []
+  errdefer remove_ids(store, owned)
+  let built = sort_input(entry, launch, opts, store, owned)
+  let pull : StreamPull = match built.input {
+    InMemory(batches) => {
+      let pre = concat_batches(batches, sort_pre_types(launch))
+      let sorted = sort_exprs(pre, order_keys(bq), None, None)
+      Materialized(
+        Some(
+          finish_sorted(
+            sorted,
+            bq.out_exprs,
+            bq.out_types,
+            bq.distinct,
+            bq.offset,
+            bq.limit,
+          ),
+        ),
+      )
+    }
+    Runs(inputs) =>
+      Sorted({
+        cursor: merge_open(
+          inputs,
+          order_keys(bq),
+          bq.out_exprs,
+          bq.out_types,
+          bq.distinct,
+          bq.offset,
+          bq.limit,
+          store,
+        ),
+        store,
+        owned,
+      })
+  }
+  { names: bq.names, types: bq.out_types, pull, done: false, }
 }
 
 ///|
@@ -382,6 +632,17 @@ pub fn ResultStream::types(self : ResultStream) -> Array[@types.DataType] {
 }
 
 ///|
+/// Release whatever the pull owns. A scan owns its cursor, which the stream's
+/// lifetime already covers; a spill-owned sort owns files, which have to be
+/// removed explicitly. Idempotent.
+fn ResultStream::release(self : ResultStream) -> Unit {
+  match self.pull {
+    Sorted(pull) => pull.release()
+    _ => ()
+  }
+}
+
+///|
 /// The next batch, or `None` once the result is exhausted or `close` was
 /// called. A pull that raises ends the stream: the stream is finished either
 /// way, and a caller that retries after an error gets the end, not a resumed
@@ -394,6 +655,7 @@ pub fn ResultStream::next(
   }
   errdefer {
     self.done = true
+    self.release()
   }
   match self.pull {
     Materialized(batch) => {
@@ -408,12 +670,23 @@ pub fn ResultStream::next(
           None
         }
       }
+    Sorted(pull) =>
+      match pull.cursor.next() {
+        Some(batch) => Some(batch)
+        None => {
+          self.done = true
+          pull.release()
+          None
+        }
+      }
   }
 }
 
 ///|
 /// Stop the pull. Idempotent, and early: a caller that has what it needs says
-/// so instead of draining the scan.
+/// so instead of draining the scan. A stream over spilled runs deletes them
+/// here, so a caller that stops early releases its disk too.
 pub fn ResultStream::close(self : ResultStream) -> Unit {
   self.done = true
+  self.release()
 }

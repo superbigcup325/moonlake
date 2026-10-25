@@ -53,7 +53,7 @@ verification §32 records it. E4b starts from `engine/exec_sort.mbt`,
 | S0 | Reproducible regression evidence for the latest SQL and CLI changes | R0 | Commit the correlation differential fixtures and runner, including duplicate outer rows, NULLs, empty inputs and deliberate refusals; normalize dates and non-finite values and compare unordered answers as row multisets; an oracle error, missing fixture, wrong answer or zero value cases fails; run fixed cases in CI and add seeded cases to nightly |
 | E3 | An additive result-consumption API and a CLI that consumes batches | S0 | **Done** (verification §31): a caller reads the schema and consumes a single-table scan/filter/projection/`OFFSET`-`LIMIT` query batch by batch without collecting it; `execute` / `execute_with` keep their signatures and run the same pull; `close` and a failed pull release the scan; text and JSON output are consumed per batch (a 16-column 2,000,000-row result: 1,090.6 MB → 35.2 MB of peak RSS for `--json`) |
 | E4a | Aggregation consumes batches | E3 | **Done** (verification §32): a single-table `GROUP BY` or global aggregate folds the scan's batches as they arrive and never holds its input array; NULL key groups, NULL aggregate inputs, empty inputs and DISTINCT aggregates match the collected answers and the goldens; the counters `--analyze` prints are identical on both paths; a budgeted `GROUP BY` still spills and still matches in-memory answers (16 columns, 2,000,000 rows: 109.7 MB → 35.3 MB of peak RSS) |
-| E4b | External sort consumes batches and feeds the result consumer | E3 | Build sorted runs directly from batches and consume the final merge incrementally; cover multi-batch runs, ties, NULL order, OFFSET and LIMIT at several budgets; success, error and early-stop paths remove owned run files |
+| E4b | External sort consumes batches and feeds the result consumer | E3 | **Done** (verification §33): runs are built from the scan's batches, the final merge is a cursor and a sorted stream hands it out a batch at a time, so neither the input array nor the sorted answer is materialized (16 columns, 2,000,000 rows, `select * … order by id`: 506.8 MB → 178.8 MB of peak RSS); ties, NULL order, DISTINCT, OFFSET/LIMIT and the in-memory fallback match the collected answers at four budgets; the run files are removed on exhaustion, on early close and on error; `--analyze` counters and spill bytes are unchanged |
 | E4c | Join input and output use the batch contract | E3, established spill lifecycle | Start with hash-build state and a streaming probe, then feed grace partitions incrementally; cover duplicate keys, empty sides, outer joins, residual predicates and semi/anti NULL semantics against the oracle; identify eager correlation paths explicitly |
 | W0 | A second dataset tests whether adaptive dictionaries are worth implementing | Fixed comparison inputs; independent of E3/E4 | Measure low- and high-cardinality columns, long strings and NULLs with the same page/row-group layout; record bytes, write/read time and memory; distinguish PyArrow experiments from Moonlake implementation results |
 | R1 | Final 0.6.0 acceptance and release evidence | S0, E3, E4a, E4b, E4c, W0 | The release checks below pass on the final candidate; record the remaining eager paths and platform limits; publish only after release authorization |
@@ -70,11 +70,13 @@ exit status and error channel.
 
 **Implementation entry points.** E3 started at `moonlake.mbt`,
 `engine/engine.mbt`, `engine/stream.mbt`, `catalog/source.mbt` and
-`cmd/main/main.mbt`; E4a added `streaming_agg_source`, `AggPull` and
-`run_agg_pull` to `engine/stream.mbt`, dispatched from `engine.mbt`, and folds
-through `engine/exec_agg.mbt`'s `aggregate_seq`. E4b starts at
-`engine/exec_sort.mbt`, `engine/extsort.mbt` and
-`engine/spillruns.mbt`; E4c uses `engine/exec_join.mbt`,
+`cmd/main/main.mbt`; E4a added `streaming_agg_source`, `InputPull` (then named
+`AggPull`) and `run_agg_pull` to `engine/stream.mbt`, dispatched from
+`engine.mbt`, and folds through `engine/exec_agg.mbt`'s `aggregate_seq`. E4b
+added `streaming_sort_source`, `sort_input`, `run_sort_pull` and
+`ResultStream::sorted` there, `build_runs` and `MergeCursor` in
+`engine/extsort.mbt`, and made a sorted stream the one stream that owns run
+files; E4c starts from `engine/exec_join.mbt`,
 `engine/extjoin.mbt`, `engine/scan.mbt` and `engine/correlate.mbt`.
 S0 starts from the cases documented in verification's pre-release user pass and
 general decorrelation sections. W0 extends the measurements behind the writing

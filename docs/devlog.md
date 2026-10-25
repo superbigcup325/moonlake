@@ -1696,7 +1696,8 @@ Not a new aggregation algorithm. `aggregate_seq` in `engine/exec_agg.mbt` has
 pulled from a `BatchSeq` and folded batch by batch since the grace path needed
 to aggregate one spill partition at a time; every caller just handed it a
 collected array. So E4a is a producer for that sequence: `AggPull` in
-`engine/stream.mbt` wraps the scan's `BatchStream` with the table's build filter
+`engine/stream.mbt` (renamed `InputPull` in E4b, when the sort started reading
+the same cursor) wraps the scan's `BatchStream` with the table's build filter
 and the deferred `WHERE`, counts the rows the build filter kept (so `--analyze`
 reports what the collected path reports), and never hands on a batch the filters
 emptied. `run_agg_pull` runs `aggregate_seq` over it and then the same HAVING,
@@ -1748,3 +1749,84 @@ the same rows and the same counters, because "the same fold" is the whole claim.
 33/33 goldens (q6's single-table aggregate now folds through the pull), spill
 acceptance, CLI checks, the correlation differential and 66 Python harness tests
 unchanged and green.
+
+## ORDER BY sorts and merges as the rows arrive (2026-10-26): E4b
+
+### Goal
+
+The 0.6.0 plan's E4b: the external sort should build its runs from the scan and
+feed its consumer incrementally. §31 gave the scan a pull interface and E4a let
+an aggregate fold it; a budgeted `ORDER BY` was the remaining blocking operator
+whose input still had to be an array, so "streamed with `--memory`" meant the
+engine built the input array and the sorted answer before the caller saw a row.
+
+### What landed
+
+Three refactorings and one new shape.
+
+`build_runs` takes a batch source instead of an array and fills runs as the
+batches come, so `external_sort_project(next, pre_types, …)` no longer needs
+anything collected. `MergeCursor` splits the final k-way merge out of
+`final_merge`: `merge_open` reads the merge inputs, `next` returns up to 4,096
+projected/deduped/windowed rows and stops as soon as the OFFSET/LIMIT window is
+full, and `final_merge` is now the drain — so the collected answer and a
+streamed one cannot disagree, because they are one cursor with one of them
+concatenating. `reduce_runs` (was `reduce_and_merge`) hands the files it writes
+back to the caller's `owned` list instead of deleting them, because ownership
+had to move up when the merge stopped being self-contained.
+
+`streaming_sort_source` is the shape: one lazy table, `ORDER BY`, no aggregate,
+no window, `budget > 0` (`DISTINCT` and the OFFSET/LIMIT window are fine — the
+cursor applies both). `run_pipeline` dispatches it before it would materialize
+`joined`, `run_select_stream_opts` dispatches it before the materialized
+fallback, and `ResultStream::sorted` wraps the merge in the first pull that owns
+files: `StreamPull::Sorted(SortedPull { cursor, store, owned })` removes its runs
+on exhaustion, on `close` and on a raising `next`. `AggPull` became `InputPull`,
+since the sort reads a table exactly the way the fold does.
+
+This is where §31's "a stream owns no spill files" stopped being true, so it is
+amended in words rather than quietly: a sorted stream owns its runs and releases
+them on all three endings; a caller that drops one unfinished leaves them to the
+store's owner, which for the CLI is the per-query directory it deletes at exit.
+
+### The number
+
+The same 16-column, 2,000,000-row fixture, `--memory 8M`, release builds, one
+process per measurement, peak RSS from `os.wait4` (raw, floor ~22 MB):
+
+| query | before | after |
+|---|---|---|
+| `select * from t order by id` | 506.8 MB | 178.8 MB |
+| `select * from t order by id limit 10` | 335.0 MB | 168.7 MB |
+| `select id from t order by id limit 10` | 43.8 MB | 39.3 MB |
+
+The no-LIMIT row is the point: the sorted answer used to exist as an array
+before the stream returned it, so the peak was input plus answer; now it is the
+merge state. What remains of the 16-column peak is `FANIN` decoded runs, not the
+input — the accumulator flushes at an *estimated* (serialized) `budget/4`, while
+a decoded run costs several times that. Recorded as a known limit rather than
+fixed, because changing the estimate would move every recorded spill number.
+
+### What the tests pin
+
+`engine/sort_pull_wbtest.mbt` (11 tests) reuses the E4a fixture and adds a
+10,000-row tie fixture and an inspectable store: every sort shape returns the
+collected answer's rows at four budgets from 64 B to 1 MB; a 10,000-row stream
+comes back as three 4,096-row-capped batches in order across the boundaries;
+the run files exist mid-merge and are gone at the end, after an early `close`,
+and after a store failure, with `next` answering `None` in each case; the
+collected sort equals the unbudgeted answer and reports the same counters as the
+streamed one; an input inside the accumulator writes nothing and reports no
+`spill runs`; an empty table answers one empty typed batch; a budgeted
+`ORDER BY … LIMIT 10` still pulls every batch (a sort cannot know its top 10
+early) and still decodes one column; and a `LIMIT 3` cursor over two runs keeps
+`taken == 3` instead of draining them.
+
+### Evidence
+
+`docs/verification.md` §33. Gates: 326/326 native, 313/313 wasm-gc, 313/313 js,
+`moon check --deny-warn` and `moon fmt --check` clean, `.mbti` unchanged,
+33/33 goldens (the unbudgeted `ORDER BY` goldens now run through the extracted
+`build_runs`/`MergeCursor` too), the external-sort equivalence checks in
+`harness/check_all.sh`, spill acceptance, CLI checks, the correlation
+differential and 66 Python harness tests green.

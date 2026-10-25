@@ -2314,7 +2314,8 @@ wrong.
   `engine/extagg.mbt`), so that run still needs the input collected. A global
   aggregate is included under a budget, because it can never spill — one row is
   one row.
-- `AggPull` / `agg_pull` — a cursor over the table's stream with the build
+- `InputPull` / `input_pull` (named `AggPull` / `agg_pull` until §33 made the
+  sort read the same cursor) — a cursor over the table's stream with the build
   filter and the deferred `WHERE` applied per batch, and `next` that never hands
   out a zero-row batch, since a fold of nothing adds nothing and the batch
   contract forbids it.
@@ -2328,7 +2329,7 @@ The result is still one batch — an aggregate has no first row before the last
 input row — so `stream`/`stream_with` hand a group result out as one batch, as
 §31 already said. What changed is the memory the operator needs to get there.
 
-**The counters do not move.** `AggPull` counts the rows the build filter kept,
+**The counters do not move.** `InputPull` counts the rows the build filter kept,
 which is the number `materialize_scan` reports for the same table, and
 `run_agg_pull` pushes `("scan t", n)`, `("aggregate", groups)` and
 `("result", rows)` in the same order the eager tail does. `--analyze` output is
@@ -2411,3 +2412,147 @@ reader-fixture checks, `harness/spill_accept.sh` all checks,
 `harness/check_cli.sh` all five sections, `harness/check_correlation.py` fixed
 cases and `--random 400 --seed 20261025` both ok, 66 Python harness unit tests,
 and `harness/check_release.py` ok at 0.6.0.
+
+## 33. ORDER BY sorts, feeds and hands over incrementally (2026-10-26)
+
+**The claim.** A budgeted `ORDER BY` over one table no longer collects its input
+either. §31 gave the scan a pull interface and §32 let an aggregate fold that
+pull; a sort is the other blocking operator with a streaming shape, and it was
+still going the long way round: `run_pipeline` materialized every row into
+`joined`, `external_sort_project` took that array, wrote runs from it, and
+returned one materialized batch — which `stream` then handed back as a one-batch
+stream. So a "streamed" sorted result had already built both the input array and
+the sorted answer before the caller saw its first row.
+
+**What was in the way.** Three things, and only the third was new code:
+
+1. `external_sort_project(kept : Array[DataBatch], …)` — the sort's entry point
+   was an array, so the caller had to build one. Run building, the reduction and
+   the merge all worked on batches already.
+2. `final_merge` drained the k-way merge into one `concat_batches` because it
+   had to return a `DataBatch`. The merge itself (one `RunReader` per run, pick
+   the smallest current row, project, dedupe, window) was per-row already; only
+   the accumulation was the batch.
+3. Nothing owned the run files. §32's stream contract could promise "a stream
+   owns no spill files" precisely because a budgeted shape was materialized
+   before the stream was handed out — `external_sort_project` removed its files
+   before returning. A stream over the merge would have to break that promise in
+   the honest direction: it now owns them.
+
+**What landed.**
+
+- `engine/extsort.mbt`: `build_runs(next, keys, budget, store)` takes a batch
+  source instead of an array — `next` is called until it answers `None`, each
+  batch is sorted and chunk-split as before, and a source that never fills the
+  accumulator writes no file at all (the in-memory fallback, unchanged). 
+  `external_sort_project` now takes `(next, pre_types, …)` and is nothing but
+  `build_runs` + the reduction + `final_merge`. `MergeCursor` is the final merge
+  as a cursor: `merge_open` reads the merge inputs, `next` returns up to 4,096
+  projected/deduped/windowed rows and stops as soon as the OFFSET/LIMIT window
+  is full, and `final_merge` is now `merge_open` + drain + `concat_batches`, so
+  the collected answer and a streamed one are the same cursor with one of them
+  concatenating. `reduce_runs` (was `reduce_and_merge`) reports the files it
+  writes back to its caller's `owned` list instead of deleting them itself —
+  ownership had to move up when the merge stopped being self-contained.
+- `engine/stream.mbt`: `streaming_sort_source(bq, sources, opts)` is the shape
+  predicate (one lazy table, `ORDER BY`, no aggregate, no window, `budget > 0`);
+  `sort_input` feeds the scan's pull into `build_runs` and answers
+  `(scanned, runs, InMemory | Runs)`; `run_sort_pull` is the collected form
+  (`execute` — the input is no longer an array, and a LIMIT stops the merge);
+  `ResultStream::sorted` is the streamed form, with `StreamPull::Sorted` wrapping
+  a `SortedPull { cursor, store, owned }` that removes its files when the merge
+  ends, when `close` stops it, and when it raises. `InputPull` is `AggPull`
+  renamed: the sort and the fold read a table the same way.
+- `engine/engine.mbt`: `run_pipeline` dispatches `streaming_sort_source` before
+  the scan loop, so the collected path never builds `joined` for this shape;
+  `run_select_stream_opts` dispatches it before the materialized fallback. The
+  eager sort branch stays for the shapes that must collect (joins, budgeted
+  GROUP BY, windows) and now feeds `external_sort_project` from a producer over
+  the array it already has.
+- The empty-input layout comes from the schema (`sort_pre_types`), not from
+  `batches[0]`: a table with no rows still answers one empty batch in the
+  query's own column layout, which is what the collected path returns.
+
+**The one promise this amends.** §31/§32 said a stream owns no spill files. That
+is still true of every shape except a spilled sort, and it is now stated as what
+it is: a sorted stream owns its runs and releases them on exhaustion, on `close`
+and on error; a caller that drops one unfinished leaves them to the store's
+owner (the CLI removes its per-query directory at exit, a library caller's
+`SpillStore` is the caller's to sweep). `engine/stream.mbt`'s header,
+`moonlake.mbt`'s `stream_with` doc and the README paragraph were rewritten
+rather than quietly contradicted.
+
+**The counters do not move.** A sort has to read the whole table either way, so
+`scan t` is the same number; `spill runs` is the number of primary runs (not the
+files alive at the end); `result` is the row count after the window. Measured
+against the pre-E4b release binary at `--memory 1M` on the 200,000-row fixture,
+`--analyze` output is identical for `order by … limit 10`, for
+`order by … desc, … limit 5 offset 100`, for `select distinct … order by …` and
+for a sort with no LIMIT, including `spill files`, `spill bytes written` and
+`spill bytes read` (the store's own counters: the same files are written and
+read).
+
+**The number.** 2,000,000 rows, 16 columns, `--memory 8M`, best of three
+(`os.wait4` max RSS, same session, pre-E4b binary versus this one):
+
+| query | before | after |
+|---|---|---|
+| `select * from t order by id` (no LIMIT) | 6073 ms / 506.8 MB | 5948 ms / **178.8 MB** |
+| `select * from t order by id limit 10` | 5053 ms / 335.0 MB | 5034 ms / **168.7 MB** |
+| `select id from t order by id limit 10` | 319 ms / 43.8 MB | 300 ms / **39.3 MB** |
+| `select id, i32 from t order by i32, id limit 10 offset 1000` | 993 ms / 55.4 MB | 992 ms / **41.3 MB** |
+
+The no-LIMIT row is the one that shows what changed: the sorted answer used to
+exist as an array before the stream returned it, so peak RSS was input + answer;
+now the merge hands the answer out batch by batch and the peak is the merge
+state. The remaining ~170 MB in the 16-column rows is not the input: it is
+`FANIN` decoded runs. The accumulator flushes at `budget/4` **estimated** bytes
+(`estimate_batch_bytes`, which is the serialized size), while a decoded run costs
+several times that, so the merge's live set is `FANIN × decoded-run`, not
+`budget`. Narrow columns land near the budget (`select id …`: 39.3 MB at an
+8 MB budget, and 39.5 MB at 1 MB — the scale is the fixed part). Making the
+estimate account for decoded width would change run sizes and every recorded
+spill number, so it stays a known limit, recorded here rather than fixed
+silently.
+
+**What the tests pin.** `engine/sort_pull_wbtest.mbt` (11 tests) uses the §32
+fixture (four batches of three rows, string/int32/value columns with NULLs, keys
+that repeat across batches) and a 10-batch, 10,000-row tie fixture, plus an
+inspectable in-memory `SpillStore`:
+
+- every sort shape returns the collected answer's rows at four budgets (64 B,
+  512 B, 4 KB, 1 MB — many runs, several batches per run, and the in-memory
+  fallback), including `desc nulls last`, `nulls first`, `DISTINCT`, and
+  `LIMIT 2 OFFSET 1`;
+- a 10,000-row streamed sort comes back as three batches (4,096 + 4,096 + 1,808),
+  each no larger than the cursor's batch, in order across batch boundaries;
+- the run files exist while the merge is handing rows over and are gone when it
+  ends — and gone after `close` stops it early, with `next` then answering
+  `None`;
+- a store that raises on read fails the stream and leaves no files;
+- the collected sort under a budget matches the unbudgeted answer for four
+  shapes, and reports the same counters as the streamed form (`scan t` 12,
+  `result` 3, one `spill runs` entry);
+- an input that fits the accumulator writes no file and reports no
+  `spill runs` entry, which is the E4b-untouched fallback;
+- an empty table answers one empty typed batch, then `None`;
+- a budgeted `ORDER BY … LIMIT 10` still pulls every batch and still prunes the
+  projection to one column;
+- a `MergeCursor` with `LIMIT 3` over two runs takes three rows, reports
+  `taken == 3`, answers `None` next, and leaves its files to the caller.
+
+Parity with the other implementation is covered where it already was: the 33
+golden comparisons include TPC-H `ORDER BY` queries (unbudgeted, so they take
+the eager path through the same `build_runs`/`MergeCursor` code),
+`harness/check_all.sh`'s external-sort equivalence checks run the spilled sort
+through the new streaming path and diff it against the in-memory answer,
+`harness/spill_accept.sh` covers the store lifecycle, and the correlation
+differential is unchanged.
+
+**Gates.** `moon test --target native` 326/326, `moon test` (wasm-gc) 313/313,
+`moon test --target js` 313/313, `moon check --deny-warn` clean, `moon fmt
+--check` clean, `.mbti` unchanged (everything new is private to the package),
+`harness/check_all.sh` 33/33 golden comparisons plus the equivalence and reader
+checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
+sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
+Python harness unit tests, and `harness/check_release.py` ok at 0.6.0.

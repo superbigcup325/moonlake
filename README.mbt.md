@@ -181,8 +181,15 @@ arrive, so it holds its group state and one batch instead of the rows it read
 deliveries run the same plan, so a pulled row and a collected row are the same
 row. `close()` stops the pull before the end, dropping the stream releases the
 scan cursor, a pull that raises ends the stream rather than leaving it
-resumable, and a stream owns no spill files — a shape that needs a memory
-budget is materialized before the stream is returned.
+resumable. An `ORDER BY` under a budget streams too: it builds its sorted runs
+from the scan and hands out the merge a batch at a time, so a 2,000,000-row
+16-column sort no longer materializes its answer (506.8 MB → 178.8 MB of peak
+RSS for `select * … order by id`). That is the one stream that owns files — the
+runs are removed when the merge ends, when `close` stops it, and when it raises
+— so exhaust it or close it; a stream dropped unfinished leaves them to the
+store's owner (the CLI deletes its per-query directory at exit). Shapes that
+still need the whole input first — a join, a budgeted `GROUP BY`, a window —
+are materialized before the stream is returned.
 
 ```moonbit nocheck
 ///|

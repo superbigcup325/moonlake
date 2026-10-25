@@ -119,23 +119,29 @@ pub fn run_select_stream_opts(
   match prepare_select(sel, catalog, opts) {
     Setop(result) => ResultStream::materialized(result)
     Ready(launch) =>
-      match streaming_source(launch.bq, launch.sources) {
-        Some(entry) =>
-          {
-            names: launch.bq.names,
-            types: launch.bq.out_types,
-            pull: Scanned(
-              scan_pull(
-                launch.bq,
-                launch.plan,
-                entry,
-                launch.schemas[0].table,
-                [],
-              ),
-            ),
-            done: false,
+      // a spilled sort is the one shape that hands out a merge: the runs are
+      // built here, and the stream owns them
+      match streaming_sort_source(launch.bq, launch.sources, opts) {
+        Some(entry) => ResultStream::sorted(entry, launch, opts)
+        None =>
+          match streaming_source(launch.bq, launch.sources) {
+            Some(entry) =>
+              {
+                names: launch.bq.names,
+                types: launch.bq.out_types,
+                pull: Scanned(
+                  scan_pull(
+                    launch.bq,
+                    launch.plan,
+                    entry,
+                    launch.schemas[0].table,
+                    [],
+                  ),
+                ),
+                done: false,
+              }
+            None => ResultStream::materialized(run_pipeline(launch, opts, []))
           }
-        None => ResultStream::materialized(run_pipeline(launch, opts, []))
       }
   }
 }
@@ -289,6 +295,14 @@ fn run_pipeline(
     Some(entry) => return run_agg_pull(entry, launch, stats)
     None => ()
   }
+  // An ORDER BY under a budget is fed from the scan the same way: the runs are
+  // written as the batches arrive, so the input is never an array here either,
+  // and a LIMIT stops the merge as soon as its window is full. Without a budget
+  // the in-memory sort has to see every row, so the eager path below keeps it.
+  match streaming_sort_source(bq, sources, opts) {
+    Some(entry) => return run_sort_pull(entry, launch, opts, stats)
+    None => ()
+  }
   // Materialize each FROM item with only the columns the query reads. A base
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
@@ -367,8 +381,27 @@ fn run_pipeline(
         for spec in bq.order_by {
           keys.push((spec.expr, spec.desc, spec.nulls_first))
         }
+        // the sort takes a source, not an array: here the array is what the
+        // join/aggregate above already produced, so the producer is a cursor
+        // over it (a single-table ORDER BY never gets this far — E4b feeds it
+        // from the scan instead)
+        let pre_types : Array[@types.DataType] = []
+        for col in kept[0].columns() {
+          pre_types.push(col.dtype())
+        }
+        let mut at = 0
+        let produced : () -> @types.DataBatch? raise @types.SqlError = fn() {
+          if at < kept.length() {
+            let b = kept[at]
+            at += 1
+            Some(b)
+          } else {
+            None
+          }
+        }
         let batch = external_sort_project(
-          kept,
+          produced,
+          pre_types,
           keys,
           bq.out_exprs,
           bq.out_types,

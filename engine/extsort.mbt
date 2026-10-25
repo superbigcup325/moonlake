@@ -11,6 +11,13 @@
 //
 // The budget bounds the run state, not the base tables (scan laziness
 // is out of the sort's scope) and not the query result itself.
+//
+// Nothing here reads a batch array any more. `build_runs` takes a source and
+// fills runs as batches arrive, so the input is never an array; `MergeCursor`
+// is the final k-way merge as a cursor, which a caller that can hand rows on
+// (a `ResultStream`) drives one batch at a time, and which `final_merge` drains
+// for the collected answer. Both started as the same code: an array of kept
+// batches and one `final_merge` returning one batch.
 
 ///|
 const FANIN : Int32 = 8
@@ -139,22 +146,22 @@ fn chunk_of(
 }
 
 ///|
-/// External sort driving the whole ORDER BY tail: returns the final
-/// projected (and DISTINCT/OFFSET/LIMIT-filtered) batch. Falls back to
-/// the in-memory pipeline when everything fits within the run
-/// accumulator.
-fn external_sort_project(
-  kept : Array[@types.DataBatch],
+/// Fill sorted runs from a batch source: sort each batch, split it so no single
+/// batch can balloon past the accumulator, and flush whenever the accumulator
+/// reaches ~budget/4 bytes. A source that never fills the accumulator writes no
+/// file at all — its batches are what `acc` holds, which is the in-memory path.
+priv struct RunBuild {
+  ids : Array[Int32]
+  acc : Array[@types.DataBatch]
+}
+
+///|
+fn build_runs(
+  next : () -> @types.DataBatch? raise @types.SqlError,
   keys : Array[(PhysExpr, Bool, Bool?)],
-  out_exprs : Array[PhysExpr],
-  out_types : Array[@types.DataType],
-  distinct : Bool,
-  offset : Int32?,
-  limit : Int32?,
   budget : Int32,
   store : SpillStore,
-  stats : Array[(String, Int64)],
-) -> @types.DataBatch raise @types.SqlError {
+) -> RunBuild raise @types.SqlError {
   let writer : RunWriter = {
     store,
     budget,
@@ -163,7 +170,7 @@ fn external_sort_project(
     acc_bytes: 0,
     ids: [],
   }
-  for batch in kept {
+  while next() is Some(batch) {
     if keys.length() > 0 && batch.row_count() > 1 {
       let sorted = sort_exprs(batch, keys, None, None)
       // split oversized sorted batches so one run cannot balloon past
@@ -197,46 +204,124 @@ fn external_sort_project(
       writer.push(batch)
     }
   }
-  // everything fit: no run was flushed — take the in-memory path
   if writer.ids.length() == 0 {
-    let dts : Array[@types.DataType] = []
-    for col in kept[0].columns() {
-      dts.push(col.dtype())
-    }
-    let pre = concat_batches(kept, dts)
+    return { ids: [], acc: writer.acc, }
+  }
+  writer.flush()
+  { ids: writer.ids, acc: [], }
+}
+
+///|
+/// External sort driving the whole ORDER BY tail: returns the final
+/// projected (and DISTINCT/OFFSET/LIMIT-filtered) batch. Falls back to
+/// the in-memory pipeline when everything fits within the run
+/// accumulator.
+///
+/// The input is a source, not an array: `next` is called until it returns
+/// `None`, and the batches go into runs as they come. `pre_types` is the batch
+/// layout of that input (the ORDER BY keys and the projection both read it), so
+/// an input of no batches still yields a typed empty answer.
+fn external_sort_project(
+  next : () -> @types.DataBatch? raise @types.SqlError,
+  pre_types : Array[@types.DataType],
+  keys : Array[(PhysExpr, Bool, Bool?)],
+  out_exprs : Array[PhysExpr],
+  out_types : Array[@types.DataType],
+  distinct : Bool,
+  offset : Int32?,
+  limit : Int32?,
+  budget : Int32,
+  store : SpillStore,
+  stats : Array[(String, Int64)],
+) -> @types.DataBatch raise @types.SqlError {
+  let built = build_runs(next, keys, budget, store)
+  // everything fit: no run was flushed — take the in-memory path
+  if built.ids.length() == 0 {
+    let pre = concat_batches(built.acc, pre_types)
     let sorted = sort_exprs(pre, keys, None, None)
     return finish_sorted(sorted, out_exprs, out_types, distinct, offset, limit)
   }
-  writer.flush()
   if stats.length() > 0 {
-    stats.push(("spill runs", writer.ids.length().to_int64()))
+    stats.push(("spill runs", built.ids.length().to_int64()))
   }
-  errdefer remove_ids(store, writer.ids)
-  let out = reduce_and_merge(
-    writer.ids,
-    keys,
-    out_exprs,
-    out_types,
-    distinct,
-    offset,
-    limit,
-    store,
+  let owned : Array[Int32] = []
+  for id in built.ids {
+    owned.push(id)
+  }
+  errdefer remove_ids(store, owned)
+  let inputs = reduce_runs(built.ids, keys, store, owned)
+  let out = final_merge(
+    inputs, keys, out_exprs, out_types, distinct, offset, limit, store,
   )
-  for id in writer.ids {
-    let _ = (store.remove)(id)
-  }
+  // every file this sort wrote is dead now: the merge inputs have been read
+  // whole and the intermediates were consumed by the passes that made them
+  // (removal is best-effort, so removing both sets is safe)
+  remove_ids(store, owned)
   out
 }
 
 ///|
-/// Pairwise-merge runs down to FANIN, then run the final streaming
-/// merge. Removes every intermediate file it creates, successfully or
-/// not: the merge inputs are consumed whole by `merge_runs` (which
-/// deletes its two sources) and by `final_merge` (which reads every run
-/// into memory before producing a row), so the intermediates this
-/// function wrote are dead as soon as `go` returns.
-fn reduce_and_merge(
+/// Pairwise-merge runs down to FANIN, and answer the files the final k-way
+/// merge must read. Every file this writes is appended to `owned` — the
+/// caller's list of what still has to be removed — because the intermediate
+/// passes delete the pair they consume (`merge_runs` does) and only the last
+/// level survives to be merged.
+///
+/// Memory per pass is two runs, so the reduction is bounded by the budget even
+/// though it is not lazy: a k-way merge needs at most FANIN cursors, and a
+/// cursor holds one run.
+fn reduce_runs(
   runs0 : Array[Int32],
+  keys : Array[(PhysExpr, Bool, Bool?)],
+  store : SpillStore,
+  owned : Array[Int32],
+) -> Array[Int32] raise @types.SqlError {
+  let mut cur = runs0
+  while cur.length() > FANIN {
+    let next : Array[Int32] = []
+    let mut i = 0
+    while i < cur.length() {
+      if i + 1 < cur.length() {
+        let id = merge_runs(cur[i], cur[i + 1], keys, store)
+        owned.push(id)
+        next.push(id)
+      } else {
+        next.push(cur[i])
+      }
+      i += 2
+    }
+    cur = next
+  }
+  cur
+}
+
+///|
+/// The final k-way merge as a cursor: one batch of the ordered result per
+/// `next`, `None` at the end. Projection, DISTINCT and the OFFSET/LIMIT window
+/// are applied per row, so a windowed merge stops as soon as the window is full
+/// and the caller never holds more than one output batch.
+///
+/// This is the whole of `final_merge` except the drain, which is why the
+/// collected answer and a streamed one cannot disagree about a row: they run
+/// the same cursor and one of them concatenates.
+priv struct MergeCursor {
+  readers : Array[RunReader]
+  keys : Array[(PhysExpr, Bool, Bool?)]
+  out_exprs : Array[PhysExpr]
+  out_types : Array[@types.DataType]
+  distinct : Bool
+  offset : Int32?
+  limit : Int32?
+  seen : Map[String, Bool]
+  mut skipped : Int32
+  mut taken : Int32
+  mut builder : OutputBuilder
+  mut finished : Bool
+}
+
+///|
+fn merge_open(
+  runs : Array[Int32],
   keys : Array[(PhysExpr, Bool, Bool?)],
   out_exprs : Array[PhysExpr],
   out_types : Array[@types.DataType],
@@ -244,39 +329,105 @@ fn reduce_and_merge(
   offset : Int32?,
   limit : Int32?,
   store : SpillStore,
-) -> @types.DataBatch raise @types.SqlError {
-  let created : Array[Int32] = [] // intermediate files this function wrote
-  errdefer remove_ids(store, created)
-  fn go(level : Array[Int32]) -> @types.DataBatch raise @types.SqlError {
-    let mut cur = level
-    while cur.length() > FANIN {
-      let next : Array[Int32] = []
-      let mut i = 0
-      while i < cur.length() {
-        if i + 1 < cur.length() {
-          let id = merge_runs(cur[i], cur[i + 1], keys, store)
-          created.push(id)
-          next.push(id)
-        } else {
-          next.push(cur[i])
-        }
-        i += 2
-      }
-      cur = next
-    }
-    final_merge(cur, keys, out_exprs, out_types, distinct, offset, limit, store)
+) -> MergeCursor raise @types.SqlError {
+  let readers : Array[RunReader] = []
+  for id in runs {
+    readers.push(
+      RunReader::make(
+        @types.DataBatch::from_spill_bytes((store.read)(id)),
+        keys,
+      ),
+    )
   }
-
-  let out = go(runs0)
-  // `go` returned: every intermediate it wrote has been fully consumed,
-  // so drop them on the success path too (the errdefer above only fires
-  // when `go` raises). Leaving them behind leaked one directory per
-  // spilled sort into TMPDIR.
-  remove_ids(store, created)
-  out
+  {
+    readers,
+    keys,
+    out_exprs,
+    out_types,
+    distinct,
+    offset,
+    limit,
+    seen: Map([]),
+    skipped: 0,
+    taken: 0,
+    builder: OutputBuilder::new(out_types, 4096),
+    finished: false,
+  }
 }
 
 ///|
+fn MergeCursor::window_full(self : MergeCursor) -> Bool {
+  match self.limit {
+    Some(l) => self.taken >= l
+    None => false
+  }
+}
+
+///|
+fn MergeCursor::next(
+  self : MergeCursor,
+) -> @types.DataBatch? raise @types.SqlError {
+  if self.finished {
+    return None
+  }
+  while !self.window_full() {
+    // pick the smallest current row; ties prefer the lower run index
+    let mut best = -1
+    for r, rd in self.readers {
+      if rd.exhausted() {
+        continue
+      }
+      if best == -1 ||
+        cmp_key_rows(rd.keys, self.readers[best].keys, self.keys) < 0 {
+        best = r
+      }
+    }
+    if best == -1 {
+      break
+    }
+    let row = self.readers[best].row
+    if self.offset is Some(o) && self.skipped < o {
+      self.skipped += 1
+    } else {
+      let get : (Int32) -> @types.Scalar = fn(i) { row[i] }
+      let projected : Array[@types.Scalar] = []
+      for e in self.out_exprs {
+        projected.push(eval_with(e, get))
+      }
+      let mut keep = true
+      if self.distinct {
+        let kv = canonical_key(projected)
+        if self.seen.get(kv) is Some(_) {
+          keep = false
+        } else {
+          self.seen[kv] = true
+        }
+      }
+      if keep {
+        self.builder.push_row(projected)
+        self.taken += 1
+        if self.builder.full() {
+          let batch = self.builder.build()
+          self.builder = OutputBuilder::new(self.out_types, 4096)
+          self.readers[best].advance()
+          return Some(batch)
+        }
+      }
+    }
+    self.readers[best].advance()
+  }
+  self.finished = true
+  if self.builder.empty() {
+    None
+  } else {
+    let batch = self.builder.build()
+    self.builder = OutputBuilder::new(self.out_types, 4096)
+    Some(batch)
+  }
+}
+
+///|
+/// Drain the merge into one batch — the collected answer.
 fn final_merge(
   runs : Array[Int32],
   keys : Array[(PhysExpr, Bool, Bool?)],
@@ -287,69 +438,12 @@ fn final_merge(
   limit : Int32?,
   store : SpillStore,
 ) -> @types.DataBatch raise @types.SqlError {
-  let readers : Array[RunReader] = []
-  for id in runs {
-    readers.push(
-      RunReader::make(
-        @types.DataBatch::from_spill_bytes((store.read)(id)),
-        keys,
-      ),
-    )
-  }
-  let mut builder = OutputBuilder::new(out_types, 4096)
+  let cursor = merge_open(
+    runs, keys, out_exprs, out_types, distinct, offset, limit, store,
+  )
   let chunks : Array[@types.DataBatch] = []
-  let seen : Map[String, Bool] = Map([])
-  let mut skipped = 0
-  let want = match limit {
-    Some(l) => l
-    None => -1 // unbounded
-  }
-  let mut taken = 0
-  while want < 0 || taken < want {
-    // pick the smallest current row; ties prefer the lower run index
-    let mut best = -1
-    for r, rd in readers {
-      if rd.exhausted() {
-        continue
-      }
-      if best == -1 || cmp_key_rows(rd.keys, readers[best].keys, keys) < 0 {
-        best = r
-      }
-    }
-    if best == -1 {
-      break
-    }
-    let row = readers[best].row
-    if offset is Some(o) && skipped < o {
-      skipped += 1
-    } else {
-      let get : (Int32) -> @types.Scalar = fn(i) { row[i] }
-      let projected : Array[@types.Scalar] = []
-      for e in out_exprs {
-        projected.push(eval_with(e, get))
-      }
-      let mut keep = true
-      if distinct {
-        let kv = canonical_key(projected)
-        if seen.get(kv) is Some(_) {
-          keep = false
-        } else {
-          seen[kv] = true
-        }
-      }
-      if keep {
-        builder.push_row(projected)
-        taken += 1
-        if builder.full() {
-          chunks.push(builder.build())
-          builder = OutputBuilder::new(out_types, 4096)
-        }
-      }
-    }
-    readers[best].advance()
-  }
-  if !builder.empty() {
-    chunks.push(builder.build())
+  while cursor.next() is Some(batch) {
+    chunks.push(batch)
   }
   concat_batches(chunks, out_types)
 }

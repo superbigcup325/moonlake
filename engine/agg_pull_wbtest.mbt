@@ -198,7 +198,7 @@ test "an aggregate pull hands over one batch at a time" {
     Some(entry) => entry
     None => abort("a single-table aggregate must be fed from its scan")
   }
-  let pull = agg_pull(launch.bq, launch.plan, entry) catch {
+  let pull = input_pull(launch.bq, launch.plan, entry) catch {
     e => abort("\{e}")
   }
   let mut batches = 0
@@ -223,7 +223,7 @@ test "an aggregate pull skips the batches its filters empty" {
     Some(entry) => entry
     None => abort("a single-table aggregate must be fed from its scan")
   }
-  let pull = agg_pull(launch.bq, launch.plan, entry) catch {
+  let pull = input_pull(launch.bq, launch.plan, entry) catch {
     e => abort("\{e}")
   }
   let mut rows = 0

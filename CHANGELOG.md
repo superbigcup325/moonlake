@@ -42,10 +42,11 @@ describe implemented changes; planned work is added here after verification.
   exist until every row is in. `execute` / `execute_with` keep their signatures
   and read the same pull, so the collected and streamed deliveries cannot
   disagree; `run_select_stream` / `run_select_stream_opts` are the engine-level
-  names. `close()` stops the pull, a pull that raises ends the stream, and a
-  stream owns no spill files, so dropping an unfinished one releases everything
-  it held. On a 2,000,000-row 16-column result, `--json` went from 1,090.6 MB of
-  peak RSS to 35.2 MB (verification §31).
+  names. `close()` stops the pull, a pull that raises ends the stream, and
+  dropping an unfinished one releases everything it held. On a 2,000,000-row
+  16-column result, `--json` went from 1,090.6 MB of peak RSS to 35.2 MB
+  (verification §31). An `ORDER BY` under a budget streams as well and is the
+  one stream that owns files — see Changed (§33).
 - `@engine.JsonRow`: the JSON row encoder the CLI and `SelectResult::to_json`
   share (`new(names)`, `render(batch, row)`, `batch(batch)`), so a caller that
   prints a batch at a time does not build the whole document as one string. The
@@ -95,10 +96,25 @@ describe implemented changes; planned work is added here after verification.
   rather than every row it read: `select cat, count(*) from t group by cat` over
   2,000,000 rows and 16 columns went from 109.7 MB to 35.3 MB of peak RSS
   (verification §32). A budgeted `GROUP BY` still collects its input, because the
-  grace path sizes its spill partitions from it, and `ORDER BY`, `SELECT
-  DISTINCT` and window functions still see the whole row set — those are E4b and
-  E4c. Answers, `--analyze` counters and the spill path are unchanged; the
-  TPC-H goldens compare the folded answer to DuckDB's.
+  grace path sizes its spill partitions from it, and `SELECT DISTINCT` and
+  window functions still see the whole row set — those are E4c. `ORDER BY` was
+  E4b and is below. Answers, `--analyze` counters and the spill path are
+  unchanged; the TPC-H goldens compare the folded answer to DuckDB's.
+- `ORDER BY` under a memory budget sorts its scan and merges as it goes. The
+  runs are now built from the scan's batches instead of from a collected input
+  array, and the final merge is a cursor rather than one concatenated batch, so
+  neither the input nor the sorted answer is materialized: `select * from t
+  order by id` over 2,000,000 rows and 16 columns went from 506.8 MB to 178.8 MB
+  of peak RSS, and the same sort with `limit 10` from 335.0 MB to 168.7 MB
+  (verification §33). `stream`/`stream_with` hand that merge out one batch at a
+  time; a sorted stream owns its run files and removes them when the merge
+  ends, when `close()` stops it and when a pull raises, so a caller that drops
+  one unfinished leaves them to the store's owner (the CLI removes its
+  per-query directory at exit). The unbudgeted sort runs through the same
+  `build_runs`/`MergeCursor` code, so the collected and streamed answers cannot
+  disagree; `--analyze` counters, spill files and bytes are unchanged. What
+  remains above the budget is the merge's decoded run set, recorded as a known
+  limit in §33 and not fixed here.
 - `concat(a, b, ...)` is variadic, casts its arguments, and skips NULL ones:
   `concat(1, 2)` is `'12'` and `concat('a', NULL, 'b')` is `'ab'`, as in
   DuckDB. `||` keeps its own semantics (two string operands, NULL propagates)
