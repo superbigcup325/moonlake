@@ -177,6 +177,19 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
             None => @types.Null
           }
       }
+    "concat" => {
+      // concat ignores NULL arguments instead of propagating them
+      // (concat('a', NULL, 'b') is "ab"); `||` is the propagating spelling
+      let sb = StringBuilder()
+      for v in vals {
+        match v {
+          @types.Str(s) => sb.write_string(s)
+          @types.Null => ()
+          _ => return @types.Null
+        }
+      }
+      return @types.Str(sb.to_string())
+    }
     "greatest" | "least" => {
       let want_max = name == "greatest"
       let mut best : @types.Scalar = @types.Null
@@ -208,6 +221,12 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
     }
   }
   match name {
+    "concat_op" =>
+      // `||`: NULL in either operand makes the whole expression NULL
+      match (vals[0], vals[1]) {
+        (@types.Str(a), @types.Str(b)) => @types.Str(a + b)
+        _ => @types.Null
+      }
     "length" =>
       match vals[0] {
         @types.Str(s) => @types.Int32(char_count(s))
@@ -273,17 +292,6 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
       }
       @types.Str(sb.to_string())
     }
-    "concat" => {
-      let a = match vals[0] {
-        @types.Str(s) => s
-        _ => return @types.Null
-      }
-      let b = match vals[1] {
-        @types.Str(s) => s
-        _ => return @types.Null
-      }
-      @types.Str(a + b)
-    }
     "abs" =>
       match vals[0] {
         @types.Int32(v) => @types.Int32(if v < 0 { -v } else { v })
@@ -314,7 +322,9 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
       match as_double_scalar(vals[0]) {
         Some(v) => {
           let scale = pow10i(digits)
-          @types.Float64((v * scale).round() / scale)
+          // half away from zero on both sides: `Double::round` rounds half
+          // toward +infinity, so -2.5 landed on -2 while 2.5 landed on 3
+          @types.Float64(@types.round_half_away(v * scale) / scale)
         }
         None => @types.Null
       }
@@ -404,7 +414,17 @@ fn cast_scalar(
               "cannot cast \{x.to_string()} to int32: out of range",
             )
           }
-        @types.Float64(x) => @types.Int32(x.to_int())
+        @types.Float64(x) => {
+          // rounding, not truncation: `cast(2.5 as int)` is 3, as in DuckDB
+          // and PostgreSQL (C, SQLite and MySQL truncate — the README says so)
+          let r = @types.round_half_away(x)
+          if !(r >= -2147483648.0 && r <= 2147483647.0) {
+            raise @types.SqlError::Execute(
+              "cannot cast \{x.to_string()} to int32: out of range",
+            )
+          }
+          @types.Int32(r.to_int())
+        }
         @types.Boolean(b) => @types.Int32(if b { 1 } else { 0 })
         @types.Str(s) =>
           match @types.parse_i32(s) {
@@ -418,7 +438,15 @@ fn cast_scalar(
       match v {
         @types.Int32(x) => @types.Int64(x.to_int64())
         @types.Int64(_) => v
-        @types.Float64(x) => @types.Int64(x.to_int64())
+        @types.Float64(x) => {
+          let r = @types.round_half_away(x)
+          if !(r >= -9223372036854775808.0 && r < 9223372036854775808.0) {
+            raise @types.SqlError::Execute(
+              "cannot cast \{x.to_string()} to int64: out of range",
+            )
+          }
+          @types.Int64(r.to_int64())
+        }
         @types.Boolean(b) => @types.Int64(if b { 1L } else { 0L })
         @types.Str(s) =>
           match @types.parse_i64(s) {

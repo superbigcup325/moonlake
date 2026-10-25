@@ -966,9 +966,11 @@ fn parse_add(p : Parser) -> LExpr raise @types.SqlError {
         left = Arith(@types.Sub, left, parse_mul(p))
       }
       PipePipe => {
-        // string concatenation; the binder requires string operands
+        // string concatenation; the binder requires string operands. It lowers
+        // to its own name because `||` propagates NULL while the variadic
+        // concat() function skips NULL arguments (as in DuckDB)
         let _ = p.advance()
-        left = Func("concat", [left, parse_mul(p)])
+        left = Func("concat_op", [left, parse_mul(p)])
       }
       _ => running = false
     }

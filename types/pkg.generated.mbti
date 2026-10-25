@@ -42,6 +42,8 @@ pub fn parse_i64(String) -> Int64?
 
 pub fn parse_i64_bytes(Bytes, Int32, Int32) -> Int64?
 
+pub fn round_half_away(Double) -> Double
+
 // Errors
 pub(all) suberror SqlError {
   Parse(String)

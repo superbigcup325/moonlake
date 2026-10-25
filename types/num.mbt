@@ -186,12 +186,32 @@ pub fn parse_f64(s : String) -> Double? {
 
 ///|
 pub fn parse_bool(s : String) -> Bool? {
-  if s == "true" {
+  // case-insensitive, matching the CSV byte path: a pandas `True` column
+  // and `cast('TRUE' AS BOOLEAN)` must agree
+  let low = s.to_lower()
+  if low == "true" {
     Some(true)
-  } else if s == "false" {
+  } else if low == "false" {
     Some(false)
   } else {
     None
+  }
+}
+
+///|
+/// Round half away from zero, the convention SQL `round()` uses: 2.5 → 3 and
+/// -2.5 → -3. MoonBit's `Double::round` rounds half toward +infinity, so it
+/// makes `round(-2.5)` -2 and `round(-0.5)` 0 — asymmetric against the positive
+/// side and different from DuckDB and PostgreSQL.
+pub fn round_half_away(v : Double) -> Double {
+  let t = v.trunc()
+  let f = v - t
+  if f >= 0.5 {
+    t + 1.0
+  } else if f <= -0.5 {
+    t - 1.0
+  } else {
+    t
   }
 }
 

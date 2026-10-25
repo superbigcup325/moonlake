@@ -431,9 +431,16 @@ fn bind_select(
     // else binds as an expression over the pre-projection row (Flat for
     // plain queries, AggOut once aggregates are involved), and sorting
     // happens before projection.
+    //
+    // Only a *bare* name may name an output column: that is how a select
+    // alias is ordered by, and how a window result is ordered. A
+    // qualified name (a4.k) always names an input column — otherwise
+    // `select k as z, (k % 2) as k from a4 order by a4.k desc` sorts by
+    // the alias instead of the table column, silently. A bare name among
+    // duplicate output names resolves to the last one, which is what
+    // DuckDB does.
     let key_name : String? = match item.key {
       Col(name) => Some(name)
-      ColQ(_, name) => Some(name)
       _ => None
     }
     let mut idx : Int32? = match key_name {
@@ -1587,7 +1594,13 @@ fn Binder::bind(
       (pe, dt)
     }
     IsNull(v, negated) => {
-      let (pe, _) = self.bind(v, space)
+      // `NULL IS NULL` is TRUE: the literal needs no live side to type it
+      let pe = if v is Lit(@types.Null) {
+        Const(@types.Null)
+      } else {
+        let (pe, _) = self.bind(v, space)
+        pe
+      }
       (IsNullE(pe, negated), @types.Bool)
     }
     Star => raise @types.SqlError::Bind("'*' is only allowed as a select item")
@@ -1757,6 +1770,11 @@ fn Binder::bind_func(
     dt : @types.DataType,
     what : String,
   ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+    // an untyped NULL literal takes the type the call demands, as in DuckDB:
+    // `length(NULL)` is NULL, not a bind error
+    if e is Lit(@types.Null) {
+      return (Const(@types.Null), dt)
+    }
     let (pe, got) = self.bind(e, space)
     if got != dt {
       raise @types.SqlError::Bind(
@@ -1768,6 +1786,9 @@ fn Binder::bind_func(
   fn want_num(
     e : @sql.LExpr,
   ) -> (PhysExpr, @types.DataType) raise @types.SqlError {
+    if e is Lit(@types.Null) {
+      return (Const(@types.Null), @types.Int32)
+    }
     let (pe, got) = self.bind(e, space)
     match got {
       @types.Int32 | @types.Int64 | @types.Float64 => ()
@@ -1813,13 +1834,32 @@ fn Binder::bind_func(
       }
       (FuncE("substring", pes, @types.Str), @types.Str)
     }
-    "concat" => {
+    "concat_op" => {
+      // the `||` operator (the parser's lowering): two string operands, NULL
+      // propagates, unlike the variadic concat() function
       if arity != 2 {
-        raise @types.SqlError::Bind("concat() takes exactly two arguments")
+        raise @types.SqlError::Bind("concat_op() takes exactly two arguments")
       }
       let (l, _) = want(args[0], @types.Str, "string")
       let (r, _) = want(args[1], @types.Str, "string")
-      (FuncE("concat", [l, r], @types.Str), @types.Str)
+      (FuncE("concat_op", [l, r], @types.Str), @types.Str)
+    }
+    "concat" => {
+      // variadic, and it stringifies what it is given (concat(1, 2) is "12",
+      // as in DuckDB); NULL arguments contribute nothing
+      if arity == 0 {
+        raise @types.SqlError::Bind("concat() takes at least one argument")
+      }
+      let pes : Array[PhysExpr] = []
+      for a in args {
+        if a is Lit(@types.Null) {
+          pes.push(Const(@types.Null))
+        } else {
+          let (pe, dt) = self.bind(a, space)
+          pes.push(if dt == @types.Str { pe } else { CastE(pe, @types.Str) })
+        }
+      }
+      (FuncE("concat", pes, @types.Str), @types.Str)
     }
     "abs" => {
       if arity != 1 {

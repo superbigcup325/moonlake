@@ -95,18 +95,27 @@ fn decorrelate(
       Exists(sub, negated) =>
         match cor.try_exists(sub, negated, extra_schemas, extra_batches) {
           Some(item) => extra_items.push(item)
-          None => kept.push(lexpr)
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            kept.push(lexpr)
+          }
         }
       InSelect(v, sub, negated) =>
         match cor.try_in(v, sub, negated, extra_schemas, extra_batches, kept) {
           Some(item) => extra_items.push(item)
-          None => kept.push(lexpr)
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            kept.push(lexpr)
+          }
         }
       Cmp(op, outer_e, ScalarSub(sub)) =>
         match
           cor.try_scalar(op, outer_e, sub, extra_schemas, extra_batches, kept) {
           Some(item) => extra_items.push(item)
-          None => kept.push(lexpr)
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            kept.push(lexpr)
+          }
         }
       Cmp(op, ScalarSub(sub), outer_e) =>
         match
@@ -119,7 +128,10 @@ fn decorrelate(
             kept,
           ) {
           Some(item) => extra_items.push(item)
-          None => kept.push(lexpr)
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            kept.push(lexpr)
+          }
         }
       _ => kept.push(lexpr)
     }
@@ -244,8 +256,7 @@ fn Correlator::try_exists(
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
 ) -> @sql.FromItem? raise @types.SqlError {
-  if !(sub.group_by.length() == 0) ||
-    sub.limit is Some(_) ||
+  if sub.limit is Some(_) ||
     sub.offset is Some(_) ||
     sub.distinct ||
     sub.setop is Some(_) {
@@ -255,8 +266,24 @@ fn Correlator::try_exists(
   // correlation keys (keeping the HAVING), then the semi/anti join
   // answers "does a satisfying group exist for this outer row?"
   if sub.having is Some(_) {
+    // the grouped flavor regroups by the correlation keys, so it can only
+    // keep a HAVING that does not have the user's own grouping to run over —
+    // unless that grouping is exactly those keys, where regrouping is the
+    // identity
+    if sub.group_by.length() > 0 {
+      let (pairs, _, _) = match self.prepare(sub) {
+        Some(triple) => triple
+        None => return None
+      }
+      if !same_grouping(sub.group_by, pairs) {
+        return None
+      }
+    }
     return self.try_exists_grouped(sub, _negated, extra_schemas, extra_batches)
   }
+  // No HAVING: a GROUP BY cannot change whether a matching row exists
+  // (`select 1 from t where ... group by v` has a row iff the filtered input
+  // does), so it is dropped rather than refused.
   let sink : Array[@sql.LExpr] = []
   match self.prepare(sub) {
     Some((pairs, inner_filter, residual)) =>
@@ -278,6 +305,31 @@ fn Correlator::try_exists(
       }
     None => None
   }
+}
+
+///|
+/// Whether the user's GROUP BY is exactly the correlation keys. The grouped
+/// EXISTS flavor regroups by those keys, which keeps the HAVING's meaning only
+/// when the two groupings agree.
+fn same_grouping(
+  group_by : Array[@sql.LExpr],
+  pairs : Array[(@sql.LExpr, @sql.LExpr)],
+) -> Bool {
+  if group_by.length() != pairs.length() {
+    return false
+  }
+  for g in group_by {
+    let mut found = false
+    for p in pairs {
+      if p.0 == g {
+        found = true
+      }
+    }
+    if !found {
+      return false
+    }
+  }
+  true
 }
 
 ///|
@@ -553,6 +605,120 @@ fn Correlator::build_scalar_table(
 }
 
 ///|
+/// Does the subquery reference a column of the enclosing query? The
+/// decorrelator gives up on such a subquery (it only decorrelates equality
+/// correlation), and the inner bind then fails with "unknown table or alias
+/// <outer> in FROM" — which reads as if the outer table were missing rather
+/// than as the limit it is.
+fn Correlator::refs_outer(self : Correlator, sub : @sql.Select) -> Bool {
+  let saved = self.sub_items
+  self.sub_items = sub.from
+  let mut hit = false
+  for item in sub.items {
+    if self.mentions_outer(item.expr) {
+      hit = true
+    }
+  }
+  match sub.filter {
+    Some(f) => if self.mentions_outer(f) { hit = true }
+    None => ()
+  }
+  for g in sub.group_by {
+    if self.mentions_outer(g) {
+      hit = true
+    }
+  }
+  match sub.having {
+    Some(h) => if self.mentions_outer(h) { hit = true }
+    None => ()
+  }
+  for o in sub.order_by {
+    if self.mentions_outer(o.key) {
+      hit = true
+    }
+  }
+  self.sub_items = saved
+  hit
+}
+
+///|
+/// Does the expression itself reference a column of the enclosing query?
+/// Recurses into subexpressions; a nested subquery is its own scope and is
+/// judged when it is reached. `side_of(e)` alone cannot answer this: it merges
+/// a mixed expression into `Mixed`, which is also what an unresolved name next
+/// to an outer reference produces.
+fn Correlator::mentions_outer(self : Correlator, e : @sql.LExpr) -> Bool {
+  match e {
+    Col(_) | ColQ(_, _) =>
+      match self.side_of(e) {
+        Outer => true
+        _ => false
+      }
+    Lit(_) | IntervalLit(_, _) | Star => false
+    Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
+      self.mentions_outer(l) || self.mentions_outer(r)
+    Not(x) | IsNull(x, _) | Extract(_, x) | Cast(x, _) => self.mentions_outer(x)
+    Between(v, lo, hi) =>
+      self.mentions_outer(v) ||
+      self.mentions_outer(lo) ||
+      self.mentions_outer(hi)
+    In(v, items) | NotIn(v, items) =>
+      self.mentions_outer(v) || self.any_outer(items)
+    Like(v, _) | NotLike(v, _) => self.mentions_outer(v)
+    Case(whens, else_) => {
+      let mut hit = false
+      for w in whens {
+        if self.mentions_outer(w.0) || self.mentions_outer(w.1) {
+          hit = true
+        }
+      }
+      match else_ {
+        Some(x) => hit || self.mentions_outer(x)
+        None => hit
+      }
+    }
+    Func(_, args) => self.any_outer(args)
+    Agg(_, arg) =>
+      match arg {
+        Some(x) => self.mentions_outer(x)
+        None => false
+      }
+    ScalarSub(_) | InSelect(_, _, _) | Exists(_, _) => false
+  }
+}
+
+///|
+fn Correlator::any_outer(self : Correlator, xs : Array[@sql.LExpr]) -> Bool {
+  let mut hit = false
+  for x in xs {
+    if self.mentions_outer(x) {
+      hit = true
+    }
+  }
+  hit
+}
+
+///|
+/// Replace the bare "unknown table or alias" a left-alone correlated subquery
+/// would raise with the actual limit: decorrelation pairs inner and outer
+/// columns by equality, so a correlation reaching the outer query through any
+/// other operator cannot be attached at all.
+fn Correlator::reject_unsupported_correlation(
+  self : Correlator,
+  sub : @sql.Select,
+) -> Unit raise @types.SqlError {
+  // a windowed subquery is refused for its own reason; do not relabel it
+  if sub.windows.length() > 0 {
+    return
+  }
+  if self.refs_outer(sub) {
+    raise @types.SqlError::Bind(
+      "this correlated subquery cannot be decorrelated: only `inner.col = outer.col` equalities over plain tables are paired, and the subquery may not carry DISTINCT, LIMIT, a set operation or a GROUP BY with HAVING — rewrite a non-equality correlation as a join",
+    )
+  }
+}
+
+///|
 /// Classify one correlated scalar subquery appearing in a select item.
 /// Same rules as try_scalar; on bail the subquery stays untouched (the
 /// runner keeps its unsupported-correlation error).
@@ -571,12 +737,19 @@ fn Correlator::try_scalar_item(
     sub.setop is Some(_) {
     return None
   }
-  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
-    return None
-  }
   let (pairs, inner_only, residual) = match self.prepare(sub) {
     Some(triple) => triple
     None => return None
+  }
+  // same refusal as try_scalar: a correlated scalar subquery without an
+  // aggregate would multiply outer rows
+  if sub.items.length() != 1 || !contains_agg(sub.items[0].expr) {
+    if pairs.length() > 0 {
+      raise @types.SqlError::Bind(
+        "correlated scalar subquery must select an aggregate (e.g. min/max/avg/count)",
+      )
+    }
+    return None
   }
   if pairs.length() == 0 || residual.length() > 0 {
     return None
@@ -604,7 +777,10 @@ fn rewrite_scalar_items(
         match
           cor.try_scalar_item(sub, extra_schemas, extra_batches, extra_items) {
           Some(col) => col
-          None => e
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            e
+          }
         }
       Arith(op, l, r) => Arith(op, walk(l), walk(r))
       Cmp(op, l, r) => Cmp(op, walk(l), walk(r))

@@ -53,6 +53,24 @@ test "infer types, nulls and quoted strings" {
 }
 
 ///|
+test "bool column inference is case-insensitive" {
+  // pandas.to_csv and Python's csv.writer spell Python bools True/False, and
+  // DuckDB reads every spelling; a capitalized column used to fall through to
+  // string and only fail later at `where flag`
+  let content = "flag,mixed\nTrue,TRUE\nFalse,FALSE\n,\n"
+  let entry = @csv.scan_string(content, "t")
+  let cols = entry.schema.columns
+  assert_eq(cols[0].dtype, @types.Bool)
+  assert_eq(cols[1].dtype, @types.Bool)
+  let b = read_all(entry)[0]
+  assert_eq(b.row_count(), 3)
+  assert_eq(b.columns()[0].get(0), @types.Scalar::Boolean(true))
+  assert_eq(b.columns()[0].get(1), @types.Scalar::Boolean(false))
+  assert_eq(b.columns()[0].get(2), @types.Scalar::Null)
+  assert_eq(b.columns()[1].get(0), @types.Scalar::Boolean(true))
+}
+
+///|
 test "rows split into fixed size batches" {
   let sb = StringBuilder()
   sb.write_string("n\n")

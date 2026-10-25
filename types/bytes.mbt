@@ -243,20 +243,32 @@ pub fn parse_f64_bytes(buf : Bytes, start : Int32, end : Int32) -> Double? {
 }
 
 ///|
+fn ascii_lower_byte(b : Byte) -> Int32 {
+  let v = b.to_int()
+  if v >= 65 && v <= 90 {
+    v + 32
+  } else {
+    v
+  }
+}
+
+///|
 pub fn parse_bool_bytes(buf : Bytes, start : Int32, end : Int32) -> Bool? {
+  // case-insensitive: pandas writes True/False and DuckDB reads every
+  // spelling, so a capitalized column must not fall through to string
   let n = end - start
   if n == 4 &&
-    buf.unsafe_get(start).to_int() == 116 && // t
-    buf.unsafe_get(start + 1).to_int() == 114 && // r
-    buf.unsafe_get(start + 2).to_int() == 117 && // u
-    buf.unsafe_get(start + 3).to_int() == 101 {
+    ascii_lower_byte(buf.unsafe_get(start)) == 116 && // t
+    ascii_lower_byte(buf.unsafe_get(start + 1)) == 114 && // r
+    ascii_lower_byte(buf.unsafe_get(start + 2)) == 117 && // u
+    ascii_lower_byte(buf.unsafe_get(start + 3)) == 101 {
     Some(true)
   } else if n == 5 &&
-    buf.unsafe_get(start).to_int() == 102 && // f
-    buf.unsafe_get(start + 1).to_int() == 97 && // a
-    buf.unsafe_get(start + 2).to_int() == 108 && // l
-    buf.unsafe_get(start + 3).to_int() == 115 && // s
-    buf.unsafe_get(start + 4).to_int() == 101 {
+    ascii_lower_byte(buf.unsafe_get(start)) == 102 && // f
+    ascii_lower_byte(buf.unsafe_get(start + 1)) == 97 && // a
+    ascii_lower_byte(buf.unsafe_get(start + 2)) == 108 && // l
+    ascii_lower_byte(buf.unsafe_get(start + 3)) == 115 && // s
+    ascii_lower_byte(buf.unsafe_get(start + 4)) == 101 {
     Some(false)
   } else {
     None

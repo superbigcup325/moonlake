@@ -183,6 +183,55 @@ test "order by desc with limit keeps the top rows" {
 }
 
 ///|
+test "order by a qualified column is not rebound to an output alias" {
+  let content = "k,flag\n4,0\n3,1\n2,0\n1,1\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(content, "a") catch { e => abort("\{e}") })
+  // `a.k` must sort by the table column (4,3,2,1). The projection renames
+  // `flag` to `k`, so resolving the qualified key by its bare name would
+  // sort by the alias instead and yield 3,1,4,2.
+  let r = run("SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC", cat)
+  assert_eq(r.row_count(), 4)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(4))
+  assert_eq(r.get(1, 0), @types.Scalar::Int32(3))
+  assert_eq(r.get(2, 0), @types.Scalar::Int32(2))
+  assert_eq(r.get(3, 0), @types.Scalar::Int32(1))
+  // A bare name still means the output column, duplicate names included
+  // (DuckDB resolves the last one), so this one sorts by `flag`.
+  let r2 = run("SELECT k AS z, flag AS k FROM a ORDER BY k DESC, z ASC", cat)
+  assert_eq(r2.get(0, 1), @types.Scalar::Int32(1))
+  assert_eq(r2.get(1, 1), @types.Scalar::Int32(1))
+  assert_eq(r2.get(2, 1), @types.Scalar::Int32(0))
+}
+
+///|
+test "order by a qualified key over a join uses that side" {
+  let left = "k,p\n4,40\n3,30\n2,20\n1,10\n"
+  let right = "k,q\n3,30\n2,20\n"
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string(left, "a") catch { e => abort("\{e}") })
+  cat.register(@csv.scan_string(right, "b") catch { e => abort("\{e}") })
+  // both sides project a column named `k`; the qualified key must pick a's
+  let r = run(
+    "SELECT a.k, b.k FROM a a LEFT JOIN b b ON a.k = b.k ORDER BY a.k DESC", cat,
+  )
+  assert_eq(r.row_count(), 4)
+  assert_eq(r.get(0, 0), @types.Scalar::Int32(4))
+  assert_eq(r.get(0, 1), @types.Scalar::Null)
+  assert_eq(r.get(1, 0), @types.Scalar::Int32(3))
+  assert_eq(r.get(1, 1), @types.Scalar::Int32(3))
+  // and NULLS LAST must attach to the key that is actually NULL-extended
+  let r2 = run(
+    "SELECT a.k, b.k FROM a a FULL JOIN b b ON a.k = b.k ORDER BY b.k DESC NULLS LAST",
+    cat,
+  )
+  assert_eq(r2.get(0, 1), @types.Scalar::Int32(3))
+  assert_eq(r2.get(1, 1), @types.Scalar::Int32(2))
+  assert_eq(r2.get(2, 1), @types.Scalar::Null)
+  assert_eq(r2.get(3, 1), @types.Scalar::Null)
+}
+
+///|
 test "min and max track per-group extrema" {
   let cat = group_catalog()
   let r = run(
@@ -1018,6 +1067,74 @@ test "concat operator joins strings and propagates NULL" {
 }
 
 ///|
+test "concat() is variadic, stringifies and skips NULL" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT concat(name, '-', grade) AS a, concat('x') AS b, concat(1, 2) AS c FROM t WHERE id = 2",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Str("beta-B"))
+  assert_eq(r.get(0, 1), @types.Str("x"))
+  // non-string arguments are cast, as in DuckDB: concat(1, 2) is "12"
+  assert_eq(r.get(0, 2), @types.Str("12"))
+  // NULL arguments are skipped here, while || propagates them
+  let r2 = run(
+    "SELECT concat('a', null, 'b') AS a, concat(null, null) AS b, 'a' || null AS c FROM t WHERE id = 1",
+    cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Str("ab"))
+  assert_eq(r2.get(0, 1), @types.Str(""))
+  assert_eq(r2.get(0, 2), @types.Scalar::Null)
+  // no arguments is a bind error
+  let err = run_err("SELECT concat() FROM t", cat)
+  assert_true(err.to_string().contains("at least one argument"))
+}
+
+///|
+test "an untyped NULL is accepted where a call demands a type" {
+  let cat = funcs_catalog()
+  let r = run(
+    "SELECT length(null) AS a, upper(null) AS b, abs(null) AS c, round(null) AS d FROM t WHERE id = 1",
+    cat,
+  )
+  assert_eq(r.get(0, 0), @types.Scalar::Null)
+  assert_eq(r.get(0, 1), @types.Scalar::Null)
+  assert_eq(r.get(0, 2), @types.Scalar::Null)
+  assert_eq(r.get(0, 3), @types.Scalar::Null)
+  // a wrong non-NULL argument still errors, so the check did not go away
+  let err = run_err("SELECT upper(id) FROM t WHERE id = 1", cat)
+  assert_true(err.to_string().contains("requires a string argument"))
+  // IS NULL on the literal itself needs no live side
+  let r2 = run(
+    "SELECT null is null AS a, null is not null AS b FROM t WHERE id = 1", cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Boolean(true))
+  assert_eq(r2.get(0, 1), @types.Boolean(false))
+}
+
+///|
+test "round is half away from zero on both sides" {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("x\n1\n", "t") catch { e => abort("\{e}") })
+  let r = run(
+    "SELECT round(2.5), round(-2.5), round(3.5), round(-3.5), round(-0.5), round(0.5) FROM t",
+    cat,
+  )
+  // MoonBit's Double::round is half toward +infinity: -2.5 -> -2 and -0.5 -> 0.
+  // SQL round is half away from zero, as in DuckDB and PostgreSQL.
+  assert_eq(r.get(0, 0), @types.Float64(3.0))
+  assert_eq(r.get(0, 1), @types.Float64(-3.0))
+  assert_eq(r.get(0, 2), @types.Float64(4.0))
+  assert_eq(r.get(0, 3), @types.Float64(-4.0))
+  assert_eq(r.get(0, 4), @types.Float64(-1.0))
+  assert_eq(r.get(0, 5), @types.Float64(1.0))
+  // same asymmetry with a digit count, which scaled before rounding
+  let r2 = run("SELECT round(-1.2345, 2), round(1.2345, 2) FROM t", cat)
+  assert_eq(r2.get(0, 0), @types.Float64(-1.23))
+  assert_eq(r2.get(0, 1), @types.Float64(1.23))
+}
+
+///|
 test "CAST converts across types and errors on garbage" {
   let cat = funcs_catalog()
   let r = run(
@@ -1028,9 +1145,15 @@ test "CAST converts across types and errors on garbage" {
   assert_eq(r.get(0, 1), @types.Float64(12.5))
   assert_eq(r.get(0, 2), @types.Date(@types.parse_date("2024-03-01").unwrap()))
   assert_eq(r.get(0, 3), @types.Boolean(true))
-  // float -> int truncates toward zero
+  // float -> int rounds half away from zero (DuckDB and PostgreSQL), so 2.9
+  // is 3; C, SQLite and MySQL would truncate to 2
   let r2 = run("SELECT CAST(2.9 AS int) AS i FROM t WHERE id = 1", cat)
-  assert_eq(r2.get(0, 0), @types.Int32(2))
+  assert_eq(r2.get(0, 0), @types.Int32(3))
+  let r2b = run("SELECT CAST(-2.5 AS int) AS i FROM t WHERE id = 1", cat)
+  assert_eq(r2b.get(0, 0), @types.Int32(-3))
+  // out of range is a row error, not a saturating cast
+  let err5 = run_err("SELECT CAST(1e20 AS int) FROM t WHERE id = 1", cat)
+  assert_true(err5.to_string().contains("out of range"))
   // NULL passes through every cast
   let r3 = run("SELECT CAST(NULL AS int) AS n FROM t WHERE id = 1", cat)
   assert_eq(r3.get(0, 0), @types.Scalar::Null)
@@ -1180,6 +1303,40 @@ test "SELECT DISTINCT dedupes projected rows" {
 }
 
 ///|
+test "a grouped correlated EXISTS drops the GROUP BY and keeps a matching HAVING" {
+  let cat = join_catalog()
+  // customers 1 and 3 have orders, 2 does not; the inner GROUP BY cannot
+  // change whether a matching row exists, so it is dropped
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE cid = custkey GROUP BY custkey) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 2)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // grouping by the correlation key is the grouping the decorrelator builds
+  // anyway, so the HAVING keeps its meaning: only custkey 1 has two orders
+  let r2 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE cid = custkey GROUP BY custkey HAVING count(*) > 1) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(1))
+  let r3 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT 1 FROM orders WHERE cid = custkey GROUP BY custkey HAVING count(*) > 1) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 2)
+  assert_eq(r3.get(0, 0), @types.Int32(2))
+  // grouping by something else would give the HAVING a different scope, which
+  // the decorrelator cannot preserve: it says so instead of regrouping
+  let err = run_err(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE cid = custkey GROUP BY amount HAVING count(*) > 1)",
+    cat,
+  )
+  assert_true(err.to_string().contains("GROUP BY with HAVING"))
+}
+
+///|
 test "EXISTS and NOT EXISTS gate rows on the subquery" {
   let cat = join_catalog()
   // customers (cid 1..3); orders (custkey 1, 1, 3, NULL)
@@ -1225,6 +1382,33 @@ test "EXISTS and NOT EXISTS gate rows on the subquery" {
   )
   assert_eq(r7.row_count(), 1)
   assert_eq(r7.get(0, 0), @types.Int32(2))
+}
+
+///|
+test "a non-equality correlation names the supported shape" {
+  let cat = join_catalog()
+  // decorrelation pairs inner and outer columns by equality only, so the
+  // refusal must say that instead of blaming a missing outer table
+  let err = run_err(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount < cid)",
+    cat,
+  )
+  assert_true(err.to_string().contains("inner.col = outer.col"))
+  assert_true(
+    err.to_string().contains("rewrite a non-equality correlation as a join"),
+  )
+  // a correlated scalar subquery in the select list gets the same pointer
+  let err2 = run_err(
+    "SELECT cid, (SELECT max(amount) FROM orders WHERE amount < cid) AS m FROM customers",
+    cat,
+  )
+  assert_true(err2.to_string().contains("inner.col = outer.col"))
+  // the equality form of the same question still decorrelates
+  let ok = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE custkey = cid)",
+    cat,
+  )
+  assert_eq(ok.row_count(), 2)
 }
 
 ///|
