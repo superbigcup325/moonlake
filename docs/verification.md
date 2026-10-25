@@ -2011,10 +2011,10 @@ one-column `one`) agrees on all 39: the equality-shape regression queries from �
 subqueries in the select list, in WHERE, in arithmetic and in `CASE`, repeated
 outer rows through a join, and `IN` / `NOT IN` against sets that contain NULLs.
 The harness compares sorted row multisets, so no query can pass on ordering.
-`engine/e2e_test.mbt` gained four tests (the theta join, the nested
+`engine/e2e_test.mbt` gained five tests (the theta join, the nested
 `NOT`/`OR`/`CASE` shapes, the theta aggregate including the repeated-outer-row
-case, and the three-valued `IN`); the two shapes §26 recorded as refused are
-gone from that list.
+case, the three-valued `IN`, and the two positions that name themselves); the
+two shapes §26 recorded as refused are gone from that list.
 
 **What is still refused, and why it is named.** A derived table in the
 subquery's FROM (the classification pass only treats `Named` FROM items as
@@ -2028,7 +2028,7 @@ after the clause that reads it). Each reports its reason and points at a join;
 none of them guesses, and none of them reaches the user as `unknown table or
 alias <outer> in FROM` any more.
 
-**Gates.** `moon test` 279/279 (wasm-gc), `moon test --target native` 292/292,
+**Gates.** `moon test` 280/280 (wasm-gc), `moon test --target native` 293/293,
 `moon check --deny-warn` clean, `harness/check_all.sh` 33/33 golden comparisons
 plus its three spill-equivalence checks, `harness/check_writer_interop.py` all
 checks, `harness/check_cli.sh` on the debug and release binaries, `moon fmt

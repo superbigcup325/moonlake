@@ -1506,6 +1506,7 @@ A 39-query DuckDB differential over NULL-rich fixtures agrees on all 39
 (`docs/verification.md` §28), including the two shapes the previous pass
 recorded as deliberately refused. Four new `engine/e2e_test.mbt` tests pin the
 theta join, the nested `NOT`/`OR`/`CASE` shapes, the theta aggregate (with the
-repeated-outer-row case that is the whole point of the dedup) and three-valued
-`IN`. The gates were re-run whole: 279/279 wasm-gc, 292/292 native, 33/33 TPC-H
-goldens plus spill equivalence, writer interop, CLI checks on both binaries.
+repeated-outer-row case that is the whole point of the dedup), three-valued
+`IN`, and the positions that name themselves. The gates were re-run whole:
+280/280 wasm-gc, 293/293 native, 33/33 TPC-H goldens plus spill equivalence,
+writer interop, CLI checks on both binaries.
