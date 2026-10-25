@@ -88,7 +88,7 @@ You can browse and install extra skills here:
   index and the build fails with `module was not found in the registry` even for
   a published version; point `MOON_HOME` at a writable scratch directory and
   re-run `moon update` (the following check downloads the graph).
-- `superbigcup325/colenc@0.1.0` is published, so a clean checkout resolves it
+- `superbigcup325/colenc@0.1.1` is published, so a clean checkout resolves it
   from the registry (`moon update && moon check`). Co-developing
   the two modules still goes through an untracked `moon.work` plus a symlink to
   the colenc checkout — and that workspace shadows the registry version, so
@@ -114,7 +114,7 @@ You can browse and install extra skills here:
   fetches) downloads what it can and then aborts when it reaches one. As of
   2026-10-20 this project's dependency graph is clean (`moonbitlang/x@0.5.6` +
   `moonbitlang/quickcheck@0.15.0` +
-  `superbigcup325/colenc@0.1.0`; the two
+  `superbigcup325/colenc@0.1.1`; the two
   offenders were `quickcheck@0.14.0` and `mizchi/duckdb@0.6.4` pulled in
   transitively through `mizchi/parquet` — the former cleared by bumping to
   0.15.0, the latter by dropping the dependency once the in-house decoder landed).
