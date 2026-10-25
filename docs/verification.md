@@ -2834,7 +2834,7 @@ deployed.
 
 | Gate | Result |
 |---|---|
-| `moon check --deny-warn` | Clean, 46 packages |
+| `moon check --deny-warn` | Clean, 46 tasks |
 | `moon fmt --check` | Clean |
 | `moon info`, then `git diff -- '*.mbti'` | No interface change |
 | `moon test --target native` | 340 passed |
