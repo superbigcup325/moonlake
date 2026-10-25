@@ -1,18 +1,19 @@
 # Roadmap
 
-The current delivery target is **0.6.0, unreleased**. All changes since 0.5.0
-and the work scheduled below belong to it. Completing a task does not make a
-release: the remaining tasks and their acceptance checks must clear first.
-Directions waiting for evidence stay on the hold list until their trigger fires.
+**0.6.0 is accepted locally and unreleased.** All changes since 0.5.0 and the
+work below belong to it, and its acceptance checks have cleared (verification
+§36); what is left is release work — push, tag, publication and deployment —
+which happens only on explicit authorization. Directions waiting for evidence
+stay on the hold list until their trigger fires.
 
 ## Current implementation
 
 Native CSV and Parquet sources read byte ranges, the native Parquet writer
 streams its output, and spill directories are reclaimed when ownership evidence
-proves the process is dead. These shipped in 0.5.0. The pending 0.6.0 changes
-include files past 2 GiB, smaller Snappy output, a single-table LIMIT that stops
-its scan, checked SQL integer arithmetic, CSV and CLI fixes, and more general
-correlated subqueries. [CHANGELOG](../CHANGELOG.md) lists implemented changes;
+proves the process is dead. These shipped in 0.5.0. The 0.6.0 changes add files
+past 2 GiB, smaller Snappy output, a single-table LIMIT that stops its scan,
+checked SQL integer arithmetic, CSV and CLI fixes, and more general correlated
+subqueries. [CHANGELOG](../CHANGELOG.md) lists implemented changes;
 [verification](verification.md) records the evidence for each.
 
 Sources read incrementally, and the operators that can work a batch at a time
@@ -40,18 +41,17 @@ The order below is by dependency. R0 fixes the scope, S0 preserves correctness
 before another executor change, E3 adds result consumption, and E4 changes one
 blocking operator at a time. The existing early-stop measurements, batch
 contract and single-table LIMIT implementation cover the earlier E0/E1/E2
-milestone; extend them rather than implementing that milestone again.
-R0, S0, E3, E4a–E4c and W0 are complete. R1 remains open; its inclusion in
-0.6.0 is a delivery commitment, not a claim that the evidence already exists. S0's gate is `harness/check_correlation.py` with its
-fixtures, wired into the fixed-case CI job and the seeded nightly; verification
-§30 records what it found while being committed — two wrong answers in
-three-valued `IN` / `NOT IN` and one shape whose refusal message is still the
-binder's. E3's contract is stated in `engine/stream.mbt` and its evidence in
-verification §31; E4a's is the same batch contract one operator further in, and
-verification §32 records it. E4b's is a cursor over run files, and
-verification §33 records it; E4c's is the one shape whose build side must stay
-resident, recorded in §34; W0's answer is a measurement and a decision, and
-verification §35 records both.
+milestone; extend them rather than implementing that milestone again. Every task
+below, R1 included, is complete on `3ab2634` (verification §36). S0's gate is
+`harness/check_correlation.py` with its fixtures, wired into the fixed-case CI
+job and the seeded nightly; verification §30 records what it found while being
+committed — two wrong answers in three-valued `IN` / `NOT IN` and one shape
+whose refusal message is still the binder's. E3's contract is stated in
+`engine/stream.mbt` and its evidence in verification §31; E4a's is the same
+batch contract one operator further in, and verification §32 records it. E4b's
+is a cursor over run files, and verification §33 records it; E4c's is the one
+shape whose build side must stay resident, recorded in §34; W0's answer is a
+measurement and a decision, and verification §35 records both.
 
 | Task | Delivery | Depends on | Acceptance |
 |---|---|---|---|
@@ -62,7 +62,7 @@ verification §35 records both.
 | E4b | External sort consumes batches and feeds the result consumer | E3 | **Done** (verification §33): runs are built from the scan's batches, the final merge is a cursor and a sorted stream hands it out a batch at a time, so neither the input array nor the sorted answer is materialized (16 columns, 2,000,000 rows, `select * … order by id`: 506.8 MB → 178.8 MB of peak RSS); ties, NULL order, DISTINCT, OFFSET/LIMIT and the in-memory fallback match the collected answers at four budgets; the run files are removed on exhaustion, on early close and on error; `--analyze` counters and spill bytes are unchanged |
 | E4c | Join input and output use the batch contract | E3, established spill lifecycle | **Done** (verification §34): a two-table INNER/LEFT/FULL join streams — `JoinCursor` reads the build side once and probes a batch at a time, the output leaves in batches of at most 4096 rows, and `join_step` runs on the same cursor so the collected and streamed answers cannot diverge; duplicate keys on both sides, empty build and probe sides, LEFT/FULL unmatched rows, residual predicates, NULL keys and an early close are compared against `execute`; the shapes that stay collected are listed and each is pinned by a test (16 columns, 2,000,000 rows probed against a 1,000-row build: 270.8 MB → 35.3 MB of peak RSS, and under `--memory 8M` the grace path is not entered at all, 1.99 s → 0.41 s) |
 | W0 | A second dataset tests whether adaptive dictionaries are worth implementing | Fixed comparison inputs; independent of E3/E4 | **Done** (verification §35), and the answer is "not in this release": on a seeded 500,000-row access log a per-column dictionary is worth −14% of the file at our writer's 4,096-row groups and −28% at 65,536-row groups, a table-level dictionary is a net *loss* (+1.6%), and PyArrow's 65,536-row groups save 1.4% of the file while raising the reader's peak from 13 MB to 57 MB, so the layout decision comes before the encoding; `harness/dict_survey.py` reproduces the tables and `write --snappy` output is within ±1.4% of PyArrow's plain output on the same rows (the seed, both layouts, the per-column deltas, the write/read times and the memory numbers are recorded) |
-| R1 | Final 0.6.0 acceptance and release evidence | S0, E3, E4a, E4b, E4c, W0 | The release checks below pass on the final candidate; record the remaining eager paths and platform limits; publish only after release authorization |
+| R1 | Final 0.6.0 acceptance and release evidence | S0, E3, E4a, E4b, E4c, W0 | **Done** (verification §36): one candidate passes the whole list — check, format and interfaces clean, 340 native / 327 wasm-gc / 327 js tests, 75 Python self-tests, the 33 goldens on wasm-gc, native, js and through the release binary, the S0 differential plus window, pushdown, corpus, encoding, CLI, spill and writer gates, a 2,410,475,894-byte file round-tripping through three readers, and the packaged consumer pulling four shapes on three targets with fresh caches; the playground builds host-free and passes 16/16 in real Chromium; the performance pair is recorded beside a same-session 0.5.0 re-record; the eager shapes and platform limits are stated in `engine/stream.mbt`, §34 and the paragraph above. Push, tag, publication and deployment stay unauthorized release work |
 
 **E3 contract.** Extend the ownership and early-stop rules in
 `engine/stream.mbt` to the result boundary. `catalog.BatchStream` is an open
@@ -151,25 +151,31 @@ reader can tell the difference between "not yet" and "no".
 | Parallel execution, linear memory, cross-language benchmark suites | A target user and toolchain support for it. |
 | Ranged reads on wasm-gc and js | Upstream exposing one: a single range-read method behind the existing file type, with the same contract the native binding keeps. `moonbitlang/async` shows the shape on native; the synchronous path and the wasm-gc/js runtime behind it are upstream's to build, so this direction waits rather than being worked on here. |
 
-## What 0.6.0 has to clear
+## What 0.6.0 had to clear
 
-R1 starts after the required implementation and investigation tasks above are
-complete. Record evidence against the final candidate SHA:
+R1 started after the required implementation and investigation tasks above were
+complete, and every item below passed on `3ab2634`; `verification.md` §36 is the
+record, with the commands and the numbers. The list is kept in the past tense so
+a reader can see what acceptance meant for this release:
 
 - The manifest, library constant, generated interfaces, changelog and eventual
   tag agree on 0.6.0. Set the changelog's release date when the release happens.
 - Check, format, interface freshness, the native/wasm-gc/js test suites and
   Python gate self-tests pass. Extend the independent archive consumer to use
   the new result API on all three targets, with fresh dependency caches.
-- Golden queries pass on all three targets. `harness/check_all.sh` currently
-  runs the default wasm-gc target; add an explicit target or binary selection
-  and preserve a reproducible command before claiming native or js coverage.
+- Golden queries pass on all three targets. `harness/check_all.sh` now takes
+  `MOONLAKE_TARGET` (native, wasm-gc, js) and `MOONLAKE_BIN`, so the claim above
+  is one script with three settings plus the built binary.
 - The S0 differential, window and pushdown checks, Parquet corpus, encoding
-  fixtures, CLI checks, spill lifecycle and writer interoperability pass. Run
-  the real file-past-2-GiB check and confirm the new nightly job at its own SHA.
-- Commit a complete 0.6.0 performance record beside a same-session 0.5.0
-  re-record. Keep the LIMIT-specific records as separate optimization evidence.
-  Explain any changed answers or workloads before comparing timings.
+  fixtures, CLI checks, spill lifecycle and writer interoperability pass. The
+  real file-past-2-GiB check ran on the candidate; confirming the nightly job at
+  the candidate's own SHA needs the authorized push, and its last green run is
+  recorded as history rather than as acceptance.
+- A complete 0.6.0 performance record is committed beside a same-session 0.5.0
+  re-record (`bench-baseline.md`, last section). The LIMIT-specific records stay
+  separate optimization evidence; no case changed its `sql` or its stdout hash,
+  so the comparison is the same work, and the one real cost it shows is measured
+  by an interleaved A/B.
 - Check host-free wasm imports and drive the candidate playground in a real
   browser. After deployment, require the exact 0.6.0 version; after publication,
   run the registry consumer for 0.6.0. These are separate from local acceptance.

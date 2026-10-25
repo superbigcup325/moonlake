@@ -2,8 +2,8 @@
 
 > One record per release, native release build, TPC-H SF0.1, same script and
 > same machine. The newest is
-> [`harness/baseline/2026-10-24-0.5.0.json`](../harness/baseline/2026-10-24-0.5.0.json),
-> taken beside a 0.4.0 re-record so the two can be compared (the last section).
+> [`harness/baseline/2026-10-26-0.6.0.json`](../harness/baseline/2026-10-26-0.6.0.json),
+> taken beside a 0.5.0 re-record so the two can be compared (the last section).
 > The first was 0.3.1 at `3d766de`
 > ([`2026-10-20-0.3.1.json`](../harness/baseline/2026-10-20-0.3.1.json)); the
 > earlier 0.3.0-era record
@@ -438,3 +438,62 @@ worktree run and once immediately after it. `scan/count_csv` came out at 155.3
 and 155.8 ms wall with 35.2 and 35.3 MB peak RSS; the committed record is the
 second, so the numbers a future comparison reads are the ones taken next to
 their 0.4.0 counterpart.
+
+## 0.6.0 record, beside a same-session 0.5.0 re-record (2026-10-26)
+
+The pair for this release, recorded minutes apart:
+
+- [`harness/baseline/2026-10-26-0.6.0.json`](../harness/baseline/2026-10-26-0.6.0.json)
+  — `3ab2634`, the release candidate, answer oracle green on all eleven cases.
+- [`harness/baseline/2026-10-26-0.5.0-rerecord.json`](../harness/baseline/2026-10-26-0.5.0-rerecord.json)
+  — the published 0.5.0, rebuilt from tag `v0.5.0` in a worktree (`2da10d1`) and
+  recorded with that tag's own script, so `--compare` has nothing to declare
+  missing and no case differs in `sql` or in its stdout hash.
+
+0.6.0 changes how a result is delivered, not what a case computes. Every case's
+`sql` and output hash are identical on both sides, so the comparison is timings
+and memory for the same work.
+
+The two files disagree about the clock, which is why the table below is the
+`--compare` run rather than a subtraction of two JSON files: 0.5.0 was recorded
+at 4373 MHz and 0.6.0 at 3406 MHz, so the record-to-record wall deltas are
+mostly the machine waking up. `--compare` re-measured 0.6.0 at 4199 MHz in the
+same session as the 0.5.0 re-record; its numbers are what follows, and the
+peak-RSS column is clock-independent either way.
+
+| case | wall 0.5.0 | wall 0.6.0 | delta | peak RSS 0.5.0 -> 0.6.0 |
+|---|---|---|---|---|
+| `scan/count_csv` | 150.9 ms | 161.2 ms | +6.8% | 35.1 -> 35.1 MB |
+| `scan/filtered_count_csv` | 164.6 | 179.7 | +9.2% | 35.2 -> 35.2 MB |
+| `scan/parquet_count` | 4.5 | 4.0 | −11.1% | 21.6 -> 21.2 MB |
+| `scan/parquet_sum` | 11.3 | 11.0 | −2.7% | 21.6 -> 21.2 MB |
+| `join/two_table_count` | 214.6 | 221.5 | +3.2% | 51.0 -> 35.1 MB |
+| `join/q3` | 248.6 | 261.5 | +5.2% | 49.2 -> 45.3 MB |
+| `gather/wide_projection` | 452.9 | 446.6 | −1.4% | 310.9 -> 237.2 MB |
+| `gather/self_join_fanout` | 370.6 | 346.9 | −6.4% | 53.1 -> 41.3 MB |
+| `spill/order_by_wide` | 498.6 | 487.2 | −2.3% | 45.4 -> 35.3 MB |
+| `spill/format_write` | 1230.5 | 1186.6 | −3.6% | 318.8 -> 318.9 MB |
+| `spill/format_read` | 461.0 | 437.4 | −5.1% | 228.6 -> 230.3 MB |
+
+The loud part is the memory column, and it is the point of the release: a result
+is now handed out a batch at a time (verification §§31–34), so the cases whose
+peak was the collected answer fall — the two-table join 51.0 -> 35.1 MB, Q3
+49.2 -> 45.3, the 16-column wide projection 310.9 -> 237.2, the 600k-row
+self-join fanout 53.1 -> 41.3, and the external sort 45.4 -> 35.3 (its merge
+already streamed; its input no longer accumulates). The two `spill/format_*`
+cases drive the MLSPILL3 format directly rather than a query, and are here for
+completeness.
+
+One case moved beyond its own spread, and it is a cost, not a win:
+`scan/filtered_count_csv`. A filtered count whose answer is one row still pays
+the new delivery boundary, because the scan assembles a freshly allocated
+4,096-row `DataBatch` per pull (`catalog.SCAN_BATCH_ROWS`) and the filter covers
+that batch whole, where a pooled materialize did the same work in one pass. An
+interleaved A/B of the two binaries on this machine (two warm-ups, then seven
+alternated runs each, `SELECT count(*) FROM lineitem WHERE l_quantity < 24` over
+SF0.1) puts it at 176.0 -> 183.3 ms CPU best-of and 194.5 -> 202.6 ms median,
++4.1%; the unfiltered `SELECT count(*)` over the same file A/Bs at +0.1%
+(153.6 -> 153.9 ms). So the cost is the per-batch filter pass, not the scan,
+and the next section of work would be the one that lets a filter run across
+batch boundaries. Recorded here instead of averaged away, exactly as the 0.4.0
+section records what streamed merges cost.

@@ -1,0 +1,265 @@
+{
+  "schema": 1,
+  "kind": "moonlake-release-baseline",
+  "created_at": "2026-10-25T15:27:20+0800",
+  "release": {
+    "version": "0.5.0",
+    "git_commit": "2da10d14ed5d011bcb2d11d138f8b0b12e8dc926",
+    "git_branch": "HEAD",
+    "git_subject": "chore(release): 0.5.0",
+    "git_dirty": false,
+    "binary": "_build/native/release/build/cmd/main/main.exe",
+    "binary_sha256": "c210075ac9204b312ad90998b70ba9225169a7ceee68b6175b3ff7ca36f25522"
+  },
+  "environment": {
+    "toolchain": {
+      "raw": [
+        "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon",
+        "moonc v0.10.16+b1a0e846e (2026-10-16) ~/.moon/bin/moonc",
+        "moonrun 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moonrun",
+        "",
+        "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+      ],
+      "moon": "moon 0.1.20261016 (1af328f 2026-10-16) ~/.moon/bin/moon"
+    },
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "cpu_mhz_at_start": 4373,
+    "kernel": "7.3.0-4-cachyos",
+    "os": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      1.998046875,
+      2.11474609375,
+      2.458984375
+    ],
+    "python": "3.12.14"
+  },
+  "method": {
+    "runs": 7,
+    "warmups": 2,
+    "statistic": "fastest wall time after the warm-ups",
+    "stdout": "drained to a temp file and hashed (SHA-256), not stored",
+    "data": "harness/data/sf01",
+    "data_sha256": "d8772902299949071ec733e551185b1e0a2f3a00745e974fa8761055fa540a9b",
+    "data_note": "TPC-H SF0.1, tracked in the repository; regenerate with `python harness/gen_tpch.py 0.1`",
+    "build": "native release (`moon build cmd/main --target native --release`)",
+    "rss_note": "peak RSS is the child's own ru_maxrss, but a forked child starts with the parent's resident pages, so anything big in this process at fork time becomes a floor on every small case (the 75 MB CSV hash showed up as a 70 MB floor on the Parquet cases). The parent is therefore kept thin while measuring and the dataset is hashed afterwards"
+  },
+  "cases": [
+    {
+      "id": "scan/count_csv",
+      "family": "scan",
+      "what": "count(*) over lineitem.csv: schema only, no column decoded",
+      "sql": "SELECT count(*) FROM lineitem",
+      "wall_ms": 150.9,
+      "median_ms": 161.6,
+      "cpu_ms": 150.1,
+      "rss_mb": 35.1,
+      "wall_spread_pct": 10.0,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "scan/filtered_count_csv",
+      "family": "scan",
+      "what": "count(*) with a one-column predicate: decode + filter",
+      "sql": "SELECT count(*) FROM lineitem WHERE l_quantity < 24",
+      "wall_ms": 164.6,
+      "median_ms": 168.8,
+      "cpu_ms": 163.5,
+      "rss_mb": 35.2,
+      "wall_spread_pct": 4.9,
+      "output_sha256": "9f4edf695e6314ddc5f3ea07ae2497a86ea9bec7bdce26080c38e169f231d5c3",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "scan/parquet_count",
+      "family": "scan",
+      "what": "count(*) over lineitem.parquet: footer only, no column chunk read",
+      "sql": "SELECT count(*) FROM lineitem",
+      "wall_ms": 4.5,
+      "median_ms": 5.4,
+      "cpu_ms": 4.2,
+      "rss_mb": 21.6,
+      "wall_spread_pct": 42.1,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "scan/parquet_sum",
+      "family": "scan",
+      "what": "sum(l_quantity) over lineitem.parquet: one column chunk per group",
+      "sql": "SELECT sum(l_quantity) FROM lineitem",
+      "wall_ms": 11.3,
+      "median_ms": 12.7,
+      "cpu_ms": 10.9,
+      "rss_mb": 21.6,
+      "wall_spread_pct": 26.2,
+      "output_sha256": "62ad427c9c47764ae7071d38f5d061d48d0a52bf2c7637d47947770b5e90a842",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "join/two_table_count",
+      "family": "join",
+      "what": "lineitem x orders hash join, count(*) only",
+      "sql": "SELECT count(*) FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey",
+      "wall_ms": 214.6,
+      "median_ms": 222.0,
+      "cpu_ms": 212.1,
+      "rss_mb": 51.0,
+      "wall_spread_pct": 6.7,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "join/q3",
+      "family": "join",
+      "what": "TPC-H Q3 official text over three CSV tables (build+probe+group+top-N)",
+      "sql": "select\n\tl_orderkey,\n\tsum(l_extendedprice * (1 - l_discount)) as revenue,\n\to_orderdate,\n\to_shippriority\nfrom\n\tcustomer,\n\torders,\n\tlineitem\nwhere\n\tc_mktsegment = 'BUILDING'\n\tand c_custkey = o_custkey\n\tand l_orderkey = o_orderkey\n\tand o_orderdate < date '1995-03-15'\n\tand l_shipdate > date '1995-03-15'\ngroup by\n\tl_orderkey,\n\to_orderdate,\n\to_shippriority\norder by\n\trevenue desc,\n\to_orderdate\nlimit 10",
+      "wall_ms": 248.6,
+      "median_ms": 254.1,
+      "cpu_ms": 246.4,
+      "rss_mb": 49.2,
+      "wall_spread_pct": 10.3,
+      "output_sha256": "78b510ebf57948a1ebf6a89b6c1a337dbed494ef941102b798b1e52804c9a3b0",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 10,
+        "mode": "multiset",
+        "matched": true
+      }
+    },
+    {
+      "id": "gather/wide_projection",
+      "family": "gather",
+      "what": "filter then wide projection inside a derived table: the 16 materialized columns are assembled by per-column gathers, and only one output row is printed",
+      "sql": "SELECT sum(l_extendedprice) FROM (SELECT * FROM lineitem WHERE l_tax > 0.0) t",
+      "wall_ms": 452.9,
+      "median_ms": 485.4,
+      "cpu_ms": 450.9,
+      "rss_mb": 310.9,
+      "wall_spread_pct": 17.9,
+      "output_sha256": "25ad7303da3136745ece964d42bb4c45a574bb02300ff32f0633472c2d5749a3",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "gather/self_join_fanout",
+      "family": "gather",
+      "what": "self-join emitting 600k wide rows, counted: join-output assembly gathers 16 columns per output row",
+      "sql": "SELECT count(*) FROM lineitem a JOIN lineitem b ON a.l_orderkey = b.l_orderkey AND b.l_linenumber = 1",
+      "wall_ms": 370.6,
+      "median_ms": 378.0,
+      "cpu_ms": 368.7,
+      "rss_mb": 53.1,
+      "wall_spread_pct": 8.0,
+      "output_sha256": "3658ef4c25fe6ae4368ca06663248cdfa8c64e032e41ba2db7d8cdaffa26dd04",
+      "output_stable": true,
+      "extra": {},
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 1,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "spill/order_by_wide",
+      "family": "spill",
+      "what": "two-column external sort over 600k rows under a 2 MB budget (must actually spill)",
+      "sql": null,
+      "wall_ms": 498.6,
+      "median_ms": 511.7,
+      "cpu_ms": 496.9,
+      "rss_mb": 45.4,
+      "wall_spread_pct": 11.8,
+      "output_sha256": "2faf0909e7d081030bdc2b233d1771024ab5fe824b2652e1bfe743806dd2ca01",
+      "output_stable": true,
+      "extra": {
+        "budget": "2M",
+        "leftover_files": 0
+      },
+      "oracle": {
+        "referee": "duckdb",
+        "rows": 3,
+        "mode": "ordered",
+        "matched": true
+      }
+    },
+    {
+      "id": "spill/format_write",
+      "family": "spill",
+      "what": "MLSPILL3 encode+write of every lineitem batch (release driver)",
+      "wall_ms": 1230.5,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 318.8,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    },
+    {
+      "id": "spill/format_read",
+      "family": "spill",
+      "what": "MLSPILL3 read+decode of the same file (release driver)",
+      "wall_ms": 461.0,
+      "median_ms": null,
+      "cpu_ms": null,
+      "rss_mb": 228.6,
+      "output_sha256": "f4a77f9b5d3c5595",
+      "output_stable": true,
+      "extra": {
+        "rows": 600572,
+        "bytes": 41761345
+      }
+    }
+  ]
+}

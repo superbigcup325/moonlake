@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.6.0] - Unreleased
 
-In development. This version includes all changes since 0.5.0 and the remaining
-[0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan). The entries below
-describe implemented changes; planned work is added here after verification.
+Everything since 0.5.0 belongs to this version, and its
+[0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan) is complete: one
+candidate passed the whole acceptance list, recorded in `verification.md` §36 and
+in the performance pair at the end of `docs/bench-baseline.md`. The entries below
+describe implemented changes. What remains is release work — push, tag,
+publication, deployment — and the date is set when that happens.
 
 ### Added
 

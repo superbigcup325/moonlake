@@ -2808,3 +2808,103 @@ asserts every file returns the same answer (a `double` sum is compared with a
 relative tolerance, since summation order differs between the two writers), and
 prints both tables. It is a measurement tool and not a gate: nothing here
 depends on the numbers, which is why the JSON record stays out of the repository.
+\n
+## 36. 0.6.0 acceptance on one candidate (2026-10-26)
+
+**The claim being tested.** The roadmap's "What 0.6.0 has to clear" is a list of
+gates, and a gate list is only a claim until one tree passes all of it: the
+manifest, library constant, generated interfaces and changelog agree on 0.6.0;
+the linter, formatter, interface freshness, the native/wasm-gc/js suites and the
+Python gate self-tests pass; the goldens pass on all three targets and through
+the built binary; the differential, corpus, encoding, CLI, spill and writer
+gates pass; a file past 2 GiB round-trips; the packaged consumer pulls results
+on all three targets with fresh caches; the browser page runs; and the release
+has a performance record taken beside the release it replaces. The remaining
+eager paths and platform limits have to be recorded as limits, not left to be
+discovered.
+
+**The candidate.** `3ab2634`, the last commit that changes `harness/`, on top of
+`dcc6ae7` (the last library change); the commit carrying this section adds
+documentation and the two baseline records only. The working tree was clean when
+each gate below ran. Every version claim says 0.6.0; the released version is
+still 0.5.0 at tag `v0.5.0`, and nothing was pushed, tagged, published or
+deployed.
+
+**Gates, and what each one actually ran.**
+
+| Gate | Result |
+|---|---|
+| `moon check --deny-warn` | Clean, 46 packages |
+| `moon fmt --check` | Clean |
+| `moon info`, then `git diff -- '*.mbti'` | No interface change |
+| `moon test --target native` | 340 passed |
+| `moon test --target wasm-gc` | 327 passed |
+| `moon test --target js` | 327 passed |
+| Python harness unit tests (`unittest discover -s . -p 'test_*.py'` in `harness/`) | 75 passed (Python 3.12.14, DuckDB 2.0.0, PyArrow 26.0.0) |
+| `bash harness/check_all.sh` (default wasm-gc) | 33/33 goldens, 2 m 05 s |
+| `MOONLAKE_TARGET=native` | 33/33, 5 s |
+| `MOONLAKE_TARGET=js` | 33/33, 13.6 s |
+| `MOONLAKE_BIN=_build/native/release/build/cmd/main/main.exe` | 33/33, 2.4 s |
+| `harness/check_correlation.py --random 400 --seed 20261025` | ok (S0 differential) |
+| `harness/check_windows.py --random 400 --seed 20261023` | 8 value cases matched, nothing refused |
+| `harness/fuzz_pushdown.py` | 300 queries, 0 failures, 0 rejections |
+| `harness/check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
+| `harness/check_parquet_corpus.py` | 16 decoded by value, 52 refused by design, 0 failing |
+| `bash harness/check_cli.sh` | Pass (partial output on a mid-scan failure included) |
+| `bash harness/spill_accept.sh` | Pass (five lifecycle cases) |
+| `harness/check_writer_interop.py` | Pass (schema, values, NULLs, both directions, `--snappy` 140,290 -> 24,334 bytes) |
+| `harness/check_large_write.py` | 2,410,475,894-byte file, 34,400,000 rows, 8,399 row groups, 1,820 of 16,798 column chunks past 2^31, three readers agree |
+| `harness/check_consumer.py` (archive, fresh `MOON_HOME`) | native, wasm-gc and js: version, CSV, Parquet raw/Snappy, DATE/NULL, drop, and four streamed shapes agreeing with the collected answers |
+| `harness/check_release.py --check-consumer` | Version agreement, archive contents, consumer |
+| Playground: `moon build --target wasm-gc playground` + import audit | `playground.wasm` imports only `wasm:js-string` and `_` |
+| `harness/playground_accept.cjs http://127.0.0.1:8971/index.html` | 16/16 in real Chromium (page reports 0.6.0) |
+| Performance pair (this section's last part) | `--compare` 0.5.0 re-record -> 0.6.0: nothing outside run-to-run noise but the filtered count |
+
+**The three-target goldens are the reason the target switch was worth adding.**
+Before it, `check_all.sh` could only ever run `moon run cmd/main`, so the release
+claim "the goldens pass" meant "the wasm-gc interpreter passes". `MOONLAKE_TARGET`
+runs the same 33 goldens through native and js, and `MOONLAKE_BIN` runs them
+through the release binary a user actually gets. The three backends differ where
+this project's readers differ — native reads files with `fs`, wasm-gc and js go
+through the host, and wasm-gc writes `%eprintln` to stdout, which is why the
+checks print their own `[stderr]` marker rather than trusting the channel — so a
+pass on one backend was never evidence for the others.
+
+**The consumer is the API, not the code.** `harness/consumer/main.mbt` is copied
+into a module that has no access to this checkout, built against the archive just
+packed, with a fresh `MOON_HOME` and freshly downloaded dependencies. 0.6.0's
+addition is the result API, so the consumer now drains four shapes — a scan with
+a filter and a window, a two-table join, a folded aggregate and an unordered
+`ORDER BY` — and requires each pulled delivery to print exactly what
+`execute(...).to_json()` prints for the same query, using `JsonRow::batch` the way
+the CLI does. It then stops a stream after its first batch and checks `close`.
+That is the one check that would still fail if the public boundary rotted while
+everything inside the module stayed green.
+
+**What this pass does not close.** The nightly job at *this* SHA needs the push
+that release authorization covers: the job exists (`.github/workflows/nightly.yml`,
+including the >2 GiB write) and last ran green at run `40077399241` on
+2026-10-24 against the then-`main`, which is history rather than acceptance. The
+same applies to the hosted playground deployment (require the exact 0.6.0 version
+after it), to `check_consumer.py --registry-version 0.6.0` (needs publication)
+and to `moon publish --dry-run`. Locally, everything above was run on this
+candidate. The eager shapes the release still has are recorded rather than
+removed: `engine/stream.mbt` and `verification` §34 list the shapes that
+accumulate, and the roadmap's "Current implementation" paragraph keeps the user
+facing version of the list.
+
+**Performance.** The pair is in `bench-baseline.md`'s last section: 0.6.0 at
+`3ab2634` beside a 0.5.0 re-recorded from tag `v0.5.0` in a worktree minutes
+apart, with one case (`scan/filtered_count_csv`) measured as a real ~4% cost by
+an interleaved A/B and ten cases inside their own spread. Peak RSS falls on
+every case whose answer used to be collected — the two-table join 51.0 -> 35.1 MB,
+the 600k-row self-join 53.1 -> 41.3 MB, the wide projection 310.9 -> 237.2 MB.
+
+**How to reproduce.** Build with `moon build cmd/main --target native --release`
+and run the commands in the table with
+`UV_CACHE_DIR=.internal/uv-cache uv run --python 3.12 --with-requirements
+harness/requirements.txt python ...` for the Python gates. `check_large_write.py`
+needs about 5 GB of scratch and a few minutes; the playground needs
+`PLAYWRIGHT_MODULE` pointing at a Playwright install and the page served over
+HTTP. The four `harness/check_all.sh` invocations are the same script with
+`MOONLAKE_TARGET` or `MOONLAKE_BIN` set.
