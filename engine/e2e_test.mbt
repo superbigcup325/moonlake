@@ -1333,7 +1333,9 @@ test "a grouped correlated EXISTS drops the GROUP BY and keeps a matching HAVING
     "SELECT cid FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE cid = custkey GROUP BY amount HAVING count(*) > 1)",
     cat,
   )
-  assert_true(err.to_string().contains("GROUP BY with HAVING"))
+  assert_true(
+    err.to_string().contains("HAVING that is not the correlation keys"),
+  )
 }
 
 ///|
@@ -1385,30 +1387,196 @@ test "EXISTS and NOT EXISTS gate rows on the subquery" {
 }
 
 ///|
-test "a non-equality correlation names the supported shape" {
+test "a non-equality correlation decorrelates as a theta join" {
   let cat = join_catalog()
-  // decorrelation pairs inner and outer columns by equality only, so the
-  // refusal must say that instead of blaming a missing outer table
-  let err = run_err(
-    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount < cid)",
+  // orders: (100,1,10) (101,1,20) (102,3,5) (103,NULL,7)
+  // customers: cid 1,2,3
+  // a comparison correlation has no join key, so it becomes a theta join
+  let r = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount > cid * 10) ORDER BY cid",
     cat,
   )
-  assert_true(err.to_string().contains("inner.col = outer.col"))
-  assert_true(
-    err.to_string().contains("rewrite a non-equality correlation as a join"),
-  )
-  // a correlated scalar subquery in the select list gets the same pointer
-  let err2 = run_err(
-    "SELECT cid, (SELECT max(amount) FROM orders WHERE amount < cid) AS m FROM customers",
+  // only cid 1 has an order over 10
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(1))
+  // NOT EXISTS stays the anti join
+  let r2 = run(
+    "SELECT cid FROM customers WHERE NOT EXISTS (SELECT oid FROM orders WHERE amount > cid * 10) ORDER BY cid",
     cat,
   )
-  assert_true(err2.to_string().contains("inner.col = outer.col"))
-  // the equality form of the same question still decorrelates
-  let ok = run(
-    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE custkey = cid)",
+  assert_eq(r2.row_count(), 2)
+  assert_eq(r2.get(0, 0), @types.Int32(2))
+  assert_eq(r2.get(1, 0), @types.Int32(3))
+  // a two-sided mix: the equality pairs by hash key, the residual by predicate
+  let r3 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE custkey = cid AND amount > 10) ORDER BY cid",
     cat,
   )
-  assert_eq(ok.row_count(), 2)
+  assert_eq(r3.row_count(), 1)
+  assert_eq(r3.get(0, 0), @types.Int32(1))
+  // a conjunct on the outer row alone is a parameter of the correlation: with
+  // cid > 1 nobody qualifies any more
+  let r4 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount > cid AND cid > 1) ORDER BY cid",
+    cat,
+  )
+  assert_eq(r4.row_count(), 2)
+  // amount > cid holds for every customer, so the outer filter is a no-op
+  assert_eq(r4.get(0, 0), @types.Int32(2))
+  let r5 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount > cid AND cid > 1) AND cid > 2 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r5.row_count(), 1)
+  assert_eq(r5.get(0, 0), @types.Int32(3))
+}
+
+///|
+test "a non-equality correlation under NOT or OR still decorrelates" {
+  let cat = join_catalog()
+  // the semi-join pass only claims top-level conjuncts; a correlation the
+  // expression rewriter claims works anywhere in the predicate
+  let r = run(
+    "SELECT cid FROM customers WHERE NOT (EXISTS (SELECT oid FROM orders WHERE amount > 100) OR seg = 'a') ORDER BY cid",
+    cat,
+  )
+  // no order is over 100, so this is just not(seg = 'a'): only cid 2
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Int32(2))
+  let r2 = run(
+    "SELECT cid FROM customers WHERE EXISTS (SELECT oid FROM orders WHERE amount > 100) OR cid = 3 ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.row_count(), 1)
+  assert_eq(r2.get(0, 0), @types.Int32(3))
+  // a correlated EXISTS as a boolean value
+  let r3 = run(
+    "SELECT cid, EXISTS (SELECT oid FROM orders WHERE amount < cid * 10) AS e FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.row_count(), 3)
+  assert_eq(r3.get(0, 1), @types.Scalar::Boolean(true))
+  assert_eq(r3.get(1, 1), @types.Scalar::Boolean(true))
+  assert_eq(r3.get(2, 1), @types.Scalar::Boolean(true))
+  let r4 = run(
+    "SELECT cid, EXISTS (SELECT oid FROM orders WHERE amount > cid * 10) AS e FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r4.get(0, 1), @types.Scalar::Boolean(true))
+  assert_eq(r4.get(1, 1), @types.Scalar::Boolean(false))
+  assert_eq(r4.get(2, 1), @types.Scalar::Boolean(false))
+  // and under CASE
+  let r5 = run(
+    "SELECT cid, CASE WHEN EXISTS (SELECT oid FROM orders WHERE amount > cid * 10) THEN 1 ELSE 0 END AS e FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r5.get(0, 1), @types.Scalar::Int32(1))
+  assert_eq(r5.get(1, 1), @types.Scalar::Int32(0))
+}
+
+///|
+test "a theta aggregate answers a correlated scalar subquery" {
+  let cat = join_catalog()
+  // amounts 10, 20, 5, 7: the aggregate depends on the outer row's numbers, so
+  // it is computed per distinct outer combination and joined back on a row key
+  let r = run(
+    "SELECT cid, (SELECT max(amount) FROM orders WHERE amount < cid * 10) AS m FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  // cid 1: amounts under 10 are 5 and 7
+  assert_eq(r.get(0, 1), @types.Scalar::Int32(7))
+  // cid 2: under 20 are 10, 5, 7
+  assert_eq(r.get(1, 1), @types.Scalar::Int32(10))
+  // cid 3: under 30 is everything
+  assert_eq(r.get(2, 1), @types.Scalar::Int32(20))
+  // count(*) over an empty match is 0, not NULL
+  let r2 = run(
+    "SELECT cid, (SELECT count(*) FROM orders WHERE amount > cid * 100) AS c FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.get(0, 1), @types.Scalar::Int64(0L))
+  assert_eq(r2.get(2, 1), @types.Scalar::Int64(0L))
+  // sum/max over an empty match is NULL
+  let r3 = run(
+    "SELECT cid, (SELECT sum(amount) FROM orders WHERE amount > cid * 100) AS s FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r3.get(0, 1), @types.Scalar::Null)
+  // the same aggregate alongside an equality correlation and a constant one
+  let r4 = run(
+    "SELECT cid, (SELECT max(amount) FROM orders WHERE custkey = cid) AS m, (SELECT count(*) FROM orders) AS allc FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r4.get(0, 1), @types.Scalar::Int32(20))
+  assert_eq(r4.get(1, 1), @types.Scalar::Null)
+  assert_eq(r4.get(1, 2), @types.Scalar::Int64(4L))
+  // a repeated outer row must not multiply the inner matches: order 100 and
+  // 101 both belong to customer 1, and each row still reads the same count
+  let r5 = run(
+    "SELECT c.cid, (SELECT count(*) FROM orders WHERE amount > c.cid) AS k FROM customers c JOIN orders o ON o.custkey = c.cid ORDER BY 1",
+    cat,
+  )
+  // customer 1 has two orders and customer 3 one, so three rows
+  assert_eq(r5.row_count(), 3)
+  assert_eq(r5.get(0, 1), @types.Scalar::Int64(4L))
+  assert_eq(r5.get(1, 1), @types.Scalar::Int64(4L))
+  assert_eq(r5.get(2, 1), @types.Scalar::Int64(4L))
+  // the scalar value is usable in a predicate, and inside an expression
+  let r6 = run(
+    "SELECT cid FROM customers WHERE (SELECT count(*) FROM orders WHERE amount < cid * 10) > 2 ORDER BY cid",
+    cat,
+  )
+  // cid 1 sees 2 matching orders, cid 2 sees 3, cid 3 sees 4
+  assert_eq(r6.row_count(), 2)
+  assert_eq(r6.get(0, 0), @types.Int32(2))
+  assert_eq(r6.get(1, 0), @types.Int32(3))
+  let r7 = run(
+    "SELECT cid, (SELECT count(*) FROM orders WHERE amount < cid * 10) * 10 AS c FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r7.get(0, 1), @types.Scalar::Int64(20L))
+}
+
+///|
+test "a correlated IN keeps three-valued logic as a value" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k,v\n1,10\n2,\n3,30\n", "o") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("t,v\n1,5\n2,\n2,15\n", "n") catch {
+      e => abort("\{e}")
+    },
+  )
+  // for k = 1 the set is {5}: no match, no NULL -> FALSE
+  // for k = 2 the set is {NULL, 15}: a NULL in the set -> NULL
+  // for k = 3 the set is empty -> FALSE
+  let r = run(
+    "SELECT o.k, o.v IN (SELECT n.v FROM n WHERE n.t = o.k) AS m FROM o ORDER BY o.k",
+    cat,
+  )
+  assert_eq(r.get(0, 1), @types.Scalar::Boolean(false))
+  assert_eq(r.get(1, 1), @types.Scalar::Null)
+  assert_eq(r.get(2, 1), @types.Scalar::Boolean(false))
+  // NOT IN mirrors it, except that an empty set is TRUE
+  let r2 = run(
+    "SELECT o.k, o.v NOT IN (SELECT n.v FROM n WHERE n.t = o.k) AS m FROM o ORDER BY o.k",
+    cat,
+  )
+  assert_eq(r2.get(0, 1), @types.Scalar::Boolean(true))
+  assert_eq(r2.get(1, 1), @types.Scalar::Null)
+  assert_eq(r2.get(2, 1), @types.Scalar::Boolean(true))
+  // a NULL probe is never a match, but against an empty set it is FALSE
+  let r3 = run(
+    "SELECT o.k, o.v IN (SELECT n.v FROM n WHERE n.t = o.k * 100) AS m FROM o ORDER BY o.k",
+    cat,
+  )
+  // o.v is NULL for k = 2, and no inner row matches k * 100 there
+  assert_eq(r3.get(0, 1), @types.Scalar::Boolean(false))
+  assert_eq(r3.get(1, 1), @types.Scalar::Boolean(false))
 }
 
 ///|

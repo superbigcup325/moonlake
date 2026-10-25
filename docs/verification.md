@@ -1939,3 +1939,92 @@ one touches the Parquet writer's error path: `moon test` 276/276 (wasm-gc),
 checks (the script now counts them itself, so the "27" in this document can stop
 drifting), `harness/check_writer_interop.py` all checks, and
 `harness/check_cli.sh` on both the debug and the release binary.
+
+## 28. General decorrelation (2026-10-25): the refusal becomes an answer
+
+**The claim under test.** §26 shipped a refusal: a correlated subquery whose
+correlation was not an `inner.col = outer.col` equality said so and pointed at
+a join. That is honest, but it is also a hole a user hits immediately —
+`WHERE EXISTS (SELECT 1 FROM u WHERE u.v < t.a)` is ordinary SQL and every other
+engine answers it. This section is the work that turned the refusal into an
+answer, and the evidence that the answers are right.
+
+**Three tiers, because the cost of each shape is different.** The decorrelator
+is still a single AST rewrite that runs before binding (`engine/correlate.mbt`),
+so the tiers differ only in what they build:
+
+1. An equality pair stays what it was: a hash-keyed semi/anti join (or a grouped
+   LEFT join for a scalar subquery). Nothing about that path changed.
+2. A subquery with *no* equality pair but a predicate over both sides becomes a
+   semi/anti join with **no hash key** — every inner row sits under the one
+   empty key and each candidate is tested with the join residual. `join_semi`
+   already supported zero keys; what was missing was the planner routing a
+   keyless `EXISTS` into it and keeping the non-`Eq` conjunct as the residual
+   (`engine/binder.mbt`, `plan_step`). `EXISTS (SELECT 1 FROM i WHERE i.v >
+   o.v)`, `i.v BETWEEN o.v - 11 AND o.v + 11`, `i.k <> o.k`,
+   `i.k = o.k OR i.v > o.v * 3` and `o.v IN (SELECT i.v FROM i WHERE i.k < o.k)`
+   all landed here.
+3. A **scalar aggregate** over a non-equality correlation has no key the inner
+   side could be grouped by, and nothing can be precomputed per correlation key
+   the way the equality flavor does it — the aggregate genuinely depends on the
+   outer row's numbers. It is computed once, eagerly, over the *distinct*
+   combinations of the outer expressions the subquery reads, grouped by a
+   canonical row key, and left-joined back on that key. Deduplication is what
+   keeps it honest: without it a repeated outer row would multiply the inner
+   matches and a `count(*)` would double. The join inside is a theta join (a
+   nested loop over the distinct outer combinations) — the price of the general
+   shape, recorded in the roadmap as such.
+
+**Row identity instead of a NULL-safe equality.** Tiers 2 and 3 need to say
+"these two rows are the same" and "this value is this value, NULLs included".
+`@types.CmpOp` has no NULL-safe equality, and adding one would touch elision,
+pushdown and every hash table, so the identity is a string: an internal
+`__row_key(...)` function built on the canonical, type-tagged, length-prefixed
+encoding the hash joins and DISTINCT already use (`engine/exec_agg.mbt`
+`scalar_key` / `canonical_key`). It is registered in the binder next to the other
+scalar functions and evaluated in the evaluator's NULL-aware preamble, so it
+works on values, not just on columns.
+
+**EXISTS and IN as values.** Once a scalar aggregate can be computed for an
+arbitrary correlation, `EXISTS` and `IN` stop being WHERE-only: the same theta
+table answers `SELECT EXISTS (SELECT 1 FROM i WHERE i.v > o.v) FROM o`,
+`WHERE NOT (EXISTS (...) OR k > 2)` and `CASE WHEN EXISTS (...) ...`. `EXISTS`
+counts rows and compares with 0. `IN` is a CASE over three counts — matches, all
+rows, and rows whose value is NULL — which reproduces SQL's three-valued result
+including the empty set (`NULL IN (empty)` is FALSE, `NULL IN ({NULL})` is
+NULL, `x NOT IN ({x, NULL})` is FALSE). Everything the semi-join pass leaves
+behind is walked by one expression rewriter, which is why a correlation under
+`OR` / `NOT` / `CASE` works at all.
+
+**Outer-only conjuncts are parameters, not errors.** `WHERE i.v < o.v AND o.k >
+1` used to be refused because `o.k > 1` touches neither side; it reads only the
+outer row, so it is a parameter of the correlation and rides in the join
+predicate (or in the theta aggregate) exactly as written. `BETWEEN` and mixed
+`AND`/`OR` shapes then fall out of the same rule.
+
+**The evidence.** A 39-query differential against DuckDB over four fixtures
+(`o` with a repeated row and NULL keys, `i`, `n` with NULL values, and a
+one-column `one`) agrees on all 39: the equality-shape regression queries from §26, keyless `EXISTS` /
+`NOT EXISTS` / `IN` / `NOT IN` in WHERE, the same under `NOT` and `OR`, scalar
+subqueries in the select list, in WHERE, in arithmetic and in `CASE`, repeated
+outer rows through a join, and `IN` / `NOT IN` against sets that contain NULLs.
+The harness compares sorted row multisets, so no query can pass on ordering.
+`engine/e2e_test.mbt` gained four tests (the theta join, the nested
+`NOT`/`OR`/`CASE` shapes, the theta aggregate including the repeated-outer-row
+case, and the three-valued `IN`); the two shapes §26 recorded as refused are
+gone from that list.
+
+**What is still refused, and why it is named.** A derived table in the
+subquery's FROM (the classification pass only treats `Named` FROM items as
+belonging to one side), `DISTINCT` / `LIMIT` / `OFFSET` / a set operation inside
+it, a grouping or `HAVING` that is not the correlation keys, a reference to a
+table two levels out, and a correlated subquery in the select list of a grouping
+outer query (its value would have to appear in the `GROUP BY`). Each reports its
+reason; none of them guesses.
+
+**Gates.** `moon test` 279/279 (wasm-gc), `moon test --target native` 292/292,
+`moon check --deny-warn` clean, `harness/check_all.sh` 33/33 golden comparisons
+plus its three spill-equivalence checks, `harness/check_writer_interop.py` all
+checks, `harness/check_cli.sh` on the debug and release binaries, `moon fmt
+--check` clean, and the only `.mbti` difference is the one that pre-dates this
+work (`round_half_away`).

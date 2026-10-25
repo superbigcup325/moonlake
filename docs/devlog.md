@@ -1440,3 +1440,68 @@ as a string in JSON, a deliberate `x % 0`, and the two correlations refused on
 purpose). The CLI edges moved into `harness/check_cli.sh` and the `tpch` CI job,
 because they live in argument handling rather than in the engine: exec with no
 input, an unknown command's exit code, and `write` refusing its own input.
+
+## General decorrelation (2026-10-25): a refusal that had to become an answer
+
+The last pass ended with a message: this correlated subquery cannot be
+decorrelated, only `inner.col = outer.col` equalities are paired, rewrite a
+non-equality correlation as a join. A user read that and asked for the general
+case instead. Fair — `WHERE EXISTS (SELECT 1 FROM u WHERE u.v < t.a)` is plain
+SQL, and every other engine answers it.
+
+### Approach
+
+The decorrelator was already one AST rewrite before binding, so the work was not
+in changing the architecture but in admitting three more shapes into it. The
+equality flavor stayed exactly as it was. A subquery with no equality pair but a
+predicate touching both sides became a semi/anti join with no hash key: the join
+already supported an empty key (all inner rows under one bucket, each candidate
+tested against the residual), so the planner only had to stop refusing the shape
+and keep the non-`Eq` conjunct as the residual. That covers `>`, `<`, `<>`,
+`BETWEEN`, an `OR` over both sides and a comparison against an expression.
+
+The second shape needed new machinery. A scalar aggregate over a non-equality
+correlation cannot be keyed, because the aggregate depends on the outer row's
+numbers; there is no per-key table to precompute. So it is computed once,
+eagerly, over the distinct combinations of the outer expressions the subquery
+reads, grouped by a canonical row key and left-joined back on it. The
+deduplication is the whole trick — a repeated outer row would otherwise multiply
+the inner matches and a `count(*)` would double — and the join inside is a theta
+join, which is slower than a hash join by construction. That cost is stated in
+the roadmap rather than hidden.
+
+The key itself is a string, because `CmpOp` has no NULL-safe equality and adding
+one would reach into elision, pushdown and every hash table. Reusing the
+canonical type-tagged encoding that hash joins and DISTINCT already use keeps the
+two definitions from drifting.
+
+Once that table exists, `EXISTS` and `IN` stop being WHERE-only: counting rows
+answers `EXISTS` anywhere an expression may appear, and a CASE over match count,
+row count and NULL count reproduces `IN`'s three-valued result, empty set
+included. One expression rewriter walks everything the semi-join pass leaves
+behind, which is also why a correlation under `NOT` / `OR` / `CASE` started
+working — that gap was never about the rewrite, it was about only ever visiting
+top-level WHERE conjuncts.
+
+### What changed in the failure modes
+
+Two refusals turned into answers and one into a different, smaller refusal. The
+nested-correlation case, the derived-table-in-FROM case and the
+`DISTINCT`/`LIMIT` cases are still refused, and the message now names them
+instead of claiming the equality restriction that no longer holds. A correlated
+subquery in the select list of a `GROUP BY` query used to fail with `column
+"__scalar0.__sk1" must appear in GROUP BY or inside an aggregate` — a message
+written in the decorrelator's own vocabulary — and now says that its value would
+have to appear in the `GROUP BY`, which is true and actionable. That one is a
+pre-existing limit of the equality flavor too; it just was not visible before
+because the general shape failed earlier with something else.
+
+### Evidence
+
+A 39-query DuckDB differential over NULL-rich fixtures agrees on all 39
+(`docs/verification.md` §28), including the two shapes the previous pass
+recorded as deliberately refused. Four new `engine/e2e_test.mbt` tests pin the
+theta join, the nested `NOT`/`OR`/`CASE` shapes, the theta aggregate (with the
+repeated-outer-row case that is the whole point of the dedup) and three-valued
+`IN`. The gates were re-run whole: 279/279 wasm-gc, 292/292 native, 33/33 TPC-H
+goldens plus spill equivalence, writer interop, CLI checks on both binaries.

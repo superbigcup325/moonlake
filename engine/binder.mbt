@@ -1861,6 +1861,19 @@ fn Binder::bind_func(
       }
       (FuncE("concat", pes, @types.Str), @types.Str)
     }
+    "__row_key" => {
+      // internal, injected by the decorrelator: one canonical string for a
+      // row of values, so a general correlation can be joined by equality
+      if arity == 0 {
+        raise @types.SqlError::Bind("__row_key() takes at least one argument")
+      }
+      let pes : Array[PhysExpr] = []
+      for a in args {
+        let (pe, _) = self.bind(a, space)
+        pes.push(pe)
+      }
+      (FuncE("__row_key", pes, @types.Str), @types.Str)
+    }
     "abs" => {
       if arity != 1 {
         raise @types.SqlError::Bind("abs() takes exactly one argument")

@@ -19,6 +19,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the native build.
 - `@types.round_half_away`, the rounding convention `round()` and the
   float → integer casts use.
+- Decorrelation is general: the correlation no longer has to be an
+  `inner.col = outer.col` equality. A `<`, `>`, `<>`, `BETWEEN`, an `OR` or a
+  conjunct on the outer row alone is answered, not refused — `EXISTS` / `IN`
+  with no equality pair become keyless semi/anti joins (one bucket, each
+  candidate tested against the predicate), and a scalar subquery or an
+  `EXISTS` / `IN` used as a value becomes a theta aggregate over the distinct
+  combinations of the outer expressions the subquery reads, joined back on a
+  canonical row key so a repeated outer row cannot multiply the matches.
+  `WHERE EXISTS (SELECT 1 FROM u WHERE u.v < t.a)`, `o.v IN (SELECT i.v FROM i
+  WHERE i.k < o.k)` and `SELECT (SELECT max(i.v) FROM i WHERE i.v < o.v) FROM o`
+  all answer now; the same queries are the differential cases against DuckDB.
+- A correlated `EXISTS` / `IN` works in any expression position, not only as a
+  top-level WHERE conjunct: `SELECT EXISTS (SELECT 1 FROM i WHERE i.v > o.v)
+  FROM o`, `WHERE NOT (EXISTS (...) OR k > 2)`, `CASE WHEN EXISTS (...) ...`.
+  It lowers to a count over the same theta aggregate (`> 0`, and for `IN` / `NOT
+  IN` a CASE over the match count, the row count and the count of NULL values,
+  which reproduces SQL's three-valued result including the empty set).
+- An `EXISTS` / `IN` subquery whose only outer reference is on the outer row
+  itself (`WHERE i.v < o.v AND o.k > 1`) is answered instead of refused: an
+  outer-only conjunct is a parameter of the correlation and rides in the join
+  predicate (or in the theta aggregate) as written.
 
 ### Changed
 
@@ -68,13 +89,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   replace the source file: `write --csv t.csv --out t.csv` exited 0 and left a
   Parquet file at the CSV's path. The check is lexical (`./t.csv`, `sub/../t.csv`
   and a glob match all count) and covers `--parquet` inputs.
-- A correlated subquery whose correlation is not an equality is refused with a
-  message that says what is supported. `WHERE EXISTS (SELECT 1 FROM u WHERE u.v
-  < t.a)` used to fail with `unknown table or alias "t" in FROM`; it now says
-  the correlation must be `inner.col = outer.col` and points at a join, and the
-  same applies to correlated scalar subqueries in the select list. A correlated
-  scalar subquery that selects no aggregate now reports that reason rather than
-  the generic one.
+- A correlated subquery whose correlation is not an equality now says what is
+  still out of reach, instead of naming a shape that works. It used to fail
+  with `unknown table or alias "t" in FROM`, then with a message that claimed
+  only `inner.col = outer.col` correlations were supported — which stopped
+  being true once the general rewrite landed. The refusal names the real
+  boundaries now (a derived table in the subquery's FROM, `DISTINCT` / `LIMIT`
+  / `OFFSET` / a set operation, a grouping that is not the correlation keys, a
+  reference two levels out) and still points at rewriting it as a join. A
+  correlated scalar subquery that selects no aggregate keeps its own reason, and
+  a correlated subquery in the select list of a `GROUP BY` query says that its
+  value would have to appear in the `GROUP BY`.
 
 ## [0.6.0] - 2026-10-24
 

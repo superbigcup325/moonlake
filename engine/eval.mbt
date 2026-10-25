@@ -177,6 +177,10 @@ fn eval_func(name : String, vals : Array[@types.Scalar]) -> @types.Scalar {
             None => @types.Null
           }
       }
+    "__row_key" =>
+      // the decorrelator's row identity: the same canonical, type-tagged
+      // encoding hash joins and distinct grouping already rely on
+      return @types.Str(canonical_key(vals))
     "concat" => {
       // concat ignores NULL arguments instead of propagating them
       // (concat('a', NULL, 'b') is "ab"); `||` is the propagating spelling

@@ -31,6 +31,15 @@ priv enum RefSide {
 }
 
 ///|
+fn RefSide::same(self : RefSide, other : RefSide) -> Bool {
+  match (self, other) {
+    (NoneSide, NoneSide) | (Inner, Inner) | (Outer, Outer) => true
+    (Mixed, Mixed) | (Unknown, Unknown) => true
+    _ => false
+  }
+}
+
+///|
 fn RefSide::merge(self : RefSide, other : RefSide) -> RefSide {
   match (self, other) {
     (NoneSide, x) => x
@@ -62,16 +71,35 @@ fn decorrelate(
   // select items are walked even without a WHERE clause: correlated
   // scalar subqueries live there too
   let scalar_items : Array[@sql.FromItem] = []
+  // grouping the outer query pins its select list to the group keys, so a
+  // correlated subquery there has no column of its own to land in: it would
+  // have to be part of the GROUP BY. Refuse it by name rather than let the
+  // synthetic column be the error the user reads.
+  if sel.group_by.length() > 0 {
+    for it in sel.items {
+      if cor.contains_correlated(it.expr) {
+        raise @types.SqlError::Bind(
+          "a correlated subquery in the select list of a query with GROUP BY cannot be decorrelated: its value would have to appear in the GROUP BY — rewrite it as a join",
+        )
+      }
+    }
+  }
   let new_exprs : Array[@sql.LExpr] = []
   let mut items_rewritten = false
   for it in sel.items {
-    let rewritten = rewrite_scalar_items(
-      it.expr,
-      cor,
-      extra_schemas,
-      extra_batches,
-      scalar_items,
-    )
+    // a select item without a correlated subquery needs no walk at all, which
+    // is every item of nearly every query
+    let rewritten = if cor.contains_correlated(it.expr) {
+      rewrite_correlated(
+        it.expr,
+        cor,
+        extra_schemas,
+        extra_batches,
+        scalar_items,
+      )
+    } else {
+      it.expr
+    }
     if rewritten != it.expr {
       items_rewritten = true
     }
@@ -136,15 +164,30 @@ fn decorrelate(
       _ => kept.push(lexpr)
     }
   }
+  // whatever the semi-join pass left behind still may hold a correlated
+  // subquery: rewrite those as expressions over their synthetic table, which
+  // is what makes a correlation under NOT / OR / a bare boolean work
+  let resolved : Array[@sql.LExpr] = []
+  for k in kept {
+    // the same short-circuit: only a conjunct that actually holds a
+    // correlated subquery pays for the walk
+    if cor.contains_correlated(k) {
+      resolved.push(
+        rewrite_correlated(k, cor, extra_schemas, extra_batches, extra_items),
+      )
+    } else {
+      resolved.push(k)
+    }
+  }
   if extra_items.length() == 0 && scalar_items.length() == 0 {
     return (sel, extra_schemas, extra_batches)
   }
-  let filter : @sql.LExpr? = match kept.length() {
+  let filter : @sql.LExpr? = match resolved.length() {
     0 => None
     _ => {
-      let mut acc = kept[0]
-      for i in 1..<kept.length() {
-        acc = And(acc, kept[i])
+      let mut acc = resolved[0]
+      for i in 1..<resolved.length() {
+        acc = And(acc, resolved[i])
       }
       Some(acc)
     }
@@ -222,14 +265,17 @@ fn Correlator::prepare(
           (_, _) =>
             // not a clean correlation equality: purely inner conjuncts
             // stay in the inner filter (a literal operand is side-free),
-            // spanning conjuncts fall to the semi residual, anything
-            // else is unsupported
+            // spanning and purely-outer conjuncts fall to the join residual
+            // (both sides of a semi/anti ON can read the probe row), and an
+            // unresolved name is unsupported
             match (self.side_of(a), self.side_of(b)) {
               (Inner, Inner)
               | (Inner, NoneSide)
               | (NoneSide, Inner)
               | (NoneSide, NoneSide) => inner_only.push(cj)
               (Mixed, _) | (_, Mixed) => residual.push(cj)
+              (Outer, Outer) | (Outer, NoneSide) | (NoneSide, Outer) =>
+                residual.push(cj)
               (_, _) => return None
             }
         }
@@ -237,8 +283,10 @@ fn Correlator::prepare(
       other =>
         match self.side_of(other) {
           Inner => inner_only.push(other)
-          Mixed => residual.push(other)
-          _ => return None // outer-only or unknown: unsupported
+          // outer-only conjuncts are parameters of the correlation: the
+          // join residual (and the theta aggregate) can read the probe row
+          Mixed | Outer => residual.push(other)
+          _ => return None // unknown: unsupported
         }
     }
   }
@@ -287,8 +335,13 @@ fn Correlator::try_exists(
   let sink : Array[@sql.LExpr] = []
   match self.prepare(sub) {
     Some((pairs, inner_filter, residual)) =>
-      if pairs.length() == 0 {
-        None // no correlation: the binder folds it eagerly
+      // an empty pairing is still a correlation when a spanning conjunct
+      // remains: the conjunct becomes the join's whole ON, so the join has
+      // no hash keys and pairs every outer row with every inner one
+      // (`EXISTS (SELECT 1 FROM i WHERE i.v > o.v)`). With neither part the
+      // subquery is uncorrelated and the binder folds it eagerly.
+      if pairs.length() == 0 && residual.length() == 0 {
+        None
       } else {
         self.finish_semi(
           sub.from,
@@ -493,7 +546,7 @@ fn Correlator::try_scalar(
     Some(triple) => triple
     None => return None
   }
-  if pairs.length() == 0 {
+  if pairs.length() == 0 && residual.length() == 0 {
     return None // non-correlated: the runner folds it eagerly
   }
   // a correlated scalar without an aggregate cannot decorrelate (its
@@ -504,17 +557,26 @@ fn Correlator::try_scalar(
       "correlated scalar subquery must select an aggregate (e.g. min/max/avg/count)",
     )
   }
-  if residual.length() > 0 {
-    return None
+  // a correlation that is not a conjunction of equalities has no keys to
+  // group by, so its aggregate is keyed by the outer row's identity instead
+  let general = residual.length() > 0 || pairs.length() == 0
+  let (item, name) = if general {
+    match
+      self.build_theta_scalar_table(
+        sub, pairs, inner_only, residual, extra_schemas, extra_batches,
+      ) {
+      Some(pair) => pair
+      None => return None
+    }
+  } else {
+    self.build_scalar_table(
+      sub, pairs, inner_only, extra_schemas, extra_batches,
+    )
   }
-  let (item, name) = self.build_scalar_table(
-    sub, pairs, inner_only, extra_schemas, extra_batches,
-  )
   // the rewritten comparison stays in the WHERE pool and classifies as
   // the step residual (or a hash key when the comparison is an equality)
-  kept.push(
-    Cmp(op, outer_e, scalar_value(name, pairs.length(), sub.items[0].expr)),
-  )
+  let idx = if general { 1 } else { pairs.length() }
+  kept.push(Cmp(op, outer_e, scalar_value(name, idx, sub.items[0].expr)))
   Some(item)
 }
 
@@ -602,6 +664,388 @@ fn Correlator::build_scalar_table(
     on: Some(on),
   }
   (item, name)
+}
+
+///|
+/// The internal function that renders a row of values as one canonical,
+/// NULL-safe string: type-tagged and length-prefixed per column, so two rows
+/// compare equal by plain `=` exactly when their values are equal (a NULL is
+/// its own tag, not an unknown). It is the only identity machinery the
+/// general correlation needs; binder and evaluator know the name.
+const ROW_KEY : String = "__row_key"
+
+///|
+fn conjoin_lexprs(xs : Array[@sql.LExpr]) -> @sql.LExpr? {
+  match xs.length() {
+    0 => None
+    _ => {
+      let mut acc = xs[0]
+      for i in 1..<xs.length() {
+        acc = And(acc, xs[i])
+      }
+      Some(acc)
+    }
+  }
+}
+
+///|
+/// The general-correlation table. A subquery whose linking predicate is not a
+/// conjunction of equalities has no key the inner side could be grouped by, so
+/// nothing can be precomputed per correlation key the way
+/// `build_scalar_table` does it: the aggregate genuinely depends on the outer
+/// row's numbers. Instead the aggregates run once, eagerly, over the *distinct*
+/// combinations of the outer expressions the subquery reads, and that table is
+/// left-joined back on one canonical row key. Deduplication is what keeps the
+/// result honest — without it a repeated outer row would multiply the inner
+/// matches and a `count(*)` would double. The join inside is a theta join (a
+/// nested loop over the distinct outer combinations), which is the price of
+/// the general shape; the equality flavor stays on the hash-keyed path.
+///
+/// `values` are the aggregate expressions to compute per group; value `i`
+/// lands in synthetic column `__sk<i + 1>` and column `__sk0` carries the key.
+fn Correlator::build_theta_table(
+  self : Correlator,
+  sub : @sql.Select,
+  pairs : Array[(@sql.LExpr, @sql.LExpr)],
+  inner_only : Array[@sql.LExpr],
+  residual : Array[@sql.LExpr],
+  values : Array[@sql.LExpr],
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+) -> (@sql.FromItem, String)? raise @types.SqlError {
+  if sub.from.length() == 0 || values.length() == 0 {
+    return None // a FROM-less subquery cannot be correlated
+  }
+  // the outer expressions the predicate and the aggregates read: together they
+  // tell two outer rows apart as far as this subquery is concerned, so they are
+  // the identity the eager table is grouped and joined by
+  let ref_keys : Array[String] = []
+  let ref_exprs : Array[@sql.LExpr] = []
+  let ref_names : Array[String] = []
+  for p in pairs {
+    lift_refs(p.1, self, Outer, "__c", 0, ref_names, ref_exprs, ref_keys)
+  }
+  for r in residual {
+    lift_refs(r, self, Outer, "__c", 0, ref_names, ref_exprs, ref_keys)
+  }
+  for v in values {
+    lift_refs(v, self, Outer, "__c", 0, ref_names, ref_exprs, ref_keys)
+  }
+  if ref_exprs.length() == 0 {
+    return None
+  }
+  let tag = self.counter
+  self.counter = self.counter + 1
+  let dname = "__d\{tag}"
+  let name = "__theta\{tag}"
+  // the distinct outer combinations the inner rows are matched against
+  let dedup_items : Array[@sql.SelectItem] = []
+  for i, e in ref_exprs {
+    dedup_items.push({ expr: e, label: Some(ref_names[i]), })
+  }
+  let outer_from : Array[@sql.FromItem] = []
+  for it in self.outer_items {
+    outer_from.push(it)
+  }
+  let dedup : @sql.Select = {
+    from: outer_from,
+    filter: None,
+    group_by: [],
+    having: None,
+    items: dedup_items,
+    order_by: [],
+    limit: None,
+    offset: None,
+    distinct: true,
+    windows: [],
+    setop: None,
+  }
+  // from here the correlation reads the deduplicated table: the spanning
+  // conjuncts and the value expressions wipe their outer references over to it
+  let key_args : Array[@sql.LExpr] = []
+  for n in ref_names {
+    key_args.push(ColQ(dname, n))
+  }
+  let key_expr : @sql.LExpr = Func(ROW_KEY, key_args)
+  let conj : Array[@sql.LExpr] = []
+  for p in pairs {
+    conj.push(Cmp(@types.Eq, p.0, p.1))
+  }
+  for r in residual {
+    conj.push(r)
+  }
+  for c in inner_only {
+    conj.push(c)
+  }
+  let rewritten : Array[@sql.LExpr] = []
+  for c in conj {
+    rewritten.push(substitute_refs(c, dname, ref_keys, ref_names))
+  }
+  let filter : @sql.LExpr? = conjoin_lexprs(rewritten)
+  let eager_items : Array[@sql.SelectItem] = [
+    { expr: key_expr, label: Some("__ok"), },
+  ]
+  for i, v in values {
+    eager_items.push({
+      expr: substitute_refs(v, dname, ref_keys, ref_names),
+      label: Some("__sk\{i + 1}"),
+    })
+  }
+  // the inner FROM joins as written (its own joins and ONs kept); the
+  // deduplicated outer side is the first item, so it probes the inner side
+  let eager_from : Array[@sql.FromItem] = [
+    {
+      table: Sub(dedup),
+      tbl_alias: Some(dname),
+      col_aliases: None,
+      join: Inner,
+      on: None,
+    },
+  ]
+  for it in sub.from {
+    eager_from.push(it)
+  }
+  let eager : @sql.Select = {
+    from: eager_from,
+    filter,
+    group_by: [key_expr],
+    having: None,
+    items: eager_items,
+    order_by: [],
+    limit: None,
+    offset: None,
+    distinct: false,
+    windows: [],
+    setop: None,
+  }
+  let inner = run_parsed(eager, self.catalog, [], self.opts)
+  if inner.types().length() != 1 + values.length() {
+    return None // no schema to attach: leave the subquery to the runner
+  }
+  let columns : Array[@catalog.Column] = []
+  for i, t in inner.types() {
+    columns.push({ name: "__sk\{i}", dtype: t, })
+  }
+  extra_schemas.push({ table: name, columns, })
+  extra_batches.push([inner.batch()])
+  // an inner join above leaves no row for an outer combination the inner side
+  // never matched, and the LEFT join here then extends it with NULLs — which
+  // is exactly the scalar aggregate's empty value (0 for the count family)
+  let join_on : @sql.LExpr = Cmp(
+    @types.Eq,
+    Func(ROW_KEY, ref_exprs),
+    ColQ(name, "__sk0"),
+  )
+  let item : @sql.FromItem = {
+    table: Named(name),
+    tbl_alias: Some(name),
+    col_aliases: None,
+    join: Left,
+    on: Some(join_on),
+  }
+  Some((item, name))
+}
+
+///|
+/// The scalar aggregate of a correlation that is not a conjunction of
+/// equalities — one value expression, in column `__sk1`.
+fn Correlator::build_theta_scalar_table(
+  self : Correlator,
+  sub : @sql.Select,
+  pairs : Array[(@sql.LExpr, @sql.LExpr)],
+  inner_only : Array[@sql.LExpr],
+  residual : Array[@sql.LExpr],
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+) -> (@sql.FromItem, String)? raise @types.SqlError {
+  self.build_theta_table(
+    sub,
+    pairs,
+    inner_only,
+    residual,
+    [sub.items[0].expr],
+    extra_schemas,
+    extra_batches,
+  )
+}
+
+///|
+/// A correlation value that is only meaningful as an aggregate: refuse the
+/// subquery shapes whose semantics the eager aggregate would not keep.
+fn plain_agg_sub(sub : @sql.Select) -> Bool {
+  sub.group_by.length() == 0 &&
+  sub.having is None &&
+  sub.limit is None &&
+  sub.offset is None &&
+  !sub.distinct &&
+  sub.setop is None
+}
+
+///|
+/// `EXISTS (sub)` as a value: the count of satisfying inner rows, `> 0`.
+/// The `sum`/`count` of an empty group is NULL and coalesces to 0, so an outer
+/// row with no match reads FALSE rather than NULL — as EXISTS must.
+fn Correlator::theta_exists(
+  self : Correlator,
+  sub : @sql.Select,
+  negated : Bool,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+  extra_items : Array[@sql.FromItem],
+) -> @sql.LExpr? raise @types.SqlError {
+  // a HAVING filter needs the grouped flavor (the WHERE path has it); a
+  // LIMIT/DISTINCT/set operation changes which rows exist at all
+  if !plain_agg_sub(sub) {
+    return None
+  }
+  let (pairs, inner_only, residual) = match self.prepare(sub) {
+    Some(triple) => triple
+    None => return None
+  }
+  if pairs.length() == 0 && residual.length() == 0 {
+    return None // uncorrelated: the runner folds it eagerly
+  }
+  let (item, name) = match
+    self.build_theta_table(
+      sub,
+      pairs,
+      inner_only,
+      residual,
+      [Agg(CountStar, None)],
+      extra_schemas,
+      extra_batches,
+    ) {
+    Some(pair) => pair
+    None => return None
+  }
+  extra_items.push(item)
+  let count : @sql.LExpr = Func("coalesce", [
+    ColQ(name, "__sk1"),
+    Lit(@types.Int64(0L)),
+  ])
+  let found : @sql.LExpr = Cmp(
+    if negated {
+      @types.Eq
+    } else {
+      @types.Gt
+    },
+    count,
+    Lit(@types.Int64(0L)),
+  )
+  Some(found)
+}
+
+///|
+/// `probe IN (sub)` as a value, with SQL's three-valued semantics: TRUE on a
+/// match, FALSE on no match over a set that is empty or null-free, NULL when
+/// the set holds a NULL or the probe itself is NULL. The eager table counts
+/// matching rows, all rows, and rows whose value is NULL; the CASE below turns
+/// those three counts into the boolean — `NOT IN` is its mirror image.
+fn Correlator::theta_in(
+  self : Correlator,
+  probe : @sql.LExpr,
+  sub : @sql.Select,
+  negated : Bool,
+  extra_schemas : Array[@catalog.TableSchema],
+  extra_batches : Array[Array[@types.DataBatch]],
+  extra_items : Array[@sql.FromItem],
+) -> @sql.LExpr? raise @types.SqlError {
+  if !plain_agg_sub(sub) {
+    return None
+  }
+  if sub.items.length() != 1 || contains_agg(sub.items[0].expr) {
+    return None
+  }
+  // `SELECT *` over one one-column table is the same value the IN compares
+  // against; anything wider is not a single value at all, so it is left alone
+  let value_expr : @sql.LExpr = match sub.items[0].expr {
+    Star =>
+      match (sub.from.length(), sub.from[0].table) {
+        (1, Named(t)) =>
+          match self.catalog.lookup(t) {
+            Some(entry) =>
+              match entry.schema.columns.length() {
+                1 =>
+                  match sub.from[0].tbl_alias {
+                    Some(q) => ColQ(q, entry.schema.columns[0].name)
+                    None => ColQ(t, entry.schema.columns[0].name)
+                  }
+                _ => return None
+              }
+            None => return None
+          }
+        _ => return None
+      }
+    e => e
+  }
+  let (pairs, inner_only, residual) = match self.prepare(sub) {
+    Some(triple) => triple
+    None => return None
+  }
+  if pairs.length() == 0 && residual.length() == 0 {
+    return None // uncorrelated: the runner folds it eagerly
+  }
+  let matches : @sql.LExpr = Agg(
+    Sum,
+    Some(
+      Case(
+        [(Cmp(@types.Eq, value_expr, probe), Lit(@types.Int32(1)))],
+        Some(Lit(@types.Int32(0))),
+      ),
+    ),
+  )
+  let nulls : @sql.LExpr = Agg(
+    Sum,
+    Some(
+      Case(
+        [(IsNull(value_expr, false), Lit(@types.Int32(1)))],
+        Some(Lit(@types.Int32(0))),
+      ),
+    ),
+  )
+  let (item, name) = match
+    self.build_theta_table(
+      sub,
+      pairs,
+      inner_only,
+      residual,
+      [matches, Agg(CountStar, None), nulls],
+      extra_schemas,
+      extra_batches,
+    ) {
+    Some(pair) => pair
+    None => return None
+  }
+  extra_items.push(item)
+  let zero : @sql.LExpr = Lit(@types.Int64(0L))
+  let hit : @sql.LExpr = Cmp(
+    @types.Gt,
+    Func("coalesce", [ColQ(name, "__sk1"), zero]),
+    zero,
+  )
+  let rows : @sql.LExpr = Cmp(
+    @types.Eq,
+    Func("coalesce", [ColQ(name, "__sk2"), zero]),
+    zero,
+  )
+  let has_null : @sql.LExpr = Cmp(
+    @types.Gt,
+    Func("coalesce", [ColQ(name, "__sk3"), zero]),
+    zero,
+  )
+  let probe_null : @sql.LExpr = IsNull(probe, false)
+  let unknown : @sql.LExpr = Or(probe_null, has_null)
+  let known : @sql.LExpr = Not(unknown)
+  let yes : @sql.LExpr = Lit(@types.Boolean(true))
+  let no : @sql.LExpr = Lit(@types.Boolean(false))
+  // no ELSE: falling off the end yields NULL, which is the unknown answer —
+  // the previous branch settles every case that has a definite one
+  let value : @sql.LExpr = if negated {
+    Case([(rows, yes), (hit, no), (known, yes)], None)
+  } else {
+    Case([(hit, yes), (rows, no), (known, no)], None)
+  }
+  Some(value)
 }
 
 ///|
@@ -713,8 +1157,63 @@ fn Correlator::reject_unsupported_correlation(
   }
   if self.refs_outer(sub) {
     raise @types.SqlError::Bind(
-      "this correlated subquery cannot be decorrelated: only `inner.col = outer.col` equalities over plain tables are paired, and the subquery may not carry DISTINCT, LIMIT, a set operation or a GROUP BY with HAVING — rewrite a non-equality correlation as a join",
+      "this correlated subquery cannot be decorrelated: it must read plain tables (a derived table in its FROM is refused) and may not carry DISTINCT, LIMIT, OFFSET, a set operation, a grouping or HAVING that is not the correlation keys, or a reference to a table outside the immediately enclosing query — rewrite it as a join",
     )
+  }
+}
+
+///|
+/// Does the expression hold a correlated subquery anywhere inside it?
+fn Correlator::contains_correlated(self : Correlator, e : @sql.LExpr) -> Bool {
+  match e {
+    ScalarSub(sub) | Exists(sub, _) | InSelect(_, sub, _) =>
+      self.refs_outer(sub)
+    Lit(_) | IntervalLit(_, _) | Col(_) | ColQ(_, _) | Star => false
+    Arith(_, l, r) | Cmp(_, l, r) | And(l, r) | Or(l, r) =>
+      self.contains_correlated(l) || self.contains_correlated(r)
+    Not(x) | IsNull(x, _) | Extract(_, x) | Cast(x, _) =>
+      self.contains_correlated(x)
+    Between(v, lo, hi) =>
+      self.contains_correlated(v) ||
+      self.contains_correlated(lo) ||
+      self.contains_correlated(hi)
+    In(v, items) | NotIn(v, items) => {
+      let mut hit = self.contains_correlated(v)
+      for x in items {
+        if self.contains_correlated(x) {
+          hit = true
+        }
+      }
+      hit
+    }
+    Like(v, _) | NotLike(v, _) => self.contains_correlated(v)
+    Case(whens, else_) => {
+      let mut hit = false
+      for w in whens {
+        if self.contains_correlated(w.0) || self.contains_correlated(w.1) {
+          hit = true
+        }
+      }
+      match else_ {
+        Some(x) => if self.contains_correlated(x) { hit = true }
+        None => ()
+      }
+      hit
+    }
+    Func(_, args) => {
+      let mut hit = false
+      for a in args {
+        if self.contains_correlated(a) {
+          hit = true
+        }
+      }
+      hit
+    }
+    Agg(_, inner) =>
+      match inner {
+        Some(x) => self.contains_correlated(x)
+        None => false
+      }
   }
 }
 
@@ -751,8 +1250,20 @@ fn Correlator::try_scalar_item(
     }
     return None
   }
-  if pairs.length() == 0 || residual.length() > 0 {
-    return None
+  if residual.length() > 0 || pairs.length() == 0 {
+    if pairs.length() == 0 && residual.length() == 0 {
+      return None
+    }
+    match
+      self.build_theta_scalar_table(
+        sub, pairs, inner_only, residual, extra_schemas, extra_batches,
+      ) {
+      Some((item, name)) => {
+        extra_items.push(item)
+        return Some(scalar_value(name, 1, sub.items[0].expr))
+      }
+      None => return None
+    }
   }
   let (item, name) = self.build_scalar_table(
     sub, pairs, inner_only, extra_schemas, extra_batches,
@@ -762,9 +1273,13 @@ fn Correlator::try_scalar_item(
 }
 
 ///|
-/// Rewrite every correlated scalar subquery of a select-item expression
-/// into a reference on its synthetic grouped table.
-fn rewrite_scalar_items(
+/// Rewrite every correlated subquery of an expression into one that reads
+/// its synthetic table: a scalar subquery becomes a column reference, and a
+/// correlated EXISTS / IN becomes a boolean built from counts, so it works in
+/// any position (select item, WHERE, inside NOT / OR / CASE) — not just as a
+/// top-level conjunct the semi-join path can claim. Subqueries this cannot
+/// claim are left alone for the runner (or refused, with a message).
+fn rewrite_correlated(
   e : @sql.LExpr,
   cor : Correlator,
   extra_schemas : Array[@catalog.TableSchema],
@@ -777,6 +1292,28 @@ fn rewrite_scalar_items(
         match
           cor.try_scalar_item(sub, extra_schemas, extra_batches, extra_items) {
           Some(col) => col
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            e
+          }
+        }
+      Exists(sub, negated) =>
+        match
+          cor.theta_exists(
+            sub, negated, extra_schemas, extra_batches, extra_items,
+          ) {
+          Some(v) => v
+          None => {
+            cor.reject_unsupported_correlation(sub)
+            e
+          }
+        }
+      InSelect(v, sub, negated) =>
+        match
+          cor.theta_in(
+            v, sub, negated, extra_schemas, extra_batches, extra_items,
+          ) {
+          Some(x) => x
           None => {
             cor.reject_unsupported_correlation(sub)
             e
@@ -832,7 +1369,6 @@ fn rewrite_scalar_items(
           Some(x) => Agg(f, Some(walk(x)))
           None => Agg(f, None)
         }
-      InSelect(_, _, _) | Exists(_, _) => e
     }
   }
 
@@ -866,7 +1402,16 @@ fn Correlator::finish_semi(
   let ref_exprs : Array[@sql.LExpr] = [] // the inner expression behind it
   let ref_keys : Array[String] = [] // canonical "qual.col" / "col" key
   for r in residual {
-    lift_inner_refs(r, self, pairs.length(), ref_names, ref_exprs, ref_keys)
+    lift_refs(
+      r,
+      self,
+      Inner,
+      "__sk",
+      pairs.length(),
+      ref_names,
+      ref_exprs,
+      ref_keys,
+    )
   }
   // the inner side of every pair becomes one output column
   let items : Array[@sql.SelectItem] = []
@@ -913,11 +1458,19 @@ fn Correlator::finish_semi(
   // rewrite the residual's inner references onto the pseudo columns
   let rewritten : Array[@sql.LExpr] = []
   for r in residual {
-    rewritten.push(substitute_inner_refs(r, name, ref_keys, ref_names))
+    rewritten.push(substitute_refs(r, name, ref_keys, ref_names))
   }
   // ON: outer expr = pseudo column, AND-chained; the rewritten residual
   // rides along — plan_step classifies it as the step residual
-  let on : @sql.LExpr = if pairs.length() == 1 && rewritten.length() == 0 {
+  let on : @sql.LExpr = if pairs.length() == 0 {
+    // no equality to hash on: the spanning conjuncts are the entire ON,
+    // which the semi/anti join evaluates pair by pair
+    let mut acc = rewritten[0]
+    for i in 1..<rewritten.length() {
+      acc = And(acc, rewritten[i])
+    }
+    acc
+  } else if pairs.length() == 1 && rewritten.length() == 0 {
     Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
   } else {
     let mut acc : @sql.LExpr = Cmp(@types.Eq, pairs[0].1, ColQ(name, "__sk0"))
@@ -1085,12 +1638,15 @@ fn ref_key(qual : String?, name : String) -> String {
 }
 
 ///|
-/// Recursively collect distinct inner-scope column references. The
-/// synthetic names start at `base` = the pair-key column count, so they
-/// line up with the items finish_semi appends after the keys.
-fn lift_inner_refs(
+/// Recursively collect distinct column references of one scope. Names are
+/// `prefix` + (base + ordinal), so the semi-join lifts line up with the items
+/// finish_semi appends after the keys and the theta-scalar lifts line up with
+/// the columns of the deduplicated outer table.
+fn lift_refs(
   e : @sql.LExpr,
   cor : Correlator,
+  side : RefSide,
+  prefix : String,
   base : Int32,
   ref_names : Array[String],
   ref_exprs : Array[@sql.LExpr],
@@ -1106,8 +1662,8 @@ fn lift_inner_refs(
             seen = true
           }
         }
-        if !seen && cor.side_of(Col(name)) is Inner {
-          ref_names.push("__sk\{base + ref_keys.length()}")
+        if !seen && cor.side_of(Col(name)).same(side) {
+          ref_names.push("\{prefix}\{base + ref_keys.length()}")
           ref_exprs.push(Col(name))
           ref_keys.push(key)
         }
@@ -1120,8 +1676,8 @@ fn lift_inner_refs(
             seen = true
           }
         }
-        if !seen && cor.side_of(ColQ(q, c)) is Inner {
-          ref_names.push("__sk\{base + ref_keys.length()}")
+        if !seen && cor.side_of(ColQ(q, c)).same(side) {
+          ref_names.push("\{prefix}\{base + ref_keys.length()}")
           ref_exprs.push(ColQ(q, c))
           ref_keys.push(key)
         }
@@ -1189,9 +1745,10 @@ fn lift_inner_refs(
 }
 
 ///|
-/// Recursively replace lifted inner references with their pseudo-table
-/// columns. Outer references pass through untouched.
-fn substitute_inner_refs(
+/// Recursively replace lifted column references with their pseudo-table
+/// columns. References whose key is not in the table pass through untouched,
+/// which is what lets one walker carry a scope's own refs into its table.
+fn substitute_refs(
   e : @sql.LExpr,
   pseudo : String,
   ref_keys : Array[String],
@@ -1221,65 +1778,62 @@ fn substitute_inner_refs(
     Arith(op, l, r) =>
       Arith(
         op,
-        substitute_inner_refs(l, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(r, pseudo, ref_keys, ref_names),
+        substitute_refs(l, pseudo, ref_keys, ref_names),
+        substitute_refs(r, pseudo, ref_keys, ref_names),
       )
     Cmp(op, l, r) =>
       Cmp(
         op,
-        substitute_inner_refs(l, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(r, pseudo, ref_keys, ref_names),
+        substitute_refs(l, pseudo, ref_keys, ref_names),
+        substitute_refs(r, pseudo, ref_keys, ref_names),
       )
     And(l, r) =>
       And(
-        substitute_inner_refs(l, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(r, pseudo, ref_keys, ref_names),
+        substitute_refs(l, pseudo, ref_keys, ref_names),
+        substitute_refs(r, pseudo, ref_keys, ref_names),
       )
     Or(l, r) =>
       Or(
-        substitute_inner_refs(l, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(r, pseudo, ref_keys, ref_names),
+        substitute_refs(l, pseudo, ref_keys, ref_names),
+        substitute_refs(r, pseudo, ref_keys, ref_names),
       )
-    Not(x) => Not(substitute_inner_refs(x, pseudo, ref_keys, ref_names))
+    Not(x) => Not(substitute_refs(x, pseudo, ref_keys, ref_names))
     Between(v, lo, hi) =>
       Between(
-        substitute_inner_refs(v, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(lo, pseudo, ref_keys, ref_names),
-        substitute_inner_refs(hi, pseudo, ref_keys, ref_names),
+        substitute_refs(v, pseudo, ref_keys, ref_names),
+        substitute_refs(lo, pseudo, ref_keys, ref_names),
+        substitute_refs(hi, pseudo, ref_keys, ref_names),
       )
     In(v, items) => {
       let new_items : Array[@sql.LExpr] = []
       for item in items {
-        new_items.push(substitute_inner_refs(item, pseudo, ref_keys, ref_names))
+        new_items.push(substitute_refs(item, pseudo, ref_keys, ref_names))
       }
-      In(substitute_inner_refs(v, pseudo, ref_keys, ref_names), new_items)
+      In(substitute_refs(v, pseudo, ref_keys, ref_names), new_items)
     }
     NotIn(v, items) => {
       let new_items : Array[@sql.LExpr] = []
       for item in items {
-        new_items.push(substitute_inner_refs(item, pseudo, ref_keys, ref_names))
+        new_items.push(substitute_refs(item, pseudo, ref_keys, ref_names))
       }
-      NotIn(substitute_inner_refs(v, pseudo, ref_keys, ref_names), new_items)
+      NotIn(substitute_refs(v, pseudo, ref_keys, ref_names), new_items)
     }
-    Like(v, p) => Like(substitute_inner_refs(v, pseudo, ref_keys, ref_names), p)
-    NotLike(v, p) =>
-      NotLike(substitute_inner_refs(v, pseudo, ref_keys, ref_names), p)
-    IsNull(v, n) =>
-      IsNull(substitute_inner_refs(v, pseudo, ref_keys, ref_names), n)
-    Extract(f, x) =>
-      Extract(f, substitute_inner_refs(x, pseudo, ref_keys, ref_names))
+    Like(v, p) => Like(substitute_refs(v, pseudo, ref_keys, ref_names), p)
+    NotLike(v, p) => NotLike(substitute_refs(v, pseudo, ref_keys, ref_names), p)
+    IsNull(v, n) => IsNull(substitute_refs(v, pseudo, ref_keys, ref_names), n)
+    Extract(f, x) => Extract(f, substitute_refs(x, pseudo, ref_keys, ref_names))
     Case(whens, else_) => {
       let new_whens : Array[(@sql.LExpr, @sql.LExpr)] = []
       for w in whens {
         new_whens.push(
           (
-            substitute_inner_refs(w.0, pseudo, ref_keys, ref_names),
-            substitute_inner_refs(w.1, pseudo, ref_keys, ref_names),
+            substitute_refs(w.0, pseudo, ref_keys, ref_names),
+            substitute_refs(w.1, pseudo, ref_keys, ref_names),
           ),
         )
       }
       let new_else = match else_ {
-        Some(x) => Some(substitute_inner_refs(x, pseudo, ref_keys, ref_names))
+        Some(x) => Some(substitute_refs(x, pseudo, ref_keys, ref_names))
         None => None
       }
       Case(new_whens, new_else)
@@ -1287,17 +1841,15 @@ fn substitute_inner_refs(
     Func(name, args) => {
       let new_args : Array[@sql.LExpr] = []
       for a in args {
-        new_args.push(substitute_inner_refs(a, pseudo, ref_keys, ref_names))
+        new_args.push(substitute_refs(a, pseudo, ref_keys, ref_names))
       }
       Func(name, new_args)
     }
-    Cast(x, dt) =>
-      Cast(substitute_inner_refs(x, pseudo, ref_keys, ref_names), dt)
+    Cast(x, dt) => Cast(substitute_refs(x, pseudo, ref_keys, ref_names), dt)
     ScalarSub(_) | InSelect(_, _, _) | Exists(_, _) => e
     Agg(f, inner) =>
       match inner {
-        Some(x) =>
-          Agg(f, Some(substitute_inner_refs(x, pseudo, ref_keys, ref_names)))
+        Some(x) => Agg(f, Some(substitute_refs(x, pseudo, ref_keys, ref_names)))
         None => Agg(f, None)
       }
     Star => e
