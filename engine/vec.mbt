@@ -239,17 +239,18 @@ fn promote_vec(
 }
 
 ///|
-/// Same-type arithmetic in one loop. Mirrors Scalar::arith: Int32
-/// add/sub/mul wrap, % is NULL on a zero divisor, / is always DOUBLE
-/// with IEEE infinities, Float64 % is fmod (dividend's sign). None
-/// falls back (mismatched operand dtypes never reach the executor —
-/// the binder inserts Promote — but staying safe costs nothing).
+/// Same-type arithmetic in one loop. Mirrors Scalar::arith_checked: Int32 and
+/// Int64 add/sub/mul raise on overflow (the check is per lane, so the fast path
+/// keeps its speed and a wrap never becomes a value), % is NULL on a zero
+/// divisor, / is always DOUBLE with IEEE infinities, Float64 % is fmod
+/// (dividend's sign). None falls back (mismatched operand dtypes never reach
+/// the executor — the binder inserts Promote — but staying safe costs nothing).
 fn arith_vec(
   op : @types.ArithOp,
   l : @types.ColumnVector,
   r : @types.ColumnVector,
   dt : @types.DataType,
-) -> @types.ColumnVector? {
+) -> @types.ColumnVector? raise @types.SqlError {
   let n = l.len()
   match (l, r) {
     (@types.I32(ld, lv), @types.I32(rd, rv)) => {
@@ -261,9 +262,13 @@ fn arith_vec(
         if lv[i] && rv[i] {
           ovalid[i] = true
           match op {
-            Add => od[i] = ld[i] + rd[i]
-            Sub => od[i] = ld[i] - rd[i]
-            Mul => od[i] = ld[i] * rd[i]
+            Add | Sub | Mul =>
+              od[i] = @types.int_arith_checked(
+                op,
+                @types.Int32,
+                ld[i].to_int64(),
+                rd[i].to_int64(),
+              ).to_int()
             Mod =>
               if rd[i] == 0 {
                 ovalid[i] = false
@@ -291,9 +296,8 @@ fn arith_vec(
         if lv[i] && rv[i] {
           ovalid[i] = true
           match op {
-            Add => od[i] = ld[i] + rd[i]
-            Sub => od[i] = ld[i] - rd[i]
-            Mul => od[i] = ld[i] * rd[i]
+            Add | Sub | Mul =>
+              od[i] = @types.int_arith_checked(op, @types.Int64, ld[i], rd[i])
             Mod =>
               if rd[i] == 0L {
                 ovalid[i] = false

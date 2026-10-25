@@ -1061,6 +1061,65 @@ test "to_json quotes DATE values instead of emitting bare epoch days" {
 }
 
 ///|
+test "to_json makes repeated labels unique instead of repeating a key" {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("a,b\n1,2\n", "t") catch { e => abort("\{e}") })
+  // two output columns can share a label; a JSON object with two "x" keys is
+  // not strict JSON a parser can keep both of
+  let r = run("SELECT a AS x, b AS x FROM t", cat)
+  assert_eq(r.to_json(), "[{\"x\":1,\"x_1\":2}]")
+  let parsed = @json.parse(r.to_json()) catch {
+    e => fail("to_json is not strict JSON: \{e.to_string()}")
+  }
+  let _ = parsed
+}
+
+///|
+test "explain of a FROM-less SELECT renders its plan" {
+  // SELECT 1 has no FROM item; the executor builds the zero-column __one dummy
+  // table, and explain used to index past the empty step list and crash
+  let cat = @catalog.Catalog::new()
+  let plan = @engine.explain("SELECT 1 AS x", cat) catch {
+    e => fail("explain raised: \{e.to_string()}")
+  }
+  assert_true(plan.contains("scan __one"))
+  assert_true(plan.contains("x"))
+  // ANALYZE runs it and reports the row counts
+  let analyzed = @engine.explain_analyze("SELECT 1 AS x", cat) catch {
+    e => fail("explain_analyze raised: \{e.to_string()}")
+  }
+  assert_true(analyzed.contains("project"))
+}
+
+///|
+test "correlated count(*) over a missing group is 0, not NULL" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k\n1\n2\n3\n", "u3") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(@csv.scan_string("k\n1\n", "n1") catch { e => abort("\{e}") })
+  // DuckDB answers 1,0,0: a scalar aggregate over an empty group is the
+  // aggregate's identity, and count's identity is 0. The decorrelated LEFT JOIN
+  // leaves NULL where no group matched, so count needs its identity back.
+  let r = run(
+    "SELECT u3.k AS k, (SELECT count(*) FROM n1 WHERE n1.k = u3.k) AS c FROM u3 ORDER BY u3.k",
+    cat,
+  )
+  assert_eq(r.row_count(), 3)
+  assert_eq(r.get(0, 1), @types.Int64(1L))
+  assert_eq(r.get(1, 1), @types.Int64(0L))
+  assert_eq(r.get(2, 1), @types.Int64(0L))
+  // sum/min/max keep NULL, which is their empty-group value
+  let s = run(
+    "SELECT (SELECT sum(n1.k) FROM n1 WHERE n1.k = u3.k) AS s FROM u3 WHERE u3.k = 3",
+    cat,
+  )
+  assert_eq(s.get(0, 0), @types.Null)
+}
+
+///|
 test "to_json keeps non-finite floats parseable without hiding them" {
   let cat = q6_catalog()
   // JSON has no number spelling for an infinity or NaN; the bare tokens made
@@ -1787,13 +1846,34 @@ test "overflow battery: defined semantics at every numeric boundary" {
   // CSV inference widens past int32/int64 instead of wrapping
   let r = run("SELECT count(*) AS c FROM num WHERE v IS NOT NULL", cat)
   assert_eq(r.get(0, 0), @types.Int64(5L))
-  // int32 arithmetic wraps (defined): 2147483647 + 1 = -2147483648.
-  // (the i column itself widens to float64: it holds values past both
-  // int32 and int64, so the wrap is pinned on literal arithmetic)
-  let r2 = run("SELECT 2147483647 + 1 AS x FROM num WHERE v = 1", cat)
-  assert_eq(r2.get(0, 0), @types.Int32(-2147483648))
-  let r2b = run("SELECT 9223372036854775807 + 1 AS x FROM num WHERE v = 1", cat)
-  assert_eq(r2b.get(0, 0), @types.Int64(-9223372036854775808))
+  // integer arithmetic refuses to wrap: a wrapped value is a wrong number a
+  // query never asked for, and sum() already raises here (DuckDB raises too)
+  let e2 = run_err("SELECT 2147483647 + 1 AS x FROM num WHERE v = 1", cat)
+  assert_true(e2.to_string().contains("integer overflow"))
+  let e2b = run_err(
+    "SELECT 9223372036854775807 + 1 AS x FROM num WHERE v = 1", cat,
+  )
+  assert_true(e2b.to_string().contains("integer overflow"))
+  // every in-range result keeps its value, including the boundary itself
+  let r2 = run(
+    "SELECT 2147483646 + 1 AS x, 4611686018427387904 + 4611686018427387903 AS y FROM num WHERE v = 1",
+    cat,
+  )
+  assert_eq(r2.get(0, 0), @types.Int32(2147483647))
+  assert_eq(r2.get(0, 1), @types.Int64(9223372036854775807L))
+  // subtraction and multiplication are checked at both ends
+  let e2c = run_err(
+    "SELECT (-2147483647 - 1) - 1 AS x FROM num WHERE v = 1", cat,
+  )
+  assert_true(e2c.to_string().contains("integer overflow"))
+  let e2d = run_err("SELECT 2000000000 * 2 AS x FROM num WHERE v = 1", cat)
+  assert_true(e2d.to_string().contains("integer overflow"))
+  let r2c = run(
+    "SELECT (-2147483647 - 1) + 1 AS x, 1000000000 * 2 AS y FROM num WHERE v = 1",
+    cat,
+  )
+  assert_eq(r2c.get(0, 0), @types.Int32(-2147483647))
+  assert_eq(r2c.get(0, 1), @types.Int32(2000000000))
   // division is always double with IEEE infinities; modulo NULLs out
   let r3 = run(
     "SELECT 1 / 0 AS d, 0 / 0 AS n, 5 % 0 AS m FROM num WHERE v = 1", cat,

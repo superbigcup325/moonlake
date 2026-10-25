@@ -30,7 +30,9 @@ fn eval_with(
     Const(v) => v
     Promote(inner, dt) => promote(eval_with(inner, get), dt)
     ArithE(op, l, r, _) =>
-      @types.Scalar::arith(op, eval_with(l, get), eval_with(r, get))
+      // checked: an integer wrap is a wrong number, not a result (sum() and
+      // DuckDB both raise where the wrap would happen)
+      @types.Scalar::arith_checked(op, eval_with(l, get), eval_with(r, get))
     CmpE(op, l, r) =>
       op.apply(@types.Scalar::compare(eval_with(l, get), eval_with(r, get)))
     AndE(l, r) => @types.Scalar::logic_and(eval_with(l, get), eval_with(r, get))

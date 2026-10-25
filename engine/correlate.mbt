@@ -460,8 +460,30 @@ fn Correlator::try_scalar(
   )
   // the rewritten comparison stays in the WHERE pool and classifies as
   // the step residual (or a hash key when the comparison is an equality)
-  kept.push(Cmp(op, outer_e, ColQ(name, "__sk\{pairs.length()}")))
+  kept.push(
+    Cmp(op, outer_e, scalar_value(name, pairs.length(), sub.items[0].expr)),
+  )
   Some(item)
+}
+
+///|
+/// What a decorrelated scalar subquery stands for at its use site. The
+/// synthetic table is attached with a LEFT JOIN, so an outer row the inner
+/// query had no group for probes NULL — but a scalar aggregate over an empty
+/// group is not NULL for the count family: `(SELECT count(*) FROM t WHERE
+/// t.k = x.k)` is 0 when nothing matches, as in SQL and DuckDB. Every other
+/// aggregate's empty value is NULL, which the join already yields.
+fn scalar_value(
+  name : String,
+  idx : Int32,
+  item_expr : @sql.LExpr,
+) -> @sql.LExpr {
+  let col : @sql.LExpr = ColQ(name, "__sk\{idx}")
+  match item_expr {
+    Agg(Count | CountStar | CountDistinct, _) =>
+      Func("coalesce", [col, Lit(@types.Int64(0L))])
+    _ => col
+  }
 }
 
 ///|
@@ -563,7 +585,7 @@ fn Correlator::try_scalar_item(
     sub, pairs, inner_only, extra_schemas, extra_batches,
   )
   extra_items.push(item)
-  Some(ColQ(name, "__sk\{pairs.length()}"))
+  Some(scalar_value(name, pairs.length(), sub.items[0].expr))
 }
 
 ///|

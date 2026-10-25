@@ -559,13 +559,29 @@ pub fn explain(
   catalog : @catalog.Catalog,
 ) -> String raise @types.SqlError {
   let sel = @sql.parse_select(sql)
+  // SELECT without FROM drives the same zero-column one-row dummy table the
+  // executor uses; without a FROM item the bound plan carries no step at all
+  // and rendering it indexes past the empty step list
+  if sel.from.length() == 0 {
+    sel.from.push({
+      table: Named("__one"),
+      tbl_alias: None,
+      col_aliases: None,
+      join: Inner,
+      on: None,
+    })
+  }
   let schemas : Array[@catalog.TableSchema] = []
   for item in sel.from {
     match item.table {
       Named(name) =>
-        match catalog.lookup(name) {
-          Some(entry) => schemas.push(entry.schema)
-          None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
+        if name == "__one" {
+          schemas.push({ table: name, columns: [], })
+        } else {
+          match catalog.lookup(name) {
+            Some(entry) => schemas.push(entry.schema)
+            None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
+          }
         }
       Sub(_) =>
         raise @types.SqlError::Bind(
@@ -751,9 +767,13 @@ pub fn explain(
 /// spelling), not a bare epoch integer. Non-finite FLOAT64 values have no
 /// JSON number spelling, so they render as the strings "Infinity",
 /// "-Infinity" and "NaN"; that keeps the output parseable while staying
-/// distinct from both finite numbers and SQL NULL.
+/// distinct from both finite numbers and SQL NULL. Two output columns can
+/// share a label (`SELECT a, b AS a`): object keys must be unique, so repeats
+/// get a `_1` suffix (a CSV header's rename) instead of a key that silently
+/// overwrites its neighbour in a JSON parser.
 pub fn SelectResult::to_json(self : SelectResult) -> String {
   let sb = StringBuilder()
+  let keys = unique_keys(self.names())
   sb.write_char('[')
   for r in 0..<self.row_count() {
     if r > 0 {
@@ -765,7 +785,7 @@ pub fn SelectResult::to_json(self : SelectResult) -> String {
         sb.write_char(',')
       }
       sb.write_char('"')
-      sb.write_string(json_escape(self.names()[c]))
+      sb.write_string(json_escape(keys[c]))
       sb.write_string("\":")
       match self.get(r, c) {
         @types.Null => sb.write_string("null")
@@ -798,6 +818,24 @@ pub fn SelectResult::to_json(self : SelectResult) -> String {
   }
   sb.write_char(']')
   sb.to_string()
+}
+
+///|
+/// JSON object keys: the result's column names, with a repeated label made
+/// unique the way a CSV header is (`a`, `a_1`, `a_2`, skipping names that are
+/// already in use).
+fn unique_keys(names : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for name in names {
+    let mut candidate = name
+    let mut n = 0
+    while out.contains(candidate) {
+      n += 1
+      candidate = "\{name}_\{n}"
+    }
+    out.push(candidate)
+  }
+  out
 }
 
 ///|
