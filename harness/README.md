@@ -271,6 +271,27 @@ own `COPY … TO` output to be readable by moonlake. A separate 4000-row table
 asserts that `--snappy` actually shrinks the file — four rows are all page
 header. Runs on every PR (job `writer`).
 
+## Dictionary survey (`dict_survey.py`)
+
+```bash
+moon build cmd/main --target native --release
+uv run --python 3.12 --with-requirements harness/requirements.txt \
+  python harness/dict_survey.py --rows 500000
+python harness/dict_survey.py --rows 500000 --row-group 65536   # the control layout
+```
+
+W0's investigation, and the numbers behind verification §35. It builds a seeded
+500,000-row access log (a monotonic clock, a 20k-valued id, tiny enumerations, a
+repetitive long string, a near-unique long string, a boolean, a 40%-NULL note),
+writes it with PyArrow as plain+snappy, dictionary-on-everything and
+dictionary-on-the-winning-columns, and writes the same rows with `moonlake write
+--snappy`. It reports per-column byte deltas (and whether PyArrow actually used
+a dictionary or fell back), whole-file bytes, write time, DuckDB read time, our
+reader's time and peak RSS, and the control run at PyArrow's 65,536-row groups.
+Every file must return the same answer — floats to a relative tolerance, since a
+double sum is not associative — or the script refuses. It is a measurement, not
+a gate: no exit status depends on the numbers.
+
 ## Spill lifecycle (`spill_accept.sh`)
 
 ```bash

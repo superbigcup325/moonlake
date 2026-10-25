@@ -1905,3 +1905,68 @@ collected path still reports the same counters.
 spill acceptance, all five CLI sections, the correlation differential at 400
 random cases, 66 Python harness tests, and the release check at 0.6.0 with 206
 files in the archive.
+
+## A second table prices the dictionary (2026-10-26): W0
+
+### Goal
+
+W0 is the roadmap's committed investigation, not an implementation: a second
+dataset decides whether adaptive dictionary write encodings (W1) are worth
+building into 0.6.0, and it has to be a table the writer does not already know —
+the writing row was derived from `lineitem` alone.
+
+### What landed
+
+`harness/dict_survey.py` builds a seeded web access log — 500,000 rows,
+eleven columns deliberately disagreeing with each other (monotonic clock,
+20,000-valued id, two tiny enumerations, a repetitive 55-character path, a
+near-unique 70-character query string, a boolean, a 40%-NULL note) — and writes
+it four ways with PyArrow: plain+snappy, dictionary on everything, dictionary on
+the columns that win, and both row-group layouts. It writes the same rows with
+`moonlake write --snappy`, reads every file back with both engines, and refuses
+to print a table if two files disagree on the answer.
+
+Two bugs in the measurement itself, found while making it honest: our engine
+names a table after the file stem, so `plain+snappy.parquet` was an unknown
+table (files are now `t_plain_snappy.parquet` and the SQL follows the stem); and
+comparing `sum(latency)` exactly across writers fails in the last bits because a
+double sum is not associative, so floats compare with a relative tolerance and
+everything else exactly.
+
+### The number
+
+Per-column, at our writer's 4,096-row groups: `country` −59%, `device` −78%,
+`status` −68%, `path` −24%, `note` −16%; and it *loses* on `ts` +37%, `uid`
++31%, `latency` +29%, `size` +30%, `query` +14%. Whole file: plain 23.15 MB,
+dictionary on everything 23.53 MB (+1.6% — worse than plain), dictionary on the
+five that win 19.90 MB (−14.1%). At 65,536-row groups the same choice is
+16.40 MB (−28.1%), because `path` goes −24% → −74%, `note` −16% → −67% and `uid`
++31% → −21%: a dictionary page is written once per column chunk, so few big
+chunks amortize it and many small ones do not.
+
+The layout turns out to be the larger lever, in both directions: PyArrow's big
+groups save 1.4% of the file over ours while raising *our reader's* peak from
+13 MB to 57 MB, because it holds one row group's decoded columns. Our own
+`--snappy` output is 1.3% smaller than PyArrow's plain output at our layout and
+0.1% larger at theirs — the second dataset confirming the one-tag fix that
+closed the 16% gap on lineitem.
+
+### The decision
+
+W1 stays out of 0.6.0, and the reason is in the numbers rather than in the
+schedule: the encoding is worth a sixth of the file at the layout we write
+today, and twice that at a layout we do not. Implementing it first would bank
+the smaller half and make the next comparison harder to read — the same ordering
+argument the 2026-10-24 entry used to put the Snappy tag ahead of the dictionary.
+The hold-list entry now starts from the row-group size and carries this script
+as the fixture to tune against, which is a writer change with its own read-memory
+cost and belongs to a release that schedules it.
+
+### Evidence
+
+`docs/verification.md` §35 has both layouts, the per-column table, the whole-file
+table and the four conclusions. Nothing in the writer changed: the "moonlake"
+rows in those tables are the current `write --snappy` output, and every other
+row is PyArrow encoding a hypothetical, which is why the two are labelled apart.
+The script is a measurement tool, not a gate; the JSON record stays out of the
+repository because no assertion depends on the numbers.

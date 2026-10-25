@@ -2682,3 +2682,129 @@ checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
 sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
 Python harness unit tests, and `harness/check_release.py` ok at 0.6.0 (206 files
 in the archive).
+
+## 35. A second table prices the dictionary, and finds the row group bigger (2026-10-26)
+
+**The claim being tested.** The writing row of the roadmap says a per-column
+dictionary takes a TPC-H `lineitem` file from 288 MB to 196 MB (−32%) at no
+write- or read-time cost, and that the choice must be per column because a
+dictionary *grows* a column with nothing to repeat. One table is not evidence
+for a heuristic, so W0 asked a second one: does the same encoding pay elsewhere,
+would one rule pick the right columns, and is it worth implementing in this
+release.
+
+**The dataset.** A web access log, built by `harness/dict_survey.py` from seed
+20261026 rather than committed: 500,000 rows, eleven columns chosen to disagree
+with each other — a monotonic `int64` clock, a 20,000-valued `int64` id, two
+tiny string enumerations (40 countries, 6 devices with 3% NULLs), a repetitive
+long string (`path`, 3,000 values, about 55 characters), a near-unique long
+string (`query`, 497,511 values, about 70 characters), a 9-valued `int32`
+status, unique `double` and `int64` measurements, a boolean, and a 2,000-value
+string with 40% NULLs. PyArrow writes it; the file the footer describes is the
+only thing being compared.
+
+**Same layout or the comparison is meaningless.** Our writer emits one row group
+per 4,096-row batch; PyArrow's default is 65,536. The first run compared the
+encodings across that difference and produced read numbers that were really
+layout numbers, so the script now writes at 4,096 by default (our writer's
+layout) and runs the chosen set once more at 65,536 as a control. Both layouts
+are recorded below, because the answer depends on which one is asked.
+
+**Per column, at our writer's 4,096-row groups** (one column per file, plain
+pages versus dictionary pages, same codec and layout):
+
+| column | role | distinct | plain B | dict B | delta | dictionary used |
+|---|---|---|---|---|---|---|
+| `ts` | monotonic | 500,000 | 2,025,826 | 2,781,233 | +37% | yes |
+| `uid` | medium | 20,000 | 2,002,029 | 2,612,735 | +31% | yes |
+| `country` | tiny | 40 | 1,016,812 | 418,153 | −59% | yes |
+| `device` | tiny, nullable | 7 | 1,164,792 | 250,453 | −78% | yes |
+| `path` | repetitive string | 3,000 | 3,660,641 | 2,794,673 | −24% | yes |
+| `query` | near-unique string | 497,511 | 5,370,938 | 6,126,023 | +14% | yes |
+| `status` | tiny | 9 | 866,390 | 279,164 | −68% | yes |
+| `latency` | unique `double` | 383,746 | 2,629,995 | 3,380,268 | +29% | yes |
+| `size` | unique `int64` | 470,152 | 2,535,995 | 3,290,431 | +30% | yes |
+| `flag` | boolean | 2 | 79,335 | 79,335 | 0% | no (falls back) |
+| `note` | medium, nullable | 2,001 | 1,824,379 | 1,534,590 | −16% | yes |
+
+The signs are the same as `lineitem`'s: tiny enumerations and repetitive strings
+win by a lot, high-cardinality columns lose, and a boolean is not
+dictionary-encoded at all (the footer says `RLE, PLAIN` even when asked). The
+magnitudes are not. `path` and `note` win far less than their lineitem
+counterparts, and `uid` — which wins 21% at 65,536 rows per group — *loses* 31%
+at 4,096, because a dictionary page is written once per column chunk: a chunk
+holding nearly as many distinct ids as rows re-stores almost the whole column,
+and Snappy had already squeezed the plain `int64` pages it replaced.
+
+**Per column, at 65,536-row groups** (the same script with `--row-group 65536`):
+
+| column | delta at 4,096 | delta at 65,536 |
+|---|---|---|
+| `country` | −59% | −62% |
+| `device` | −78% | −81% |
+| `status` | −68% | −70% |
+| `path` | −24% | −74% |
+| `note` | −16% | −67% |
+| `uid` | +31% | −21% |
+
+The three that move are the three whose dictionary is worth storing once and
+amortizing: a repeated long string and a medium-cardinality id pay for their
+dictionary page in every chunk. Sixteen times fewer chunks is sixteen times
+fewer copies of it.
+
+**The whole file.**
+
+| variant | bytes | vs plain | write ms | DuckDB read ms | our read ms | our read peak |
+|---|---|---|---|---|---|---|---|
+| 4,096-row groups: | | | | | | |
+| plain+snappy | 23,153,871 | — | 145 | 16 | 348 | 13 MB |
+| dictionary on everything | 23,525,033 | +1.6% | 248 | 16 | 309 | 13 MB |
+| dictionary on the five that win here | 19,899,055 | −14.1% | 165 | 14 | 284 | 13 MB |
+| moonlake `--snappy` | 22,844,269 | −1.3% | 745 | 17 | 334 | 13 MB |
+| 65,536-row groups: | | | | | | |
+| plain+snappy | 22,822,656 | — | 131 | 25 | 363 | 57 MB |
+| dictionary on everything | 19,636,566 | −14.0% | 202 | 14 | 283 | 39 MB |
+| dictionary on the six that win here | 16,400,404 | −28.1% | 128 | 13 | 253 | 38 MB |
+| moonlake `--snappy` (still 4,096 rows per group) | 22,844,269 | +0.1% | 774 | 15 | 336 | 13 MB |
+
+Four things are decided by this table.
+
+1. **A table-level dictionary is a net loss.** On everything it is 1.6% *larger*
+   than plain at our layout: the four losing columns give back more than five
+   winning ones save. The per-column choice is not a refinement, it is the whole
+   value of the encoding.
+2. **Our writer is at parity with PyArrow's plain output.** On this table
+   `--snappy` is 1.3% *smaller* than PyArrow at the same layout and 0.1% larger at
+   the other, which is the second dataset confirming the single-tag fix that
+   closed the 16% gap on lineitem. What is left is the encoding, not the codec.
+3. **The dictionary is worth −14% at our layout and −28% at PyArrow's**, so the
+   encoding and the row-group size are not independent decisions, and the layout
+   is the larger lever: `path` alone is 3.66 MB plain at 4,096 and 0.93 MB with a
+   dictionary at 65,536.
+4. **The layout also sets what a read costs, in both directions.** Reading our
+   own 4,096-row-group file costs 13 MB of peak RSS; reading the 65,536-row-group
+   file with the same engine costs 57 MB, because the reader holds one row
+   group's decoded columns. The dictionary then brings that 57 MB back to 39 MB
+   by making the file smaller, but it never gets near the small group's 13 MB.
+   A smaller file is not automatically a cheaper read.
+
+**What W0 decides.** The investigation is complete and it does not start the
+implementation in this release. A dictionary is worth a sixth of the file at the
+layout we write today, and a per-chunk choice is implementable streaming —
+sample the batch, dictionary the columns whose values repeat, fall back to
+`PLAIN` — but the same table says the row-group size would double that win, and
+implementing the encoding first would bank the smaller half and make the
+comparison afterwards harder to read. That is the same ordering argument the
+2026-10-24 entry used to postpone the dictionary behind the Snappy tag, applied
+to the same row. So the hold-list entry now starts from the row-group size, with
+this script as the fixture to tune against, and W1 stays out of 0.6.0. Nothing
+in the writer changed for this section; the numbers labelled "moonlake" above
+are the current `write --snappy` output, and everything else is PyArrow encoding
+a hypothetical.
+
+**How to reproduce.** `python3 harness/dict_survey.py --rows 500000` and the
+same with `--row-group 65536`. The script regenerates the dataset from the seed,
+asserts every file returns the same answer (a `double` sum is compared with a
+relative tolerance, since summation order differs between the two writers), and
+prints both tables. It is a measurement tool and not a gate: nothing here
+depends on the numbers, which is why the JSON record stays out of the repository.

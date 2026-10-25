@@ -31,6 +31,20 @@ describe implemented changes; planned work is added here after verification.
   both gates agree on what "equal", "refused" and "failure" mean; a wrong
   answer, a missing fixture, a referee error, a refusal without its message or a
   run with no value cases fails. Committing it found three defects (below).
+- `harness/dict_survey.py`: the second dataset the standard-writing row asked
+  for before a dictionary heuristic could be tuned. It builds a seeded
+  500,000-row access log — a monotonic clock, a 20,000-valued id, tiny
+  enumerations, a repetitive long string, a near-unique long string, a boolean
+  and a 40%-NULL note — writes it with PyArrow as plain+snappy, dictionary on
+  everything and dictionary on the columns that win, writes the same rows with
+  `moonlake write --snappy`, and reports per-column byte deltas, whole-file
+  bytes, write time, DuckDB read time, our reader's time and peak RSS at both
+  row-group layouts; every file must return the same answer or it refuses to
+  print. The survey did not start a writer change: a per-column dictionary is
+  worth −14% of that file at our 4,096-row groups and −28% at 65,536-row
+  groups, a dictionary on every column is 1.6% *larger* than plain, and the
+  bigger groups cost the reader 13 MB → 57 MB of peak memory, so the row-group
+  size is the lever that comes first (verification §35).
 - `@moonlake.stream` / `stream_with`: a result can be consumed a batch at a
   time. `@engine.ResultStream` reports `names()` and `types()` before the first
   row and `next()` yields one `@types.DataBatch` per call until it returns
