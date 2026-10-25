@@ -1856,7 +1856,9 @@ The three that changed a *result* rather than a message:
 
 The four that were a wrong or unhelpful *message*:
 
-- A correlated subquery whose correlation is not an equality now says so:
+- (Superseded by §28: the non-equality correlation is answered now, and the
+  message names only the limits that remain.) A correlated subquery whose
+  correlation is not an equality now says so:
   `this correlated subquery cannot be decorrelated: only inner.col = outer.col
   equalities over plain tables are paired, and the subquery may not carry
   DISTINCT, LIMIT, a set operation or a GROUP BY with HAVING — rewrite a
@@ -1927,7 +1929,7 @@ are these, and none of them is a wrong answer:
 | DATE rendered differently | 5 | DuckDB hands Python a `datetime`, moonlake's `--json` a `YYYY-MM-DD` string; the dates are equal |
 | non-finite doubles | 1 | `7.0/0` is `"Infinity"` in JSON because JSON has no such literal; DuckDB's Python value prints `inf` |
 | `x % 0` | 1 | moonlake is NULL (fmod), DuckDB 2.0 raises by default — documented as deliberate |
-| non-equality correlation | 2 | refused with the message above, where DuckDB answers — the choice this pass made |
+| non-equality correlation | 2 | **closed by §28**: both queries answer now and agree with DuckDB |
 
 The date-arithmetic, division and `%` groups were already recorded as deliberate
 divergences before this pass (sections 5 and 15); the pass added no new ones.
