@@ -57,12 +57,13 @@ fn eval_with(
           let in_set = set.contains(scalar_key(v))
           if in_set {
             @types.Boolean(!negated)
-          } else if negated && right_has_null {
+          } else if right_has_null {
+            // the set holds a NULL: not finding the probe does not make the
+            // comparison false, because the probe may still equal that NULL —
+            // unknown for `IN` and `NOT IN` alike
             @types.Null
           } else {
-            @types.Boolean( // NOT IN against a set containing NULL: unknown
-              negated,
-            )
+            @types.Boolean(negated)
           }
         }
       }

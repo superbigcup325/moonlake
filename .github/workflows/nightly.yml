@@ -56,6 +56,10 @@ jobs:
         env:
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
         run: python3 harness/check_windows.py --random 400 --seed 20261023
+      - name: Correlation differential (seeded random fixture)
+        env:
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
+        run: python3 harness/check_correlation.py --random 400 --seed 20261025
       - name: Golden chain
         run: |
           python3 harness/gen_tpch.py

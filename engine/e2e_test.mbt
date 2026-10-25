@@ -3459,3 +3459,53 @@ test "grace aggregation skew: a single group outgrowing every partition still ag
     run_opts(q, cat, { budget: 8192, spill: Some(mem_store()), }),
   )
 }
+
+///|
+test "IN against a set holding NULL is unknown, not false" {
+  let cat = join_catalog()
+  // orders.custkey is 1, 1, 3 and NULL: the folded set has no 2 in it, but a
+  // NULL member means the comparison is UNKNOWN, not false — the same answer
+  // DuckDB gives, and the one that keeps NOT IN from claiming a match
+  let r = run(
+    "SELECT cid, cid IN (SELECT custkey FROM orders) AS r FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r.get(0, 1), @types.Boolean(true))
+  assert_true(r.get(1, 1) is @types.Null)
+  assert_eq(r.get(2, 1), @types.Boolean(true))
+  let r2 = run(
+    "SELECT cid, cid NOT IN (SELECT custkey FROM orders) AS r FROM customers ORDER BY cid",
+    cat,
+  )
+  assert_eq(r2.get(0, 1), @types.Boolean(false))
+  assert_true(r2.get(1, 1) is @types.Null)
+  assert_eq(r2.get(2, 1), @types.Boolean(false))
+}
+
+///|
+test "NOT IN over an empty correlated set keeps a NULL probe" {
+  let cat = join_catalog()
+  // every customer id is above 10, so each outer row's set is empty and
+  // `custkey NOT IN <empty set>` is TRUE even where custkey is NULL (order
+  // 103). Reading "NULL probe is unknown" as "drop the row" would lose it.
+  let r = run(
+    "SELECT oid FROM orders WHERE custkey NOT IN (SELECT cid FROM customers WHERE cid > 10) ORDER BY oid",
+    cat,
+  )
+  assert_eq(r.row_count(), 4)
+  assert_eq(r.get(3, 0), @types.Int32(103))
+}
+
+///|
+test "a correlated NOT IN whose set may hold a NULL is refused, not guessed" {
+  let cat = join_catalog()
+  // the residual narrows the set per outer row and the inner column holds a
+  // NULL (order 103), so "is the probe UNKNOWN here" is a per-row question the
+  // anti join cannot answer yet: the decorrelator says so instead of
+  // dropping or keeping the row on a guess
+  let err = run_err(
+    "SELECT cid FROM customers WHERE cid NOT IN (SELECT custkey FROM orders WHERE amount < cid * 100)",
+    cat,
+  )
+  assert_true(err.to_string().contains("cannot be decorrelated"))
+}

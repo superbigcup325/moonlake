@@ -29,9 +29,13 @@ before another executor change, E3 adds result consumption, and E4 changes one
 blocking operator at a time. The existing early-stop measurements, batch
 contract and single-table LIMIT implementation cover the earlier E0/E1/E2
 milestone; extend them rather than implementing that milestone again.
-R0 is complete with this scope update. S0, E3, E4a/E4b/E4c, W0 and R1 remain
+R0 and S0 are complete. E3, E4a/E4b/E4c, W0 and R1 remain
 open; their inclusion in 0.6.0 is a delivery commitment, not a claim that the
-features already exist.
+features already exist. S0's gate is `harness/check_correlation.py` with its
+fixtures, wired into the fixed-case CI job and the seeded nightly; verification
+§30 records what it found while being committed — two wrong answers in
+three-valued `IN` / `NOT IN` and one shape whose refusal message is still the
+binder's.
 
 | Task | Delivery | Depends on | Acceptance |
 |---|---|---|---|
@@ -100,7 +104,7 @@ refused:
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
 | The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table LIMIT already stops its scan. Other paths still retain projected input before their parent operator runs; SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen. E3 and E4a/E4b/E4c above are scheduled for 0.6.0 to remove that retention on the specified paths. Aggregation and sorting still need to consume all relevant rows, but can build their state from batches. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
-| A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes; S0 preserves their answers and E4c must name any eager fallback. |
+| A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes, §30 the gate that now preserves their answers; E4c must name any eager fallback. |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |
 | Writing is `PLAIN` values with v1 pages; `--snappy` is the only compression choice | Output size for wide or repetitive columns | Measured on 6M SF1 rows: a per-column dictionary takes pyarrow's 288 MB to 196 MB (−32%) at no write- or read-time cost, and plain+zstd would reach 183 MB, but that needs a reader that accepts zstd. moonlake's own `--snappy` write is 289.2 MB for those rows: the 16% gap to pyarrow that this row used to name was one missing tag in the compressor (a short match close behind now costs two bytes, not three), so what is left is the dictionary, which is worth −32% and needs a per-column choice because it *grows* columns with no repetition. |
 

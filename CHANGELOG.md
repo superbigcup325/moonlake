@@ -21,6 +21,16 @@ describe implemented changes; planned work is added here after verification.
   than in the engine (no input files, an unknown command's exit code, `write`
   refusing `--out` on top of its input), wired into the `tpch` CI job next to
   the native build.
+- `harness/check_correlation.py`: the correlated-subquery differential is a
+  committed gate now. §28's 39-query agreement was recorded from a script that
+  was never checked in, so it could not be re-run; the cases and their fixtures
+  (`harness/data/correlation/`: a duplicated outer row, NULL keys and values,
+  `nan` / `inf`, a date column, an empty table, a one-column table) run against
+  DuckDB on every push, and the same cases run over seeded random fixtures
+  nightly. `harness/differential.py` holds the plumbing the window gate grew, so
+  both gates agree on what "equal", "refused" and "failure" mean; a wrong
+  answer, a missing fixture, a referee error, a refusal without its message or a
+  run with no value cases fails. Committing it found three defects (below).
 - `@types.round_half_away`, the rounding convention `round()` and the
   float → integer casts use.
 - Decorrelation is general: the correlation no longer has to be an
@@ -120,6 +130,29 @@ describe implemented changes; planned work is added here after verification.
 
 ### Fixed
 
+- `x IN (SELECT ...)` returns NULL instead of FALSE when the set holds a NULL
+  and `x` is not in it. The three-valued rule was gated behind `NOT IN`, so
+  `SELECT o.v IN (SELECT n.v FROM n) FROM o` answered `false` where DuckDB
+  answers NULL for three of five rows — and `NOT IN` gave FALSE where SQL says
+  NULL for an empty set (see the anti-join fix below). `IN` and `NOT IN` now
+  read the same rule in both directions (`engine/eval.mbt`).
+- A correlated `NOT IN` over a set that cannot be narrowed per row answers
+  instead of collapsing into an internal refusal, and the shapes it cannot
+  answer yet say so by name. The NULL-poison detection returned the same
+  "unsupported" a genuinely unanswerable shape does, and its first repair
+  dropped the whole result — `o.v NOT IN (SELECT i.v FROM i WHERE i.k < o.k)`
+  came back empty where DuckDB returns five rows — because the conjunct loop's
+  early exit discarded the `false` filter the fix had added. Keeping the poison
+  is right only when the set cannot be narrowed; narrowing needs a per-row count
+  of the NULLs the anti join never compares, so that shape is now refused with
+  `cannot be decorrelated` and the gate pins it until the join contract owns it.
+- `NOT IN` over an empty correlated set keeps a row whose probe value is NULL.
+  The anti join read "NULL correlation key" as UNKNOWN without asking whether
+  the row's set had a member, so `SELECT oid FROM orders WHERE custkey NOT IN
+  (SELECT cid FROM customers WHERE cid > 10)` lost the row whose `custkey` is
+  NULL; SQL says TRUE, because there is nothing to be unknown about. The join now
+  asks its residual whether any inner row could be a member of that row's set,
+  which is the question it already answers for a match.
 - `ORDER BY` on a qualified column no longer binds to a same-named *output*
   alias: `SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC` sorted by the
   alias. This also produced the reported "outer join ORDER BY / NULLS LAST
@@ -140,8 +173,11 @@ describe implemented changes; planned work is added here after verification.
   only `inner.col = outer.col` correlations were supported — which stopped
   being true once the general rewrite landed. The refusal names the real
   boundaries now (a derived table in the subquery's FROM, `DISTINCT` / `LIMIT`
-  / `OFFSET` / a set operation, a grouping that is not the correlation keys, a
-  reference two levels out) and still points at rewriting it as a join. A
+  / `OFFSET` / a set operation, a grouping that is not the correlation keys) and
+  still points at rewriting it as a join. A reference to a table two levels out
+  is still refused by the binder (`unknown table or alias <name> in FROM`), which
+  the README now says instead of claiming a named message; the correlation gate
+  pins that text with a note. A
   correlated scalar subquery that selects no aggregate keeps its own reason, and
   the positions the rewriter does not reach name themselves instead of letting
   the inner bind report the outer table as missing: the select list of a

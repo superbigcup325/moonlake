@@ -43,21 +43,26 @@ error). Deliberately no "skip" path: a case that cannot run is a failure.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
-from collections import Counter
-from dataclasses import dataclass, field
-from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "harness"))
-import compare  # noqa: E402  (same-directory helper; reused so the rules cannot drift)
-
-NULL = "null"
+from differential import (  # noqa: E402  (same-directory helper; the shared rules live there)
+    NULL,
+    Case,
+    Report,
+    Run,
+    cell_key,
+    compare_rows,
+    duckdb_rows,
+    moonlake_command,
+    run_cases,
+    run_moonlake,
+    table_rows,
+)
 
 FIXTURE = """id,grp,val,txt
 1,a,10,x
@@ -70,18 +75,6 @@ FIXTURE = """id,grp,val,txt
 8,c,50,
 9,a,,w
 """
-
-
-@dataclass
-class Case:
-    name: str
-    sql: str
-    mode: str = "ordered"  # ordered | multiset | legality
-    refusal: str | None = None  # expected message fragment when refusing
-    # True: the query is valid SQL that we refuse (a documented limit).
-    # False: the standard forbids it, so DuckDB must refuse it too.
-    duckdb_accepts: bool = False
-    note: str = ""
 
 
 CASES: list[Case] = [
@@ -208,189 +201,6 @@ CASES: list[Case] = [
         refusal="must appear in GROUP BY",
     ),
 ]
-
-
-def moonlake_command() -> list[str]:
-    env_bin = os.environ.get("MOONLAKE_BIN")
-    if env_bin:
-        return [env_bin]
-    built = ROOT / "_build/native/debug/build/cmd/main/main.exe"
-    if built.exists():
-        return [str(built)]
-    return ["moon", "run", "cmd/main", "--"]
-
-
-@dataclass
-class Run:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-def run_moonlake(sql: str, csv_path: Path) -> Run:
-    cmd = [*moonlake_command(), "exec", "--csv", str(csv_path), sql]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
-    return Run(proc.returncode, proc.stdout, proc.stderr)
-
-
-def table_rows(text: str) -> list[list[str]]:
-    """CLI rows: header line, then '|'-separated lines (same shape as compare.py)."""
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    if not lines:
-        raise ValueError("moonlake printed no header line")
-    return [line.split("|") for line in lines[1:]]
-
-
-def duckdb_rows(sql: str, csv_path: Path) -> list[list[str]]:
-    import duckdb
-
-    con = duckdb.connect()
-    try:
-        con.execute(
-            f"CREATE VIEW t AS SELECT * FROM read_csv_auto('{csv_path.as_posix()}', header=true)"
-        )
-        rows = con.execute(sql).fetchall()
-    finally:
-        con.close()
-    return [["null" if v is None else str(v) for v in row] for row in rows]
-
-
-def cell_key(cell: str) -> tuple:
-    """Canonical multiset key: numbers as exact numbers, everything else exactly.
-
-    `5` and `5.0` are the same key, because the two engines spell an
-    integer-valued double differently (`5` here, `5.0` in DuckDB) and a
-    multiset cannot use the ordered path's 1e-9 tolerance. Values whose last
-    bits disagree therefore need an ordered case, which is how every float
-    window case here is written.
-    """
-    low = cell.lower()
-    if cell == NULL:
-        return ("null",)
-    if low in compare.NAN_WORDS:
-        return ("num", "nan")
-    if low in compare.INF_WORDS:
-        return ("num", "-inf" if low.startswith("-") else "inf")
-    if compare.number_kind(cell) is not None:
-        try:
-            return ("num", Fraction(cell))
-        except (ValueError, OverflowError, ZeroDivisionError):
-            return ("str", cell)
-    return ("str", cell)
-
-
-def compare_rows(min_mode: str, got: list[list[str]], want: list[list[str]]) -> str | None:
-    """Return a mismatch description, or None when the rows agree."""
-    if len(got) != len(want):
-        return f"row count {len(got)} vs duckdb {len(want)}"
-    if min_mode == "multiset":
-        got_keys = Counter(tuple(cell_key(c) for c in row) for row in got)
-        want_keys = Counter(tuple(cell_key(c) for c in row) for row in want)
-        if got_keys != want_keys:
-            missing = want_keys - got_keys
-            extra = got_keys - want_keys
-            parts = []
-            if missing:
-                parts.append(f"missing {list(missing.elements())[:3]}")
-            if extra:
-                parts.append(f"unexpected {list(extra.elements())[:3]}")
-            return "; ".join(parts)
-        return None
-    for lineno, (got_row, want_row) in enumerate(zip(got, want), start=2):
-        if len(got_row) != len(want_row):
-            return f"line {lineno}: {len(got_row)} cols vs duckdb {len(want_row)}"
-        for col, (g, w) in enumerate(zip(got_row, want_row)):
-            if not compare.cell_eq(g, w):
-                return f"line {lineno} col {col}: moonlake {g!r} vs duckdb {w!r}"
-    return None
-
-
-@dataclass
-class Report:
-    matched: list[str] = field(default_factory=list)
-    multiset_matched: list[str] = field(default_factory=list)
-    legality: list[str] = field(default_factory=list)
-    refused: list[str] = field(default_factory=list)
-    refused_in_agreement: list[str] = field(default_factory=list)
-    failures: list[str] = field(default_factory=list)
-
-    def value_cases(self) -> int:
-        return len(self.matched) + len(self.multiset_matched)
-
-
-def run_cases(cases: list[Case], csv_path: Path, runner=None, referee=None) -> Report:
-    # Resolved here rather than as default arguments so a test or a one-off
-    # wrapper can replace either side without re-binding the definition.
-    runner = runner or run_moonlake
-    referee = referee or duckdb_rows
-    report = Report()
-    for case in cases:
-        if case.refusal is not None:
-            got = runner(case.sql, csv_path)
-            if got.returncode == 0:
-                report.failures.append(
-                    f"{case.name}: expected a refusal matching {case.refusal!r}, query succeeded"
-                )
-                continue
-            if case.refusal not in got.stderr:
-                report.failures.append(
-                    f"{case.name}: refused without the expected message "
-                    f"{case.refusal!r}: {got.stderr.strip()[:160]}"
-                )
-                continue
-            # Valid SQL that we refuse is a documented limit and DuckDB must
-            # run it; SQL the standard forbids must be refused by both, so a
-            # refusal cannot quietly become "we cannot do the math".
-            referee_error = None
-            try:
-                referee(case.sql, csv_path)
-            except Exception as exc:  # noqa: BLE001 - any referee error fails the gate
-                referee_error = exc
-            if case.duckdb_accepts and referee_error is not None:
-                report.failures.append(
-                    f"{case.name}: refused by moonlake, but this is valid SQL and "
-                    f"DuckDB ran it ({referee_error})"
-                )
-                continue
-            if not case.duckdb_accepts and referee_error is None:
-                report.failures.append(
-                    f"{case.name}: moonlake refused it, but DuckDB accepted this query, "
-                    "so the case wrongly claims the standard forbids it"
-                )
-                continue
-            if case.duckdb_accepts:
-                report.refused.append(case.name)
-            else:
-                report.refused_in_agreement.append(case.name)
-            continue
-
-        want = referee(case.sql, csv_path)  # referee errors propagate: never skip
-        got = runner(case.sql, csv_path)
-        if got.returncode != 0:
-            report.failures.append(
-                f"{case.name}: moonlake failed ({got.returncode}): {got.stderr.strip()[:200]}"
-            )
-            continue
-        if case.mode == "legality":
-            rows = table_rows(got.stdout)
-            if len(rows) != len(want):
-                report.failures.append(
-                    f"{case.name}: legality row count {len(rows)} vs duckdb {len(want)}"
-                )
-            else:
-                report.legality.append(case.name)
-            continue
-        rows = table_rows(got.stdout)
-        mismatch = compare_rows(case.mode, rows, want)
-        if mismatch:
-            report.failures.append(f"{case.name}: {mismatch}")
-        elif case.mode == "multiset":
-            report.multiset_matched.append(case.name)
-        else:
-            report.matched.append(case.name)
-    return report
 
 
 def random_cases(rows: int, seed: int) -> tuple[str, list[Case]]:

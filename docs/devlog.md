@@ -1527,3 +1527,68 @@ implementing dictionaries still needs that evidence. Final acceptance follows
 those tasks within 0.6.0, including a complete performance record and independent
 consumers. Planned behavior stays out of the changelog until implemented and
 verified. Verification section 29 records this assessment's checks and limits.
+
+## The gate that had to exist (2026-10-25): three wrong answers in the differential
+
+S0's premise is uncomfortable: the previous entry's evidence — 39 queries, all
+agreeing with DuckDB — was produced by a script that was never committed, so it
+was true the day it ran and unfalsifiable every day after. The same thing had
+already happened to the 29-query window battery, which "passed 29/29" until
+nobody could re-run it. So this task was not "add tests"; it was "make the
+claim re-runnable, then find out what breaks".
+
+### Approach
+
+Commit the shapes, not the data. Five fixtures (`harness/data/correlation/`)
+carry what a correlated subquery can trip on: a duplicated outer row, NULL keys
+and values, `nan`/`inf`/`-inf`, a date column, an empty header-only table, a
+one-column table. The runner holds 45 value cases and 11 documented refusals;
+unordered answers compare as row multisets with values normalized across the two
+engines' spellings (dates, non-finite doubles, booleans). Every failure mode is a
+failure: wrong answer, engine error on a value case, refusal without its
+message, a valid-SQL refusal the referee rejects, missing or empty fixture,
+referee error, zero value cases. Refusals are counted apart from matches so a
+run of pure refusals cannot pass.
+
+The gate shares its plumbing with the window gate (`harness/differential.py`),
+which `check_windows.py` now imports. Two gates that disagree about what "equal"
+means are two gates that can each be wrong.
+
+### What it found
+
+Three defects, none reachable from the 39-query battery, and only one of them
+needed random data:
+
+1. `x IN (set containing NULL)` answered `false` instead of NULL. The
+   three-valued rule had been attached to `NOT IN` alone.
+2. A correlated `NOT IN` whose set may hold a NULL produced an internal refusal,
+   because the poison detection returned the same "unsupported" as a genuinely
+   unanswerable shape; the first repair then answered *empty* (five rows of the
+   fixture lost) because the conjunct loop's early exit dropped the filter the
+   repair had added. Now: exact answer where the set cannot be narrowed per row,
+   named refusal where it can.
+3. A correlated `NOT IN` over an empty set dropped a NULL probe. The committed
+   fixture passed by luck; the seeded nightly (307 rows against DuckDB's 323)
+   did not. `join_semi` now asks its residual whether anything is a member of
+   that row's set.
+
+The pattern is worth naming: two of the three are "UNKNOWN where SQL says TRUE,
+or TRUE where SQL says UNKNOWN" — exactly the class a hand-written case list
+misses and a differential catches for free.
+
+### Evidence
+
+`docs/verification.md` §30. The gate is green on the committed fixtures (45
+value cases, 11 refusals), on the 400-row seeded nightly fixture and on seeds
+1/2/3 at 120 rows; the window gate stays green after the shared-plumbing
+extraction, and its 14 self-tests plus 15 new ones (66 Python harness tests in
+total) pin the failure paths. MoonBit: 296/296 native, 283/283 wasm-gc and js,
+`moon check --deny-warn` and `moon fmt --check` clean, no `.mbti` change, 33/33
+goldens, spill acceptance green. `engine/e2e_test.mbt` gained three tests for the
+behaviour the gate now guards.
+
+One rough edge is recorded rather than papered over: a reference to a table two
+levels out is still refused by the binder (`unknown table or alias "o" in FROM`),
+not by a named message, and both the README and the gate now say so instead of
+claiming otherwise. Naming it belongs to E4c, which owns the join contract this
+path needs anyway.

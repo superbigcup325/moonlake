@@ -51,6 +51,19 @@ fn RefSide::merge(self : RefSide, other : RefSide) -> RefSide {
 }
 
 ///|
+/// What classifying one semi/anti conjunct produced. `SemiFalse` is a conjunct
+/// that is constant FALSE: `NOT IN` against an inner key column that holds a
+/// NULL has no true row at all, because every comparison with that NULL is
+/// unknown. That is an answer, not a refusal. The other negative outcomes mean
+/// "the rewriter cannot take this shape", which the caller answers by naming
+/// the limit.
+priv enum SemiOutcome {
+  SemiJoin(@sql.FromItem)
+  SemiFalse
+  SemiUnsupported
+}
+
+///|
 /// Rewrite correlated EXISTS / IN conjuncts into semi/anti joins.
 /// Returns the rewritten select plus the synthetic tables (schemas and
 /// their pre-executed batches, aligned with the appended FromItems).
@@ -136,6 +149,7 @@ fn decorrelate(
   }
   let kept : Array[@sql.LExpr] = []
   let extra_items : Array[@sql.FromItem] = []
+  let mut resolved_differs = false
   for cj in conjuncts {
     // NOT EXISTS / NOT IN arrive as Not wrappers: flip the negation
     let lexpr = match cj.lexpr {
@@ -146,16 +160,25 @@ fn decorrelate(
     match lexpr {
       Exists(sub, negated) =>
         match cor.try_exists(sub, negated, extra_schemas, extra_batches) {
-          Some(item) => extra_items.push(item)
-          None => {
+          SemiJoin(item) => extra_items.push(item)
+          SemiFalse => {
+            resolved_differs = true
+            kept.push(Lit(@types.Boolean(false)))
+          }
+          SemiUnsupported => {
             cor.reject_unsupported_correlation(sub)
             kept.push(lexpr)
           }
         }
       InSelect(v, sub, negated) =>
-        match cor.try_in(v, sub, negated, extra_schemas, extra_batches, kept) {
-          Some(item) => extra_items.push(item)
-          None => {
+        match cor.try_in(v, sub, negated, extra_schemas, extra_batches) {
+          SemiJoin(item) => extra_items.push(item)
+          // NOT IN against a set that holds a NULL: no outer row can pass
+          SemiFalse => {
+            resolved_differs = true
+            kept.push(Lit(@types.Boolean(false)))
+          }
+          SemiUnsupported => {
             cor.reject_unsupported_correlation(sub)
             kept.push(lexpr)
           }
@@ -203,7 +226,11 @@ fn decorrelate(
       resolved.push(k)
     }
   }
-  if extra_items.length() == 0 && scalar_items.length() == 0 {
+  // a conjunct that became constant false still rewrites the filter, so the
+  // early exit below must not hand the original select back
+  if extra_items.length() == 0 &&
+    scalar_items.length() == 0 &&
+    !resolved_differs {
     return (sel, extra_schemas, extra_batches)
   }
   let filter : @sql.LExpr? = match resolved.length() {
@@ -327,12 +354,12 @@ fn Correlator::try_exists(
   _negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-) -> @sql.FromItem? raise @types.SqlError {
+) -> SemiOutcome raise @types.SqlError {
   if sub.limit is Some(_) ||
     sub.offset is Some(_) ||
     sub.distinct ||
     sub.setop is Some(_) {
-    return None
+    return SemiUnsupported
   }
   // EXISTS with a HAVING filter: group the inner query by the
   // correlation keys (keeping the HAVING), then the semi/anti join
@@ -345,18 +372,21 @@ fn Correlator::try_exists(
     if sub.group_by.length() > 0 {
       let (pairs, _, _) = match self.prepare(sub) {
         Some(triple) => triple
-        None => return None
+        None => return SemiUnsupported
       }
       if !same_grouping(sub.group_by, pairs) {
-        return None
+        return SemiUnsupported
       }
     }
-    return self.try_exists_grouped(sub, _negated, extra_schemas, extra_batches)
+    return match
+      self.try_exists_grouped(sub, _negated, extra_schemas, extra_batches) {
+      Some(item) => SemiJoin(item)
+      None => SemiUnsupported
+    }
   }
   // No HAVING: a GROUP BY cannot change whether a matching row exists
   // (`select 1 from t where ... group by v` has a row iff the filtered input
   // does), so it is dropped rather than refused.
-  let sink : Array[@sql.LExpr] = []
   match self.prepare(sub) {
     Some((pairs, inner_filter, residual)) =>
       // an empty pairing is still a correlation when a spanning conjunct
@@ -365,7 +395,7 @@ fn Correlator::try_exists(
       // (`EXISTS (SELECT 1 FROM i WHERE i.v > o.v)`). With neither part the
       // subquery is uncorrelated and the binder folds it eagerly.
       if pairs.length() == 0 && residual.length() == 0 {
-        None
+        SemiUnsupported
       } else {
         self.finish_semi(
           sub.from,
@@ -377,10 +407,9 @@ fn Correlator::try_exists(
           extra_batches,
           false,
           true,
-          sink,
         )
       }
-    None => None
+    None => SemiUnsupported
   }
 }
 
@@ -496,23 +525,22 @@ fn Correlator::try_in(
   negated : Bool,
   extra_schemas : Array[@catalog.TableSchema],
   extra_batches : Array[Array[@types.DataBatch]],
-  kept : Array[@sql.LExpr],
-) -> @sql.FromItem? raise @types.SqlError {
+) -> SemiOutcome raise @types.SqlError {
   if !(sub.group_by.length() == 0) ||
     sub.having is Some(_) ||
     sub.limit is Some(_) ||
     sub.offset is Some(_) ||
     sub.distinct ||
     sub.setop is Some(_) {
-    return None
+    return SemiUnsupported
   }
   if sub.items.length() != 1 {
-    return None
+    return SemiUnsupported
   }
   // the outer value must not reference the inner tables
   match self.side_of(v) {
     Outer | NoneSide => ()
-    _ => return None
+    _ => return SemiUnsupported
   }
   match self.prepare(sub) {
     Some((pairs, inner_filter, residual)) => {
@@ -528,10 +556,9 @@ fn Correlator::try_in(
         extra_batches,
         true,
         false,
-        kept,
       )
     }
-    None => None
+    None => SemiUnsupported
   }
 }
 
@@ -1416,8 +1443,7 @@ fn Correlator::finish_semi(
   extra_batches : Array[Array[@types.DataBatch]],
   check_null_in_key : Bool,
   from_exists : Bool,
-  kept : Array[@sql.LExpr],
-) -> @sql.FromItem? raise @types.SqlError {
+) -> SemiOutcome raise @types.SqlError {
   let name = "__semi\{self.counter}"
   self.counter = self.counter + 1
   // residual conjuncts may reference inner columns: lift every distinct
@@ -1470,13 +1496,22 @@ fn Correlator::finish_semi(
     setop: None,
   }
   let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
-  // NOT IN poison: a NULL anywhere in the inner key column makes every
-  // comparison unknown, so the whole conjunct becomes constant false
+  // NOT IN poison: a NULL in an inner key column makes every comparison
+  // against it unknown, so an outer row whose set holds that NULL cannot pass
+  // — but which rows those are depends on what narrows the set per outer row.
+  // With the probe equality alone the set is the whole inner batch, so the
+  // conjunct is false for every outer row; a key equality or a spanning
+  // residual may keep the NULL out of a given row's set, and the anti join
+  // compares keys rather than counting the NULLs it did not compare. E4c's
+  // join contract is where the per-row version belongs; until then that shape
+  // keeps the generic refusal instead of guessing.
   if check_null_in_key && negated {
     for r in 0..<inner.row_count() {
       if inner.get(r, 0) is @types.Null {
-        kept.push(Lit(@types.Boolean(false)))
-        return None
+        if pairs.length() == 1 && residual.length() == 0 {
+          return SemiFalse
+        }
+        return SemiUnsupported
       }
     }
   }
@@ -1513,7 +1548,7 @@ fn Correlator::finish_semi(
   }
   extra_schemas.push({ table: name, columns, })
   extra_batches.push([inner.batch()])
-  Some({
+  SemiJoin({
     table: Named(name),
     tbl_alias: Some(name),
     col_aliases: None,

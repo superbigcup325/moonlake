@@ -135,6 +135,10 @@ jobs:
           # one CLI run per case; the binary is already built above
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
         run: python3 harness/check_windows.py
+      - name: Correlation differential (fixed cases, duckdb-refereed)
+        env:
+          MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe
+        run: python3 harness/check_correlation.py
       - name: Parquet encoding evidence (page level)
         env:
           MOONLAKE_BIN: _build/native/debug/build/cmd/main/main.exe

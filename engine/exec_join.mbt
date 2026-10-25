@@ -871,9 +871,20 @@ fn join_semi(
     }
     // SEMI: keep matches. ANTI: keep non-matches — NOT IN additionally
     // drops a null correlation key (UNKNOWN), NOT EXISTS keeps it (the
-    // subquery is empty regardless)
+    // subquery is empty regardless). A null key is only UNKNOWN against a set
+    // with a member, though: `v NOT IN <empty set>` is TRUE even for a null
+    // `v`, so the row survives when nothing in its set satisfies the residual.
+    let mut set_has_member = false
+    if null_key && null_key_excludes {
+      for id in 0..<n_inner {
+        if residual_ok(rstate, left, r, inner_batch, id) {
+          set_has_member = true
+          break
+        }
+      }
+    }
     let keep = if anti {
-      !matched && (!null_key || !null_key_excludes)
+      !matched && (!null_key || !null_key_excludes || !set_has_member)
     } else {
       matched
     }

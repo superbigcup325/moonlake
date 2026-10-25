@@ -2089,3 +2089,95 @@ archive holds 198 files with no forbidden path — but it is a check of the
 current candidate, not of a release: `moon publish --dry-run`, the tag, the
 registry consumer and the remainder of the 0.6.0 delivery plan still belong to
 authorized release work on the final candidate.
+
+## 30. The correlation differential becomes a committed gate (2026-10-25)
+
+**The claim under test.** §28's headline evidence was a 39-query differential
+that agreed with DuckDB on all 39. It ran from a script that was never
+committed. That is the same failure mode as the 29-query window battery in §5.1:
+the numbers were true when written, and the day `engine/correlate.mbt` changed
+nobody could tell which of them still were. S0 turned that evidence into a gate
+that runs on every push and cannot silently pass.
+
+**What is committed.** `harness/data/correlation/` holds five fixtures, and
+`harness/check_correlation.py` holds the cases. The fixtures are shapes, not
+data:
+
+| File | What it exists to catch |
+|---|---|
+| `o.csv` | duplicate outer rows (`id = 1` twice, so a correlated aggregate that loses deduplication multiplies), NULL keys and NULL values, a date column, `nan` / `inf` / `-inf` in a float column |
+| `i.csv` | a repeated correlation key, a NULL key, a NULL value |
+| `n.csv` | a NULL-rich inner side for `IN` / `NOT IN` three-valued logic |
+| `one.csv` | a single-column table, where a subquery cannot lean on `SELECT *` |
+| `e.csv` | header-only: an empty input, where a correlated aggregate must return its empty-group value instead of dropping the outer row. Both engines type it from the header alone, so its cases cast (`CAST(e.v AS INT)`) rather than measuring the fixture's typing. |
+
+**What the runner decides.** 45 value cases (1 ordered, 44 as row multisets) and
+11 documented refusals. An unordered answer is compared as a multiset, because a
+decorrelated query has no defined row order and sorting both sides would let a
+wrong order pass; the one ordered case carries a total `ORDER BY`. Dates and
+non-finite values compare by value, and booleans compare by value across the two
+engines' spellings (`true`/`false` here, `True`/`False` in DuckDB). There is no
+skip path: a wrong answer, an engine error on a value case, a refusal without
+its message, a valid-SQL refusal the referee rejects, a missing or empty
+fixture, a referee error and a run with zero value cases all fail. Refusals are
+counted apart from matches and a run with only refusals fails, because a refusal
+is evidence of a limit, not proof that the arithmetic is right.
+
+`harness/differential.py` is the shared plumbing — CLI invocation, row
+extraction, cell normalization, `Case`/`Report`, `run_cases` — extracted from
+the window gate so both gates agree on what "equal", "refused" and "failure"
+mean; `harness/check_windows.py` now imports it and its 14 unit tests still
+pass. `harness/test_check_correlation.py` adds 15 tests of the gate's own
+failure paths (wrong value, tolerated row order, duplicate counts, a refusal
+with the wrong message, a referee error, missing/empty fixture, no cases,
+seeded-fixture replay). The fixed cases run in the `tpch` CI job;
+`--random 400 --seed 20261025` runs in nightly, and the seed replays a failure.
+
+**What it found.** Three defects, none of them visible from the 39-query
+battery, and two of them wrong answers:
+
+1. **`IN` against a set holding NULL answered `false`.** `engine/eval.mbt`
+   applied the UNKNOWN rule behind `negated && right_has_null`, so only `NOT IN`
+   was right; `x IN (set with NULL)` where `x` was absent returned `false`
+   instead of NULL. `SELECT o.v IN (SELECT n.v FROM n) FROM o` disagreed with
+   DuckDB on three of five rows. The fix is one condition, and the golden corpus
+   is unaffected — no recorded golden exercises the shape, which is exactly why
+   the differential had to exist.
+2. **A correlated `NOT IN` whose set may hold a NULL was answered by dropping
+   the whole query into an internal refusal.** The decorrelator's NULL-poison
+   detection pushed a `false` filter and returned "unsupported" through the same
+   `None`, so the caller read a resolvable shape as an unanswerable one. Keeping
+   the poison instead produced an *empty* answer for `o.v NOT IN (SELECT i.v
+   FROM i WHERE i.k < o.k)` (DuckDB returns 5 rows), because the conjunct loop's
+   early exit returned the original select and discarded the added filter.
+   Both are now correct: the exact per-row answer where the set cannot be
+   narrowed per row, and a named refusal (`cannot be decorrelated`) where it can,
+   since answering that shape needs a per-row count of the NULLs the anti join
+   never compares. That refusal is pinned by the gate so implementing it in E4c
+   flips the case loudly.
+3. **A correlated `NOT IN` over an empty set dropped a NULL probe.** `join_semi`
+   read "NULL probe key" as UNKNOWN without asking whether the row's set had any
+   member; `v NOT IN <empty set>` is TRUE even for NULL `v`. The committed
+   fixture passed by luck and the seeded nightly found it (307 rows against
+   DuckDB's 323). The fix asks the residual whether anything could be a member,
+   which is the same question the join already answers for a match.
+
+**Tests that pin the engine behaviour now.** `engine/e2e_test.mbt` gained three:
+`IN` and `NOT IN` against a set holding NULL as values (true/NULL/true and
+false/NULL/false), a `NOT IN` over an empty correlated set keeping the NULL
+probe, and the narrowed-set refusal naming itself. The fixtures also record the
+one shape whose message is still wrong: a reference to a table two levels out is
+refused, but by the binder — `unknown table or alias "o" in FROM` — and the gate
+pins that text with a note rather than pretending otherwise. §28's sentence "none
+of them reaches the user as `unknown table or alias <outer> in FROM` any more"
+therefore holds for the positions it lists and not for that one; the README now
+says so. A named message belongs to E4c, which already owns the join contract
+this path will need.
+
+**Gates.** `moon test` 283/283 (wasm-gc), `moon test --target native` 296/296,
+`moon test --target js` 283/283, `moon check --deny-warn` clean, `moon fmt
+--check` clean, no `.mbti` change, `harness/check_correlation.py` 45 value cases
+matched and 11 refusals as documented (and the same on the 400-row seeded
+fixture, plus seeds 1/2/3 at 120 rows), `harness/check_windows.py` still ok,
+`harness/check_all.sh` 33/33 golden comparisons plus its spill-equivalence
+checks, `harness/spill_accept.sh` all checks, and 66 Python harness unit tests.
