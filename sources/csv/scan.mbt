@@ -188,6 +188,15 @@ fn scan_inputs(
   if header.length() == 0 {
     raise @types.SqlError::Scan("CSV has no header row")
   }
+  let label0 = input_label(inputs[0], table_name)
+  // every sampled row must hold the header's cell count; a prefix that stops
+  // short of EOF can end mid-record, and that fragment is not the file's data
+  // (the scan reports a ragged row against the range it really sits in)
+  let mut sample_rows = raw.n_rows()
+  if buf.length().to_int64() < (inputs[0].size)() && sample_rows > 1 {
+    sample_rows -= 1
+  }
+  check_width(raw, header.length(), 1, sample_rows - 1, 0, label0)
   let dtypes = infer_types(header, buf, raw)
   for i in 1..<inputs.length() {
     validate_header(
@@ -196,8 +205,9 @@ fn scan_inputs(
       header,
     )
   }
+  let names = unique_names(header)
   let columns : Array[@catalog.Column] = []
-  for i, h in header {
+  for i, h in names {
     columns.push({ name: h, dtype: dtypes[i], })
   }
   let schema : @catalog.TableSchema = { table: table_name, columns, }
@@ -242,6 +252,63 @@ fn check_header(raw : RawCsv, header : Array[String]) -> Bool {
 }
 
 ///|
+/// Every data row must hold exactly the header's cell count. A short row's
+/// cell offsets run into the next row's cells — the row would silently answer
+/// with its neighbour's values — and on a range's last row they run past the
+/// cell arrays, which is a crash. A row with extra cells is equally wrong: the
+/// file does not match the header it registered under, so no cell means what
+/// the schema says. Errors report the file row (1-based, header included) and
+/// the file, the same numbering `build_column` uses.
+fn check_width(
+  raw : RawCsv,
+  ncols : Int32,
+  skip : Int32, // raw row of the first data row in this range (1 = header here)
+  rows : Int32, // data rows to check
+  row_base : Int32, // data rows of the file before this range
+  label : String,
+) -> Unit raise @types.SqlError {
+  for r in skip..<(skip + rows) {
+    let got = raw.n_cells(r)
+    if got != ncols {
+      raise @types.SqlError::Scan(
+        "\{label}: row \{row_base + r - skip + 2} has \{got} field\{if got == 1 { "" } else { "s" }}, expected \{ncols}",
+      )
+    }
+  }
+}
+
+///|
+/// Column names for the schema. A repeated header name is a data defect: the
+/// second column is unreachable (both names bind to the first) and a JSON row
+/// would repeat a key, so repeats get DuckDB's read_csv rename — the second
+/// `a` becomes `a_1`, the third `a_2`, and a generated name never collides
+/// with one the header already uses. The bytes of the file are untouched:
+/// per-file header validation compares the names as written.
+fn unique_names(header : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for name in header {
+    let mut candidate = name
+    let mut n = 0
+    while has_name(out, candidate) {
+      n += 1
+      candidate = "\{name}_\{n}"
+    }
+    out.push(candidate)
+  }
+  out
+}
+
+///|
+fn has_name(names : Array[String], name : String) -> Bool {
+  for n in names {
+    if n == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Infer one type per column from the first INFER_SAMPLE data rows:
 /// every sampled non-empty cell must parse as the candidate type.
 /// Order: int32, int64, float64, bool, date, else string — an integer
@@ -268,6 +335,9 @@ fn infer_types(
         break
       }
       let i = raw.row_start(r) + c
+      if c >= raw.n_cells(r) {
+        continue // a short row carries no cell for this column
+      }
       if raw.is_empty_cell(i) {
         continue // NULL cells never veto a type
       }
@@ -520,6 +590,8 @@ fn CsvStream::load_chunk(self : CsvStream) -> Bool raise @types.SqlError {
           next_base = base + raw.cut_rows(skip + whole).to_int64()
         }
       }
+      // every row this range will emit must hold the header's cell count
+      check_width(raw, self.header.length(), skip, usable, self.row_base, label)
       self.buf = stripped
       self.raw = Some(raw)
       self.skip = skip

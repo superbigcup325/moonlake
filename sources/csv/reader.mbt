@@ -119,6 +119,14 @@ fn RawCsv::is_empty_cell(self : RawCsv, i : Int32) -> Bool {
 }
 
 ///|
+/// Cells in row `r` (row 0 is the header). A short row is a data defect, not a
+/// shape: its cell offsets would run into the next row's cells, so every
+/// reader checks this before touching a row's cells column by column.
+fn RawCsv::n_cells(self : RawCsv, r : Int32) -> Int32 {
+  self.rows.data[r + 1] - self.rows.data[r]
+}
+
+///|
 /// Scan only the first `max_rows` rows (header included) of a buffer that is
 /// either a whole small CSV or a prefix of a large one. The buffer is treated
 /// as if it ended there, so a trailing fragment counts as a row.

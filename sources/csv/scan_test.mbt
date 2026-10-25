@@ -11,6 +11,21 @@ fn read_all(entry : @catalog.TableEntry) -> Array[@types.DataBatch] {
 }
 
 ///|
+/// The message of the scan error `content` raises. Fails the test when the scan
+/// succeeds: a `catch` that merely returns would pass a regression silently.
+fn scan_error(content : String) -> String {
+  // the scan is lazy: a row past the inference sample is refused when the scan
+  // runs, not when the table is registered
+  let entry = @csv.scan_string(content, "t") catch {
+    err => return err.to_string()
+  }
+  let _ = entry.scan(@catalog.ScanRequest::all(entry.schema.columns.length())) catch {
+    err => return err.to_string()
+  }
+  abort("expected a scan error, the scan succeeded")
+}
+
+///|
 test "infer types, nulls and quoted strings" {
   let content = "id,qty,price,ok,day,name\n1,12.5,10000.50,true,1994-06-01,widget\n2,24.0,20000.00,false,1994-12-31,\"gear, big\"\n3,,9.99,true,,nut\n"
   let entry = @csv.scan_string(content, "t")
@@ -165,6 +180,70 @@ fn temp_dir() -> String {
     _ => ()
   }
   d
+}
+
+///|
+test "a ragged row is a scan error, never a borrowed value" {
+  // a short row's cells would run into the next row's cells: `a,b` plus a
+  // one-cell row answered 1,2 / 3,4 / 5,4 before the width check, and the last
+  // row of a range ran past the cell arrays and crashed the process
+  assert_true(
+    scan_error("a,b\n1,2\n3,4\n5\n").contains("row 4 has 1 field, expected 2"),
+  )
+  // extra cells are the same defect from the other side
+  assert_true(
+    scan_error("a,b\n1,2,3\n").contains("row 2 has 3 fields, expected 2"),
+  )
+  // mid-file, past the inference sample: registration passes it, the scan
+  // refuses it instead of reading the next row's second cell
+  let mut rows = "a,b\n"
+  for i in 0..<150 {
+    rows = rows + "\{i},1\n"
+  }
+  rows = rows + "99\n"
+  assert_true(scan_error(rows).contains("row 152 has 1 field, expected 2"))
+  // a well-formed file keeps its rows
+  let ok = @csv.scan_string("a,b\n1,2\n3,4\n", "t")
+  assert_eq(ok.schema.columns.length(), 2)
+  assert_eq(read_all(ok)[0].row_count(), 2)
+}
+
+///|
+test "a repeated header name is renamed, as DuckDB's read_csv does" {
+  // both columns used to bind to the first one, so the second was unreachable:
+  // `a,a` over 1,2 answered 1|1 and a JSON row repeated a key
+  let entry = @csv.scan_string("a,a\n1,2\n3,4\n", "t")
+  assert_eq(entry.schema.columns.length(), 2)
+  assert_eq(entry.schema.columns[0].name, "a")
+  assert_eq(entry.schema.columns[1].name, "a_1")
+  let b = read_all(entry)[0]
+  assert_eq(b.columns()[0].get(0), @types.Scalar::Int32(1))
+  assert_eq(b.columns()[1].get(0), @types.Scalar::Int32(2))
+  // a generated name never collides with one the header already uses
+  let three = @csv.scan_string("a,a_1,a,a\n1,2,3,4\n", "t")
+  assert_eq(three.schema.columns[0].name, "a")
+  assert_eq(three.schema.columns[1].name, "a_1")
+  assert_eq(three.schema.columns[2].name, "a_2")
+  assert_eq(three.schema.columns[3].name, "a_3")
+}
+
+///|
+test "non-finite float spellings are floats, not strings" {
+  let entry = @csv.scan_string("x\n1.5\nNaN\ninf\n-Infinity\n", "t")
+  assert_eq(entry.schema.columns[0].dtype, @types.Float64)
+  let b = read_all(entry)[0]
+  match b.columns()[0].get(1) {
+    @types.Scalar::Float64(v) => assert_true(v.is_nan())
+    other => fail("expected nan, got \{other.to_string()}")
+  }
+  match b.columns()[0].get(2) {
+    @types.Scalar::Float64(v) => assert_true(v > 1.0e308)
+    other => fail("expected +inf, got \{other.to_string()}")
+  }
+  match b.columns()[0].get(3) {
+    @types.Scalar::Float64(v) => assert_true(v < -1.0e308)
+    other => fail("expected -inf, got \{other.to_string()}")
+  }
 }
 
 ///|
