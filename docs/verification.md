@@ -2034,3 +2034,58 @@ plus its three spill-equivalence checks, `harness/check_writer_interop.py` all
 checks, `harness/check_cli.sh` on the debug and release binaries, `moon fmt
 --check` clean, and the only `.mbti` difference is the one that pre-dates this
 work (`round_half_away`).
+
+## 29. Current assessment and 0.6.0 scope (2026-10-25)
+
+This assessment used source commit `eeab95e12507b4e234c8a4c0ca684ac6980899bf`
+and then changed documentation only. The working tree was clean at the start.
+Live GitHub queries confirmed `main` at `750b98c250f77367e401e3afa4c74d7fc60c0c0b`,
+28 commits behind the local source, and the latest release at
+[v0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0).
+`moon view superbigcup325/moonlake` independently returned `Latest: 0.5.0`.
+The latest checked CI and Pages successes belonged to `750b98c`; neither
+validates the local candidate.
+
+All pending changes and the remaining execution plan now target **0.6.0**.
+The changelog has one `0.6.0 - Unreleased` section, with all its prior entries
+preserved. Its entries describe implemented behavior. The roadmap separately
+marks the result API, batch-fed aggregation/sort/join, differential gate,
+dictionary investigation and final acceptance as open work for that same
+version. Version fields stay at 0.6.0; this is development scope, not a release.
+
+Checks actually run in this assessment:
+
+| Check | Result and scope |
+|---|---|
+| `moon version --all` | moon/moonrun 0.1.20261016, moonc v0.10.16+b1a0e846e |
+| `moon check --deny-warn`, `moon fmt --check` | Pass; no MoonBit implementation or generated interface changed |
+| `moon test --target native` | 293 passed |
+| `moon test --target wasm-gc` | 280 passed |
+| `moon test --target js` | 280 passed |
+| Python harness unit tests | 51 passed with Python 3.12.14 and the pinned DuckDB 2.0.0 / PyArrow 26.0.0 environment |
+| Native CLI build and `harness/check_cli.sh` | Pass; expression-only exec, unknown command and same-input output refusal |
+| `harness/check_all.sh` | 33 golden comparisons plus sort/join/aggregation spill equivalence passed; default wasm-gc target |
+| `harness/check_release.py` before documentation edits | Pass on the clean source baseline; version 0.6.0, archive 198 files, no forbidden paths |
+| Version and archive checks after documentation edits | Pass; all version claims agree, archive still 198 files, no forbidden paths |
+| Documentation checks | All pending changelog entries preserved, task IDs and relative links checked, README symlink intact, `git diff --check` clean |
+
+The first Python invocation used the system Python, which lacked DuckDB and
+PyArrow. An offline attempt found no matching packages in the selected cache,
+and the sandboxed download then failed DNS resolution. Downloading the pinned
+dependencies into a temporary cache with permitted network access resolved the
+environment issue; the Python 3.12 run above passed. The oracle-mismatch line
+printed by a gate self-test is an intentional negative case.
+
+This assessment did not rerun the independent archive or registry consumers,
+writer interoperability, full spill lifecycle, large-file write, external
+Parquet corpus, random differentials, full performance baseline or real-browser
+acceptance. Existing earlier records retain their own SHA and scope. No push,
+tag, dry-run upload, package publication or deployment was performed.
+
+The documentation itself was committed afterwards, so the entries above and the
+version fields are what `main` now carries. `harness/check_release.py` was run
+again on that clean tree and passed — the three version claims agree, the
+archive holds 198 files with no forbidden path — but it is a check of the
+current candidate, not of a release: `moon publish --dry-run`, the tag, the
+registry consumer and the remainder of the 0.6.0 delivery plan still belong to
+authorized release work on the final candidate.

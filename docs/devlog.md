@@ -1510,3 +1510,20 @@ repeated-outer-row case that is the whole point of the dedup), three-valued
 `IN`, and the positions that name themselves. The gates were re-run whole:
 280/280 wasm-gc, 293/293 native, 33/33 TPC-H goldens plus spill equivalence,
 writer interop, CLI checks on both binaries.
+
+## 0.6.0 scope (2026-10-25): pending changes and the remaining execution work
+
+The release target is 0.6.0 for both the implemented changes since 0.5.0 and
+the remaining work in `docs/ROADMAP.md`. The separate Unreleased changelog
+entries have been merged into 0.6.0 and its premature release date removed.
+The README identifies 0.5.0 as the published package and 0.6.0 as development
+work. Existing local handoff files now point to that single public plan.
+
+The LIMIT milestone is already implemented. The remaining sequence preserves
+the latest SQL fixes in a reproducible differential gate, adds batch result
+consumption without breaking the collector API, then feeds aggregation,
+external sort and joins in batches. A second dataset tests dictionary benefits;
+implementing dictionaries still needs that evidence. Final acceptance follows
+those tasks within 0.6.0, including a complete performance record and independent
+consumers. Planned behavior stays out of the changelog until implemented and
+verified. Verification section 29 records this assessment's checks and limits.

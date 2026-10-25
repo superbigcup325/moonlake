@@ -123,6 +123,9 @@ moon add superbigcup325/moonlake
 > latest published release from mooncakes (0.5.0), which includes the session
 > playground, the Parquet writer and the spill/JSON fixes recorded in
 > [CHANGELOG.md](CHANGELOG.md).
+> The next release is 0.6.0, still in development. All pending changes and the
+> remaining batch-execution work belong to its
+> [delivery plan](docs/ROADMAP.md#060-delivery-plan).
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.0`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:

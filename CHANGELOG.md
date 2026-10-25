@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - Unreleased
+
+In development. This version includes all changes since 0.5.0 and the remaining
+[0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan). The entries below
+describe implemented changes; planned work is added here after verification.
 
 ### Added
 
@@ -40,6 +44,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   itself (`WHERE i.v < o.v AND o.k > 1`) is answered instead of refused: an
   outer-only conjunct is a parameter of the correlation and rides in the join
   predicate (or in the theta aggregate) as written.
+- `@types.Scalar::arith_checked` and `@types.int_arith_checked`: the same
+  arithmetic as `Scalar::arith`, but int32/int64 `+`/`-`/`*` raise
+  `SqlError::Execute` on overflow instead of wrapping. `Scalar::arith` keeps
+  its wrapping behaviour, documented as such; the engine now evaluates through
+  the checked form on both the scalar and the vectorized path, and a caller that
+  embeds the engine can pick either.
+- `@spill.run_file_name` and `@spill.is_run_file_name`. The files a spill
+  directory holds are named by the store, and a host that points `--spill-dir`
+  at a directory of its own has to tell them from its own files before removing
+  anything: `run_file_name(id)` is the name a run gets, and
+  `is_run_file_name(name)` answers whether a name is one of them ("run", one or
+  more digits, ".bin"). The CLI's cleanup already asked exactly this question;
+  the rule is public now so a second caller does not have to restate it.
 
 ### Changed
 
@@ -72,58 +89,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Parquet write failures report `sql error (execute):`, not `sql error
   (scan):` — a `cannot create <out>.moonlake-tmp-...` pointed at the reading
   stage. Scan errors on the input keep their `scan` label.
-
-### Fixed
-
-- `ORDER BY` on a qualified column no longer binds to a same-named *output*
-  alias: `SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC` sorted by the
-  alias. This also produced the reported "outer join ORDER BY / NULLS LAST
-  ignored" and "LIMIT over a left join returns the wrong rows" symptoms, which
-  were the same misbinding. A bare (unqualified) name still resolves to the
-  last same-named output column, as DuckDB does.
-- A CSV `True`/`FALSE` (any letter case) is inferred as BOOL. Only lowercase
-  `true`/`false` were recognised, so a pandas export turned into a string
-  column and `WHERE flag` failed with `build filter must evaluate to bool, got
-  string`.
-- `moonlake write` refuses an `--out` that is one of its inputs. It used to
-  replace the source file: `write --csv t.csv --out t.csv` exited 0 and left a
-  Parquet file at the CSV's path. The check is lexical (`./t.csv`, `sub/../t.csv`
-  and a glob match all count) and covers `--parquet` inputs.
-- A correlated subquery whose correlation is not an equality now says what is
-  still out of reach, instead of naming a shape that works. It used to fail
-  with `unknown table or alias "t" in FROM`, then with a message that claimed
-  only `inner.col = outer.col` correlations were supported — which stopped
-  being true once the general rewrite landed. The refusal names the real
-  boundaries now (a derived table in the subquery's FROM, `DISTINCT` / `LIMIT`
-  / `OFFSET` / a set operation, a grouping that is not the correlation keys, a
-  reference two levels out) and still points at rewriting it as a join. A
-  correlated scalar subquery that selects no aggregate keeps its own reason, and
-  the positions the rewriter does not reach name themselves instead of letting
-  the inner bind report the outer table as missing: the select list of a
-  `GROUP BY` query (its value would have to appear in the `GROUP BY`), a
-  `HAVING` clause (it runs against grouped rows) and a `JOIN ON` clause (the
-  synthetic table would join after it).
-
-## [0.6.0] - 2026-10-24
-
-### Added
-
-- `@types.Scalar::arith_checked` and `@types.int_arith_checked`: the same
-  arithmetic as `Scalar::arith`, but int32/int64 `+`/`-`/`*` raise
-  `SqlError::Execute` on overflow instead of wrapping. `Scalar::arith` keeps
-  its wrapping behaviour, documented as such; the engine now evaluates through
-  the checked form on both the scalar and the vectorized path, and a caller that
-  embeds the engine can pick either.
-- `@spill.run_file_name` and `@spill.is_run_file_name`. The files a spill
-  directory holds are named by the store, and a host that points `--spill-dir`
-  at a directory of its own has to tell them from its own files before removing
-  anything: `run_file_name(id)` is the name a run gets, and
-  `is_run_file_name(name)` answers whether a name is one of them ("run", one or
-  more digits, ".bin"). The CLI's cleanup already asked exactly this question;
-  the rule is public now so a second caller does not have to restate it.
-
-### Changed
-
 - The Parquet writer no longer refuses files larger than 2 GiB. A column
   chunk's `file_offset` and its `data_page_offset` are file positions, so they
   are written and counted as 64-bit now; the only 32-bit length left is a page's
@@ -155,6 +120,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `ORDER BY` on a qualified column no longer binds to a same-named *output*
+  alias: `SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC` sorted by the
+  alias. This also produced the reported "outer join ORDER BY / NULLS LAST
+  ignored" and "LIMIT over a left join returns the wrong rows" symptoms, which
+  were the same misbinding. A bare (unqualified) name still resolves to the
+  last same-named output column, as DuckDB does.
+- A CSV `True`/`FALSE` (any letter case) is inferred as BOOL. Only lowercase
+  `true`/`false` were recognised, so a pandas export turned into a string
+  column and `WHERE flag` failed with `build filter must evaluate to bool, got
+  string`.
+- `moonlake write` refuses an `--out` that is one of its inputs. It used to
+  replace the source file: `write --csv t.csv --out t.csv` exited 0 and left a
+  Parquet file at the CSV's path. The check is lexical (`./t.csv`, `sub/../t.csv`
+  and a glob match all count) and covers `--parquet` inputs.
+- A correlated subquery whose correlation is not an equality now says what is
+  still out of reach, instead of naming a shape that works. It used to fail
+  with `unknown table or alias "t" in FROM`, then with a message that claimed
+  only `inner.col = outer.col` correlations were supported — which stopped
+  being true once the general rewrite landed. The refusal names the real
+  boundaries now (a derived table in the subquery's FROM, `DISTINCT` / `LIMIT`
+  / `OFFSET` / a set operation, a grouping that is not the correlation keys, a
+  reference two levels out) and still points at rewriting it as a join. A
+  correlated scalar subquery that selects no aggregate keeps its own reason, and
+  the positions the rewriter does not reach name themselves instead of letting
+  the inner bind report the outer table as missing: the select list of a
+  `GROUP BY` query (its value would have to appear in the `GROUP BY`), a
+  `HAVING` clause (it runs against grouped rows) and a `JOIN ON` clause (the
+  synthetic table would join after it).
 - A CSV row with the wrong number of fields is a scan error naming the file and
   the row (`part-3.csv: row 1201 has 1 field, expected 3`), on both the
   registration path (the inference sample) and the scanning path (every row of
