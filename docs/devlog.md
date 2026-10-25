@@ -1970,3 +1970,65 @@ rows in those tables are the current `write --snappy` output, and every other
 row is PyArrow encoding a hypothetical, which is why the two are labelled apart.
 The script is a measurement tool, not a gate; the JSON record stays out of the
 repository because no assertion depends on the numbers.
+
+## Accepted on one candidate (2026-10-26): R1
+
+### Goal
+
+The delivery plan ends with an acceptance task, not a feature: one tree where
+every gate in `ROADMAP.md`'s release list passes, the evidence is recorded
+against that SHA, and the shapes that still accumulate are stated as limits.
+The risk R1 exists to cover is the one every release has — six tasks green in
+their own sections and nothing ever run together.
+
+### What landed
+
+Two pieces of tooling, because two of the checks could not have been true
+before. `harness/check_all.sh` always ran the goldens through `moon run
+cmd/main`, so "the goldens pass" meant "the wasm-gc interpreter passes";
+`MOONLAKE_TARGET` now selects native, wasm-gc or js and `MOONLAKE_BIN` points
+the same 33 goldens at the release binary a user gets. And the packaged
+consumer imported the library without ever pulling a result, which is the one
+thing this release adds: it now streams a scan with a filter and a window, a
+two-table join, a folded aggregate and an unordered `ORDER BY`, requires each
+pulled delivery to print what `execute(...).to_json()` prints for the same
+query, then stops one stream early and checks `close`. `JsonRow` is what makes
+that comparison exact — it writes a batch's rows without the brackets, which is
+how the CLI already prints a result as its batches arrive.
+
+Then the pass itself, on `3ab2634`: suites at 340/327/327, 75 Python self-tests,
+the goldens on three targets and through the binary, the correlation and window
+differentials, the pushdown fuzzer, the Parquet corpus and encoding fixtures,
+the CLI and spill-lifecycle checks, writer interop, a 2,410,475,894-byte file
+round-tripping through pyarrow, DuckDB and our own reader, the archive consumer
+on three targets with fresh caches, and the playground page in real Chromium —
+16/16, from a host-free wasm. Playwright was already on this machine, which is
+why the browser acceptance could be run locally instead of trusted to CI.
+
+### The number
+
+The performance pair is in `bench-baseline.md`: 0.6.0 at `3ab2634` beside the
+published 0.5.0 rebuilt from tag `v0.5.0` in a worktree and recorded with that
+tag's own script, minutes apart. No case changed its `sql` or its stdout hash,
+and peak RSS falls wherever the answer used to be collected — the two-table join
+51.0 -> 35.1 MB, the self-join fanout 53.1 -> 41.3, the wide projection 310.9 ->
+237.2, the external sort 45.4 -> 35.3.
+
+One case moved out of its spread, and it is a cost: `scan/filtered_count_csv`.
+A filtered count whose answer is one row now pays the delivery boundary, because
+the scan assembles a freshly allocated 4,096-row batch per pull and the filter
+covers that batch whole. The record pair showed +9.2%, which is the machine as
+much as the code, so the number in the doc comes from an interleaved A/B of the
+two binaries: +4.1% CPU best-of (176.0 -> 183.3 ms), while the unfiltered
+`count(*)` over the same file is +0.1%. Recording it as ~4% with the shape that
+pays it is more useful than either averaging it away or calling it noise.
+
+### What acceptance does not mean
+
+It does not mean released, and it does not mean CI has seen this SHA. The
+nightly job that runs the >2 GiB write exists and last went green on 2026-10-24
+at the then-`main`; a green run at *this* SHA needs the push, and the hosted
+playground, the registry consumer and `moon publish --dry-run` need the
+authorized release work. `check_release.py --check-consumer` passes on the clean
+candidate (210 archive files, version claims agree, consumer green on three
+targets), which is the reachable half of that boundary.
