@@ -2963,3 +2963,44 @@ compares classes and treats `why` as prose. Suites at 330 (wasm-gc), 343
 0.6.0 is still unreleased. The other 51 refusals are the declared scope, not
 defects; the one shape this file taught is that a footer number is evidence
 about the writer's bookkeeping, not about where the pages end.
+
+## 38. colenc 0.1.1 is consumed (2026-10-26)
+
+`moon.mod` imports `superbigcup325/colenc@0.1.1` now, C0 of
+[the follow-up plan](ROADMAP.md#follow-up-after-colenc-011), and the README's
+build instructions and the AGENTS.md dependency notes name the same version.
+`moon tree` reports `superbigcup325/colenc@0.1.1` with no `moon.work` and no
+`.colenc` symlink, and the copy resolved under `.mooncakes/` is 0.1.1: the
+registry index and the cached 0.1.0 copy both had to go first (`moon update`,
+then the first `moon check` downloaded the artifact).
+
+**Nothing in code had to change.** 0.1.1 adds `Encoding::Roaring`, the
+`sketches` package and three `EncodingError` variants (`OutOfRange`, `Corrupt`,
+`InvalidArgument`); its interface also respells `Int` as `Int32`, which is the
+same type. The engine's only contact with `EncodingError` is
+`EncodingError::message`, in `sources/parquet/reader.mbt`'s `colenc_scan_error`
+and `sources/parquet/write.mbt`'s `colenc_write_error`, and nothing matches on
+`Encoding` variants, so the additions compile untouched: `moon info` produced no
+`.mbti` diff and `moon fmt` no source change. The sketches and the bitmap are
+available and unused; no SQL function, index or engine behavior changed here.
+
+**Evidence on `24d983b`**, the commit that carries the bump:
+
+| Check | Result |
+|---|---|
+| `moon check --deny-warn` | clean |
+| `moon test` (wasm-gc / native / js) | 330 / 343 / 330 passed |
+| goldens, `harness/check_all.sh` | 33 comparisons pass on wasm-gc, on js and through the native release binary |
+| page fixtures, `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases verified at page level |
+| `check_writer_interop.py` | all checks pass: raw and Snappy output, DATE/NULL, EXPLAIN rows, and a DuckDB-written file read back |
+| `spill_accept.sh` | all checks pass: run-file ownership, reclaim, a shared directory, ANALYZE counters |
+| `check_cli.sh` | pass: no input files, unknown command, overwrite refusal, streamed `--json`, partial output on a failed scan |
+| corpus, `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `check_release.py --check-consumer` | 210 archive files, version claims agree, consumer green on native/wasm-gc/js with fresh registry and dependency caches |
+
+**What it does not close.** The upgrade enables the colenc surface and proves
+nothing about using it: A0's semantics and state costs, A1, A2, E5 and I0 are
+still proposals. Acceptance of the final 0.6.0 candidate is R2, which reruns
+§36's gates on one revision — including the >2 GiB file, the host-free wasm
+build and the browser playground — and the performance pair is re-recorded
+last. Push, tag, publication and deployment remain unauthorized.

@@ -2,8 +2,8 @@
 
 **0.6.0 is unreleased.** Its executor delivery plan passed local acceptance on
 `3ab2634` (verification §36). The current tree also carries the Parquet fix in
-`ae6a28c` (§37), and colenc 0.1.1 is now available. The next steps are to consume
-that dependency and refresh acceptance on the final candidate, as specified
+`ae6a28c` (§37) and consumes colenc 0.1.1 (§38); the next step is to refresh
+acceptance on that final candidate, as specified
 [below](#follow-up-after-colenc-011). The completed executor tasks stay complete;
 their evidence belongs to the revision on which it was collected. Push, tag,
 publication and deployment require explicit authorization. Directions waiting
@@ -131,8 +131,8 @@ inspection and live release/CI queries; it adds no implemented SQL or index API.
 | Project | Current evidence | Consequence for the plan |
 |---|---|---|
 | colenc | [0.1.1 is released](https://github.com/superbigcup325/colenc/releases/tag/v0.1.1); `main` is `c04d7e1`, whose [CI passed](https://github.com/superbigcup325/colenc/actions/runs/40205435645). The release records registry-consumer acceptance on three targets. The artifact was built from `504092a`; the tag adds documentation and consumer coverage, with identical library code | Roaring, HLL and t-digest are available. Their implementation and the bitmap rewrites are completed work. The companion colenc NEXT-STEPS now tracks consumer adoption and conditional library work |
-| moonlake | Local `main` is `ae6a28c`, version 0.6.0, with a clean tracked tree at inspection. `moon.mod` still selects colenc 0.1.0; no `moon.work` or `.colenc` override exists. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | Upgrade the dependency explicitly before claiming that this consumer uses the 0.1.1 surface. Existing page-decoder, writer and spill integration does not establish sketch or bitmap integration |
-| moonlake verification | The full local acceptance and performance pair are on `3ab2634` (§36). The later reader fix has targeted evidence in §37. Remote `main` is still `750b98c`, 40 commits behind the inspected local tree; its [latest nightly failed](https://github.com/superbigcup325/moonlake/actions/runs/40177160450) on the corpus regression fixed locally | Refresh the final candidate. The old acceptance and remote CI cannot certify the later reader fix or a dependency upgrade |
+| moonlake | `24d983b` consumes colenc 0.1.1 (C0, verification §38): `moon.mod` selects it at version 0.6.0, and no `moon.work` or `.colenc` override exists. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | The dependency surface is available to the engine; using it is A0/A1/A2 and I0. Their acceptance is not implied by the upgrade |
+| moonlake verification | The full local acceptance and performance pair are on `3ab2634` (§36). The later reader fix has targeted evidence in §37, and the upgrade in §38. Remote `main` is still `750b98c`, 40 commits behind the inspected local tree; its [latest nightly failed](https://github.com/superbigcup325/moonlake/actions/runs/40177160450) on the corpus regression fixed locally | Refresh the final candidate on the revision that carries both the fix and the upgrade. The old acceptance and remote CI cannot certify either |
 
 colenc owns buffer encodings, bitmap operations, sketch state and their typed
 errors. moonlake owns SQL types and NULL semantics, accumulator state, memory
@@ -142,7 +142,7 @@ approximate state does not belong in the reversible spill-column encoding API.
 
 ### Work order and exit criteria
 
-C0 and R2 close the current candidate. The feature packages are the proposed
+R2 closes the current candidate; C0 is done. The feature packages are the proposed
 follow-up queue; no later version number or release date is assigned here.
 Selecting one for the still-unreleased 0.6.0 means rerunning its final acceptance
 after that code lands. The earlier 0.6.0 scope and completed R0 through R1 are
@@ -151,7 +151,7 @@ after C0, and E5 addresses a separate exact-query limit.
 
 | Task | Deliverable | Depends on | Exit |
 |---|---|---|---|
-| C0 | Consume colenc 0.1.1 | Published registry artifact | Change the manifest and current dependency instructions together; build without a sibling override and verify the resolved version. Check new `Encoding` / `EncodingError` variants against consumer matches. Run the three-target suites, page fixtures, writer interoperability, spill-format round trips and golden queries; `check_release.py --check-consumer` must pass with fresh caches. This change enables APIs; it introduces no approximate SQL or automatic index |
+| C0 | Consume colenc 0.1.1 | Published registry artifact | **Done** (verification §38): the manifest, the README instructions and the AGENTS.md notes name 0.1.1 together; `moon tree` resolves it with no workspace override, after the registry index and the cached 0.1.0 copy were cleared. The new `Encoding` / `EncodingError` variants needed no consumer edit, because the engine translates errors through `EncodingError::message` and never matches on `Encoding`. Three-target suites, page fixtures, writer interoperability, spill round trips, the goldens on wasm-gc, js and the release binary, and `check_release.py --check-consumer` with fresh caches pass. It enables APIs; it introduces no approximate SQL or automatic index |
 | R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | Preserve the short-chunk and genuine-truncation regressions; corpus remains 17 decoded / 51 deliberately refused / 0 failing on the current corpus revision. Rerun §36's correctness, archive-consumer, >2 GiB, host-free wasm and browser gates on one final revision and record it. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks. The final performance update is the last checklist item below |
 | A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | Specify input/output types, NULL and empty-input behavior, float normalization, parameter validation, update/finalize behavior, ownership and error translation. Measure actual state per group, account for keys and containers, and state budget behavior. Reuse the existing fold; design a partial-state merge only where execution uses one |
 | A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | Global and grouped aggregates consume batches through the same accumulator. Start with fixed precision 14 and an Int64 result with documented rounding/range handling; empty/all-NULL input returns 0. Keep exact `COUNT(DISTINCT ...)` exact. Validate input adaptation and NULL behavior exactly, statistical error against exact distinct counts over fixed trials, and register-equivalent partition merges separately. Cover native/wasm-gc/js and a packaged consumer; report group-count memory growth |

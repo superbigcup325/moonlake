@@ -111,6 +111,15 @@ the release date is set then.
 
 ### Changed
 
+- `superbigcup325/colenc` 0.1.0 → 0.1.1. The new artifact adds the Roaring
+  bitmap, the HLL and t-digest sketches, and three encoding-error variants. No
+  code in this tree changed: the reader and writer reach the type only through
+  `EncodingError::message`, so the additions are compatible, and the interface's
+  `Int` to `Int32` respelling is the same type (`moon info` produces no `.mbti`
+  diff). The sketches and the bitmap are available and unused — nothing here is
+  an approximate SQL function or an automatic index. This is C0 of the
+  [follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011); the evidence is
+  verification §38
 - Aggregation folds its input as the scan delivers it. A single-table `GROUP BY`
   or a global aggregate now builds its group state one batch at a time instead
   of being handed the whole input, so the operator holds its state and one batch

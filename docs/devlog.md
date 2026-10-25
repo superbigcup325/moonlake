@@ -1593,6 +1593,37 @@ not by a named message, and both the README and the gate now say so instead of
 claiming otherwise. Naming it belongs to E4c, which owns the join contract this
 path needs anyway.
 
+## After colenc 0.1.1 (planning snapshot, 2026-10-25)
+
+colenc 0.1.1 is published with Roaring and the dedicated HLL/t-digest package.
+The source inspection found moonlake still importing 0.1.0, while colenc's old
+NEXT-STEPS still scheduled the now-implemented sketches. The follow-up plan in
+[the roadmap](ROADMAP.md#follow-up-after-colenc-011) starts from the released
+APIs and separates the kernel's state/byte contracts from SQL and scan behavior.
+
+The first work is C0, consuming the registry dependency without a sibling
+workspace override, followed by R2, refreshing the final 0.6.0 candidate.
+The full local acceptance belongs to `3ab2634`; `ae6a28c` adds the reader fix
+recorded in verification §37. Live remote main is still `750b98c`, and its latest
+nightly is red on that locally fixed corpus case. Neither earlier acceptance
+nor colenc's green CI establishes that the final engine revision passes.
+
+The feature queue starts with a SQL/state-cost contract, then explicit HLL
+and t-digest aggregates. Dense HLL's default register payload is about 64 KiB
+per group in memory, rather than its 16 KiB serialized payload; signed zero,
+NaN and typed hashing need an engine adapter. t-digest needs a numeric-conversion
+policy and an update-error path through the aggregate fold. Exact distinct and
+median remain available. Budgeted GROUP BY input streaming is a separate task;
+Roaring starts with an immutable-table experiment because row identity,
+invalidation and a scan-selection contract are still engine work.
+
+This pass inspected current source and existing evidence and queried live
+release, branch and CI metadata. It changed planning/status documents only;
+no dependency, SQL function or index implementation was changed. Historical
+suite, registry-consumer and performance results were not rerun. The final
+roadmap checklist reminds the maintainer to update both projects' benchmarks
+after the last code and dependency changes.
+
 ## Results that leave one batch at a time (2026-10-26): E3
 
 ### Goal
@@ -2060,33 +2091,30 @@ The lesson is about the gate, not the file: a `refused` class is only honest for
 a file a reference reader also refuses. Two of three readers disagreeing with us
 is a bug report about our reader. That is what §37 of `verification.md` records.
 
-## After colenc 0.1.1 (planning snapshot, 2026-10-25)
+## colenc 0.1.1 is consumed (2026-10-26): C0
 
-colenc 0.1.1 is published with Roaring and the dedicated HLL/t-digest package.
-The source inspection found moonlake still importing 0.1.0, while colenc's old
-NEXT-STEPS still scheduled the now-implemented sketches. The follow-up plan in
-[the roadmap](ROADMAP.md#follow-up-after-colenc-011) starts from the released
-APIs and separates the kernel's state/byte contracts from SQL and scan behavior.
+The bump was one line of manifest and two sentences of instructions, which is
+the interesting part: 0.1.1 adds `Encoding::Roaring`, the `sketches` package and
+three `EncodingError` variants, and none of that reached an edit here. The
+engine translates colenc errors through `EncodingError::message` in one reader
+helper and one writer helper, and it never matches on `Encoding` variants, so
+the additions are compatible by construction rather than by luck. `moon info`
+produced no `.mbti` diff, which is the same statement from the other side.
 
-The first work is C0, consuming the registry dependency without a sibling
-workspace override, followed by R2, refreshing the final 0.6.0 candidate.
-The full local acceptance belongs to `3ab2634`; `ae6a28c` adds the reader fix
-recorded in verification §37. Live remote main is still `750b98c`, and its latest
-nightly is red on that locally fixed corpus case. Neither earlier acceptance
-nor colenc's green CI establishes that the final engine revision passes.
+What did need attention was the environment, not the code. The registry index
+still carried only colenc 0.1.0, so `moon update` had to refresh it first, and
+the cached `.mooncakes/superbigcup325/colenc` copy had to go: a populated cache
+is exactly what hides a version bump from a build that would otherwise fail.
+With both cleared the graph resolved 0.1.1 and the first check downloaded it.
 
-The feature queue starts with a SQL/state-cost contract, then explicit HLL
-and t-digest aggregates. Dense HLL's default register payload is about 64 KiB
-per group in memory, rather than its 16 KiB serialized payload; signed zero,
-NaN and typed hashing need an engine adapter. t-digest needs a numeric-conversion
-policy and an update-error path through the aggregate fold. Exact distinct and
-median remain available. Budgeted GROUP BY input streaming is a separate task;
-Roaring starts with an immutable-table experiment because row identity,
-invalidation and a scan-selection contract are still engine work.
+Evidence is in §38 of `verification.md`, all of it on the commit that carries
+the bump: three-target suites at 330/343/330, the 33 goldens on wasm-gc, js and
+through the release binary, page fixtures, writer interop, spill acceptance,
+the CLI checks, the corpus at 17 decoded / 51 refused / 0 failing, and the
+archive consumer green on three targets with fresh caches. The consumer gate
+has to run after the bump is committed because it refuses a dirty tree, which
+is worth knowing before starting one.
 
-This pass inspected current source and existing evidence and queried live
-release, branch and CI metadata. It changed planning/status documents only;
-no dependency, SQL function or index implementation was changed. Historical
-suite, registry-consumer and performance results were not rerun. The final
-roadmap checklist reminds the maintainer to update both projects' benchmarks
-after the last code and dependency changes.
+None of this uses the new surface. The next task is R2, the same gates again on
+the final candidate, and the feature work behind it still starts from A0's
+semantics and state costs.
