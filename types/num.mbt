@@ -199,6 +199,11 @@ pub fn parse_bool(s : String) -> Bool? {
 /// NaN / inf spellings over a char buffer, case-insensitive: the same set the
 /// byte parser takes, so `CAST('NaN' AS DOUBLE)` and a CSV float column agree.
 fn parse_nonfinite_chars(chars : Array[Char]) -> Double? {
+  // the spellings are 3, 4, 8 or 9 chars: skip the copy for anything else
+  let n = chars.length()
+  if n != 3 && n != 4 && n != 8 && n != 9 {
+    return None
+  }
   let lower : StringBuilder = StringBuilder()
   for ch in chars {
     let v = ch.to_int()
