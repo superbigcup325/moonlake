@@ -57,9 +57,11 @@ REFUSALS = (
     "INT96 timestamps are not supported",
     "FIXED_LEN_BYTE_ARRAY is not supported",
     "data page v2 is not supported",
-    # a page whose declared bounds run past the end of the file: the file is
-    # truncated (apache/parquet-testing ships such fixtures), so the reader
-    # names the page instead of decoding whatever bytes follow it
+    # a page that needs bytes the file does not have: a genuinely truncated
+    # file, refused by name instead of decoding whatever follows it. A page
+    # that merely overruns the footer's `total_compressed_size` is readable and
+    # is read (`nation.dict-malformed`), so this message must only appear when
+    # the bytes are really missing
     "payload bytes, past the end of the file",
     "GZIP compression is not supported",
     "compression codec",

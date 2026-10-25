@@ -220,6 +220,19 @@ publication, deployment — and the date is set when that happens.
 
 ### Fixed
 
+- A Parquet file whose footer understates a column chunk decodes again. Some
+  writers leave the page headers out of `total_compressed_size`:
+  apache/parquet-testing's `nation.dict-malformed.parquet` declares 2002 bytes
+  for a 2017-byte page chain, so its last data page ends 15 bytes past the
+  declared extent while the bytes are inside the file (footer at 2608, page
+  payload 2580–2608). Since 0.5.0's ranged reads the chunk was sized from that
+  number and the page was refused as "past the end of the file"; 0.5.0 and 0.6.0
+  both refused it, the whole-file reads before 0.5.0 decoded it, and PyArrow and
+  DuckDB read it (25 rows × 4 columns, cell for cell). The reader now follows
+  the page headers as they do: a page that overruns the declared extent is read
+  again up to the end of the file, and only a page that really runs past the end
+  is refused. That refusal names the file offset now: the old one reported the
+  chunk-relative offset as if it were one (`sources/parquet/reader.mbt`).
 - `x IN (SELECT ...)` returns NULL instead of FALSE when the set holds a NULL
   and `x` is not in it. The three-valued rule was gated behind `NOT IN`, so
   `SELECT o.v IN (SELECT n.v FROM n) FROM o` answered `false` where DuckDB

@@ -2032,3 +2032,30 @@ playground, the registry consumer and `moon publish --dry-run` need the
 authorized release work. `check_release.py --check-consumer` passes on the clean
 candidate (210 archive files, version claims agree, consumer green on three
 targets), which is the reachable half of that boundary.
+
+## A footer that undercounted its own chunk (2026-10-26): R2
+
+The nightly failed exactly one step: the Parquet corpus cross-check refused
+`nation.dict-malformed.parquet`, which its record said should decode. The
+tempting move was to accept the refusal: the file is named "malformed", and a
+local commit had already written the refusal into the record. Reading the file
+said otherwise.
+
+Its last column declares a 2002-byte chunk; its two pages need 2017. The 15-byte
+difference is exactly the dictionary page header, and the last payload ends at
+byte 2608, where the 234-byte footer starts. So the file is readable (PyArrow
+and DuckDB read all 25 rows) and only the footer's sum is wrong. The reader had
+sized the chunk from that sum since 0.5.0's ranged reads, and the bounds check
+compared a chunk-relative offset against the buffer, so it reported "past the
+end of the file" about a page that was inside it. Before 0.5.0 the file decoded.
+
+So the fix is not a looser check: the reader follows the page headers, asking
+for the rest of a page when it overruns the declared extent and refusing only
+when it really passes the end of the file. The refusal now names the file offset
+and the column. Three whitebox tests hold the shape, the corpus gate is back to
+17 decoded / 51 refused / 0 failing, and `select *` on the fixture matches
+DuckDB cell for cell.
+
+The lesson is about the gate, not the file: a `refused` class is only honest for
+a file a reference reader also refuses. Two of three readers disagreeing with us
+is a bug report about our reader. That is what §37 of `verification.md` records.

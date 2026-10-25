@@ -2849,7 +2849,7 @@ deployed.
 | `harness/check_windows.py --random 400 --seed 20261023` | 8 value cases matched, nothing refused |
 | `harness/fuzz_pushdown.py` | 300 queries, 0 failures, 0 rejections |
 | `harness/check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
-| `harness/check_parquet_corpus.py` | 16 decoded by value, 52 refused by design, 0 failing |
+| `harness/check_parquet_corpus.py` | 17 decoded by value, 51 refused by design, 0 failing |
 | `bash harness/check_cli.sh` | Pass (partial output on a mid-scan failure included) |
 | `bash harness/spill_accept.sh` | Pass (five lifecycle cases) |
 | `harness/check_writer_interop.py` | Pass (schema, values, NULLs, both directions, `--snappy` 140,290 -> 24,334 bytes) |
@@ -2908,3 +2908,58 @@ needs about 5 GB of scratch and a few minutes; the playground needs
 `PLAYWRIGHT_MODULE` pointing at a Playwright install and the page served over
 HTTP. The four `harness/check_all.sh` invocations are the same script with
 `MOONLAKE_TARGET` or `MOONLAKE_BIN` set.
+
+## 37. The nightly's one red: a footer that undercounted its own chunk (2026-10-26)
+
+Nightly run `40177160450`, head `750b98c`, failed one step of the `fuzz` job,
+the corpus cross-check: `nation.dict-malformed.parquet: decoded -> failing`,
+`unexpected refusal: … page at offset 292 claims 28 payload bytes, past the end
+of the file`. The local branch is 39 commits ahead of that head, and only this
+file was red — the other 67 classified as their record says.
+
+**The arithmetic.** The file is 2850 bytes and upstream has not touched it since
+2018-09-03. `comment_col`'s chunk starts at byte 591 and the footer declares
+`total_compressed_size` 2002, but its pages need 2017: a 15-byte dictionary page
+header with a 1957-byte payload, then a 17-byte data page header with 28 bytes
+of payload. The last payload ends at byte 2608, exactly where the 234-byte
+footer begins. Nothing in the file is truncated; only the footer's own sum omits
+the dictionary page header.
+
+**Why it appeared in 0.5.0 and not before.** `d6cf724` (0.5.0) sized each chunk
+from that number and read it as one range, so the last page's 28 bytes sat
+outside the buffer the decoder owned, and the bounds check, written against
+`data.length()`, called a chunk-relative offset "past the end of the file".
+Before 0.5.0 the whole file was the buffer and the file decoded correctly. So
+0.5.0 and 0.6.0 both refused a file PyArrow and DuckDB read, and the local
+commit that settled the fixture recorded the refusal as the expected class: a
+regression normalized as a decision, plus a message that named the wrong
+quantity.
+
+**The fix.** `walk_chunk` follows the page headers now, as the reference readers
+do. `decode_chunk` hands it a `grow` closure; when a page's payload passes the
+declared extent, the closure re-reads the chunk from its start far enough to
+hold that page (`payload_start + payload_len`). `read_page_tail` refuses only
+when that length passes the end of the file, and it names the file offset and
+the column. Genuine truncation is refused exactly as before.
+
+**Evidence.** `select nation_key, name, region_key, comment_col from
+"nation.dict-malformed"` returns 25 rows × 4 columns and agrees with DuckDB cell
+for cell (25 rows compared, 0 mismatches, including the `comment_col` strings the
+last page carries). Three whitebox tests in `sources/parquet/scan_wbtest.mbt`
+pin the shape: a hand-built footer that understates the chunk still reads its
+last page (asserting the second read, at the same offset, is exactly `short`
+bytes longer), a tail past the end of the file is refused by column name and
+file offset before any read is attempted, and a tail inside the file is read
+from the chunk start. `check_parquet_corpus.py` reports 17 decoded by value, 51
+refused by design, 0 failing, the count §11 recorded before the ranged read
+landed. `--update` re-records the one class change
+(`nation.dict-malformed: refused -> decoded`), and the stale `{el.name}`
+descriptions in the same file became the real column names, since the gate
+compares classes and treats `why` as prose. Suites at 330 (wasm-gc), 343
+(native) and 330 (js), `moon check --deny-warn` and `moon fmt --check` clean, no
+`.mbti` change: the whole edit is inside the package's private reader path.
+
+**What it does not close.** The nightly stays red until this is pushed, and
+0.6.0 is still unreleased. The other 51 refusals are the declared scope, not
+defects; the one shape this file taught is that a footer number is evidence
+about the writer's bookkeeping, not about where the pages end.

@@ -5,23 +5,23 @@
   "files": {
     "alltypes_dictionary.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"timestamp_col\": INT96 timestamps are not supported"
     },
     "alltypes_plain.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"timestamp_col\": INT96 timestamps are not supported"
     },
     "alltypes_plain.snappy.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"timestamp_col\": INT96 timestamps are not supported"
     },
     "alltypes_tiny_pages.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"timestamp_col\": INT96 timestamps are not supported"
     },
     "alltypes_tiny_pages_plain.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"timestamp_col\": INT96 timestamps are not supported"
     },
     "binary.parquet": {
       "class": "decoded",
@@ -41,7 +41,7 @@
     },
     "byte_stream_split_extended.gzip.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+      "why": "column \"float16_plain\": FIXED_LEN_BYTE_ARRAY is not supported"
     },
     "column_chunk_key_value_metadata.parquet": {
       "class": "decoded",
@@ -105,7 +105,7 @@
     },
     "fixed_length_byte_array.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+      "why": "column \"flba_field\": FIXED_LEN_BYTE_ARRAY is not supported"
     },
     "fixed_length_decimal.parquet": {
       "class": "refused",
@@ -121,15 +121,15 @@
     },
     "float16_nonzeros_and_nans.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+      "why": "column \"x\": FIXED_LEN_BYTE_ARRAY is not supported"
     },
     "float16_zeros_and_nans.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+      "why": "column \"x\": FIXED_LEN_BYTE_ARRAY is not supported"
     },
     "floating_orders_nan_count.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": FIXED_LEN_BYTE_ARRAY is not supported"
+      "why": "column \"float16_ieee754\": FIXED_LEN_BYTE_ARRAY is not supported"
     },
     "hadoop_lz4_compressed.parquet": {
       "class": "refused",
@@ -161,11 +161,11 @@
     },
     "int96_from_spark.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"a\": INT96 timestamps are not supported"
     },
     "int96_timestamp_order.parquet": {
       "class": "refused",
-      "why": "column \"{el.name}\": INT96 timestamps are not supported"
+      "why": "column \"ts\": INT96 timestamps are not supported"
     },
     "json.parquet": {
       "class": "decoded",
@@ -192,8 +192,8 @@
       "why": "1 columns, 1 sampled"
     },
     "nation.dict-malformed.parquet": {
-      "class": "refused",
-      "why": "page at offset 292 claims 28 payload bytes, past the end of the file"
+      "class": "decoded",
+      "why": "4 columns, 2 sampled"
     },
     "nested_lists.snappy.parquet": {
       "class": "refused",

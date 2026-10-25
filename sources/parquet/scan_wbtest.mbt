@@ -205,3 +205,112 @@ test "a chunk read past the end of the input names the column and the range" {
   assert_true(message.contains("c2"))
   assert_true(message.contains("cannot read 20 bytes at 4"))
 }
+
+///|
+/// One column whose footer is written by hand, so the chunk's declared
+/// `total_compressed_size` can be `short` bytes smaller than the page it holds:
+/// some writers leave the dictionary page header out of that number (the
+/// apache/parquet-testing corpus ships one), and every other reader follows the
+/// page headers instead of the declaration.
+fn wb_understated(first : Int32, short : Int32) -> Bytes raise @types.SqlError {
+  let rows = 4
+  let value = @types.ColumnVector::make(@types.Int32, rows)
+  for i in 0..<rows {
+    value.set(i, @types.Int32(first + i))
+  }
+  let body = w_column_body(value, "u")
+  let header = w_page_header(body.length(), body.length(), rows)
+  let chunk_length = header.length() + body.length()
+  let out = Buffer()
+  out.write_bytes(b"PAR1")
+  out.write_bytes(header)
+  out.write_bytes(body)
+  let meta = w_column_meta_data(
+    "u",
+    w_type_id(@types.Int32),
+    rows,
+    body.length(),
+    chunk_length - short,
+    4L,
+    ParquetCodec::Raw,
+    column_stats(value),
+  )
+  let schema : Array[Bytes] = [
+    w_schema_root(1),
+    w_schema_leaf("u", w_type_id(@types.Int32), @types.Int32),
+  ]
+  let groups : Array[Bytes] = [
+    w_row_group([w_column_chunk(4L, meta)], chunk_length, rows),
+  ]
+  let footer = w_file_meta_data(schema, rows.to_int64(), groups)
+  out.write_bytes(footer)
+  let footer_length = Buffer()
+  footer_length.write_int_le(footer.length())
+  out.write_bytes(footer_length.to_bytes())
+  out.write_bytes(b"PAR1")
+  out.to_bytes()
+}
+
+///|
+test "a chunk the footer declares short still reads its last page" {
+  let short = 5
+  let content = wb_understated(1, short) catch {
+    e => abort("cannot write the fixture: \{e}")
+  }
+  let size = content.length().to_int64()
+  let log : Array[(Int64, Int32)] = []
+  let entry = scan_input(recording_input(content, log), "u", []) catch {
+    e => abort("cannot register the fixture: \{e}")
+  }
+  let batches = entry.scan(@catalog.ScanRequest::new([0], [])) catch {
+    e => abort("cannot scan the fixture: \{e}")
+  }
+  let values : Array[@types.Scalar] = []
+  for batch in batches {
+    for i in 0..<batch.row_count() {
+      values.push(batch.columns()[0].get(i))
+    }
+  }
+  assert_eq(values.length(), 4)
+  assert_eq(values[3], @types.Scalar::Int32(4))
+  // the declared chunk ends inside the page, so the page is fetched a second
+  // time, long enough to hold it: two reads, at the same offset
+  let chunks = chunk_reads(log, size)
+  assert_eq(chunks.length(), 2)
+  assert_eq(chunks[0].0, 4L)
+  assert_eq(chunks[1].0, 4L)
+  assert_eq(chunks[1].1, chunks[0].1 + short)
+}
+
+///|
+test "a page tail inside the file is read from the chunk start" {
+  let log : Array[(Int64, Int32)] = []
+  let input = recording_input(b"0123456789", log)
+  let data = read_page_tail(input, 4L, 6, 2, 4, "c") catch {
+    e => abort("cannot read the page tail: \{e}")
+  }
+  assert_eq(data.length(), 6)
+  assert_eq(log.length(), 1)
+  assert_eq(log[0].0, 4L)
+  assert_eq(log[0].1, 6)
+}
+
+///|
+test "a page past the end of the file is refused by name, before any read" {
+  let log : Array[(Int64, Int32)] = []
+  let input = recording_input(b"0123456789", log)
+  let mut message = ""
+  ignore(
+    read_page_tail(input, 4L, 20, 2, 14, "c2") catch {
+      e => {
+        message = "\{e}"
+        b""
+      }
+    },
+  )
+  assert_true(message.contains("c2"))
+  // the offset a hex dump would look at, not the chunk-relative one
+  assert_true(message.contains("file offset 6"))
+  assert_true(message.contains("past the end of the file"))
+  assert_eq(log.length(), 0)
+}

@@ -109,6 +109,28 @@ fn read_chunk(
 }
 
 ///|
+/// Re-read a column chunk, this time long enough to hold a page that ends past
+/// the extent the footer declares. `need` is measured from the chunk start in
+/// the file; a page that needs bytes the file does not have is refused here,
+/// naming the page rather than letting the decoder read whatever follows it.
+fn read_page_tail(
+  input : ParquetInput,
+  chunk_offset : Int64,
+  need : Int32,
+  pos : Int32,
+  payload : Int32,
+  name : String,
+) -> Bytes raise @types.SqlError {
+  let available = (input.size)() - chunk_offset
+  if need < 0 || need.to_int64() > available {
+    raise unsupported(
+      "column \"\{name}\": page at file offset \{chunk_offset + pos.to_int64()} claims \{payload} payload bytes, past the end of the file",
+    )
+  }
+  read_chunk(input, chunk_offset, need.to_int64(), name)
+}
+
+///|
 fn check_codec(cm : ColumnMeta, name : String) -> Unit raise @types.SqlError {
   match cm.codec {
     Uncompressed | Snappy => ()
@@ -346,10 +368,19 @@ fn decode_chunk(
   let name = el.name
   check_codec(cm, name)
   let (chunk_offset, chunk_length) = chunk_range(cm)
+  // page offsets inside the chunk are relative to this buffer
   let data = read_chunk(input, chunk_offset, chunk_length, name)
-  // page offsets inside the chunk are now relative to this buffer
-  let start = 0
-  let end = data.length()
+  // `ColumnMeta.total_compressed_size` understates the page chain in some
+  // writers' files -- apache/parquet-testing's `nation.dict-malformed.parquet`
+  // leaves the 15-byte dictionary page header out of it -- so the last page can
+  // end past the declared extent while its bytes are inside the file. Other
+  // readers follow the page headers; so does this one, reading the rest of the
+  // page on demand and refusing only when it really runs past the end of file.
+  let grow : (Int32, Int32, Int32) -> Bytes raise @types.SqlError = (
+    need,
+    pos,
+    payload,
+  ) => read_page_tail(input, chunk_offset, need, pos, payload, name)
   let valid : Array[Bool] = []
   match el.physical {
     Some(BooleanT) => {
@@ -357,8 +388,6 @@ fn decode_chunk(
       let dict : Array[Bool] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -373,6 +402,7 @@ fn decode_chunk(
             payload, n, enc, dict, values, name, plain_booleans, extended_bool, dict_seen,
           )
         },
+        grow,
       )
       Bools(values, valid)
     }
@@ -381,8 +411,6 @@ fn decode_chunk(
       let dict : Array[Int32] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -397,6 +425,7 @@ fn decode_chunk(
             payload, n, enc, dict, values, name, plain_i32, extended_i32, dict_seen,
           )
         },
+        grow,
       )
       Int32s(values, valid)
     }
@@ -405,8 +434,6 @@ fn decode_chunk(
       let dict : Array[Int64] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -421,6 +448,7 @@ fn decode_chunk(
             payload, n, enc, dict, values, name, plain_i64, extended_i64, dict_seen,
           )
         },
+        grow,
       )
       Int64s(values, valid)
     }
@@ -429,8 +457,6 @@ fn decode_chunk(
       let dict : Array[Float] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -445,6 +471,7 @@ fn decode_chunk(
             payload, n, enc, dict, values, name, plain_f32, extended_f32, dict_seen,
           )
         },
+        grow,
       )
       Floats(values, valid)
     }
@@ -453,8 +480,6 @@ fn decode_chunk(
       let dict : Array[Double] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -469,6 +494,7 @@ fn decode_chunk(
             payload, n, enc, dict, values, name, plain_f64, extended_f64, dict_seen,
           )
         },
+        grow,
       )
       Doubles(values, valid)
     }
@@ -477,8 +503,6 @@ fn decode_chunk(
       let dict : Array[String] = []
       walk_chunk(
         data,
-        start,
-        end,
         cm,
         name,
         max_def,
@@ -494,6 +518,7 @@ fn decode_chunk(
             dict_seen,
           )
         },
+        grow,
       )
       Strings(values, valid)
     }
@@ -554,22 +579,27 @@ fn read_dict_indices(
 /// `on_dictionary` receives the dictionary page payload, `on_values` the
 /// value section of each data page together with the number of non-null
 /// values it holds.
+///
+/// `chunk` holds the bytes `ColumnMeta.total_compressed_size` declares, and
+/// `grow(need, page_offset, payload_len)` hands back a longer buffer starting at
+/// the same offset when a page ends past that declaration but still inside the
+/// file.
 fn walk_chunk(
-  data : Bytes,
-  start : Int32,
-  end : Int32,
+  chunk : Bytes,
   cm : ColumnMeta,
   name : String,
   max_def : Int32,
   valid : Array[Bool],
   on_dictionary : (BytesView, Int32) -> Unit raise @types.SqlError,
   on_values : (BytesView, Int32, Encoding, Bool) -> Unit raise @types.SqlError,
+  grow : (Int32, Int32, Int32) -> Bytes raise @types.SqlError,
 ) -> Unit raise @types.SqlError {
-  let mut pos = start
+  let mut data = chunk
+  let mut pos = 0
   let mut values_seen : Int64 = 0L
   let mut pages = 0
   let mut dict_seen = false
-  while pos < end {
+  while pos < data.length() {
     let tr = Tr::new(data)
     tr.pos = pos
     let header = parse_page_header(tr) catch {
@@ -580,14 +610,20 @@ fn walk_chunk(
     }
     let header_len = tr.pos - pos
     let payload_len = header.compressed_size
-    if payload_len < 0 || pos + header_len + payload_len > data.length() {
+    if payload_len < 0 {
       raise unsupported(
-        "page at offset \{pos} claims \{payload_len} payload bytes, past the end of the file",
+        "column \"\{name}\": page at offset \{pos} claims a negative payload length \{payload_len}",
       )
     }
+    let payload_start = pos + header_len
+    if payload_len > data.length() - payload_start {
+      // the declared chunk ends inside this page: read the rest of the page,
+      // which `grow` refuses past the end of the file
+      data = grow(payload_start + payload_len, pos, payload_len)
+    }
     let raw = data.exact_view(
-      start=pos + header_len,
-      end=pos + header_len + payload_len,
+      start=payload_start,
+      end=payload_start + payload_len,
     )
     pos += header_len + payload_len
     pages += 1
