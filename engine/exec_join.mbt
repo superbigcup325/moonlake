@@ -106,137 +106,303 @@ fn join_step(
   if step.kind is Semi || step.kind is Anti || step.kind is AntiLoose {
     return join_semi(acc, right, step)
   }
-  let right_width = step.right_width
-  let left_width = step.out_dtypes.length() - right_width
-  // build: one columnar batch, keys evaluated once over it
-  let build = concat_batches(right, tail_dtypes(step.out_dtypes, right_width))
-  let n_build = build.row_count()
-  // probe: keys evaluated once over the concatenated left side
-  let left = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
-  let n_left = left.row_count()
-  let rstate : ResidualState? = match step.residual {
-    Some(re) =>
-      Some(
-        residual_state(residual_plan(re, left_width, right_width), left, build),
-      )
-    None => None
+  let build = concat_batches(
+    right,
+    tail_dtypes(step.out_dtypes, step.right_width),
+  )
+  // the probe side is handed over a batch at a time: `acc` already has the
+  // left half of the combined layout, so nothing is concatenated here
+  let mut at = 0
+  let next_left : () -> @types.DataBatch? raise @types.SqlError = fn() {
+    if at < acc.length() {
+      let b = acc[at]
+      at += 1
+      Some(b)
+    } else {
+      None
+    }
   }
+  let cursor = JoinCursor::open(step, build, next_left)
+  concat_batches(drain_join(cursor), step.out_dtypes)
+}
+
+///|
+/// How many rows a join hands out at a time. One probe batch can produce more
+/// than this (a duplicated join key), so the cursor slices its own output.
+const JOIN_OUT_BATCH : Int32 = 4096
+
+///|
+/// One hash join as a cursor. The build side is resident — a probe row has to
+/// find its matches — but the probe side arrives a batch at a time and the
+/// output leaves in batches of at most `JOIN_OUT_BATCH` rows, so a caller never
+/// holds the probe side or the joined row set.
+///
+/// `next` returns rows in the step's combined layout (left columns, then the
+/// joining table's); the caller projects them. NULL keys never match, LEFT and
+/// FULL keep unmatched probe rows with a NULL right side, FULL emits its
+/// unmatched build rows once after the probe side ends, and the residual
+/// filters candidate pairs before a match counts.
+priv struct JoinCursor {
+  step : JoinStep
+  build : @types.DataBatch
+  build_keys : Array[@types.ColumnVector]
+  int_map : Map[Int64, Array[Int32]] // the fast path: packed Int64 keys
+  str_map : Map[String, Array[Int32]]
+  mut fast : Bool // which map was built
+  left_width : Int32
+  empty_left : @types.DataBatch // the layout to gather NULLs from
+  matched : FixedArray[Bool] // FULL: which build rows matched
+  next_left : () -> @types.DataBatch? raise @types.SqlError
+  mut left_now : @types.DataBatch? // the probe batch the pending ids belong to
+  mut out_l : Array[Int32] // pending pairs, drained in slices of JOIN_OUT_BATCH
+  mut out_r : Array[Int32]
+  mut out_at : Int32
+  mut primed : Bool
+  mut tail_done : Bool
+}
+
+///|
+fn JoinCursor::open(
+  step : JoinStep,
+  build : @types.DataBatch,
+  next_left : () -> @types.DataBatch? raise @types.SqlError,
+) -> JoinCursor raise @types.SqlError {
   let build_keys : Array[@types.ColumnVector] = []
   for e in step.keys_r {
     build_keys.push(eval_vec(e, build))
   }
-  let left_keys : Array[@types.ColumnVector] = []
-  for e in step.keys_l {
-    left_keys.push(eval_vec(e, left))
+  let left_width = step.out_dtypes.length() - step.right_width
+  {
+    step,
+    build,
+    build_keys,
+    int_map: Map([]),
+    str_map: Map([]),
+    fast: false,
+    left_width,
+    empty_left: concat_batches([], head_dtypes(step.out_dtypes, left_width)),
+    matched: FixedArray::make(build.row_count(), false),
+    next_left,
+    left_now: None,
+    out_l: [],
+    out_r: [],
+    out_at: 0,
+    primed: false,
+    tail_done: false,
   }
-  let left_ids : Array[Int32] = []
-  let right_ids : Array[Int32] = [] // -1 marks a LEFT NULL extension
-  // FULL also preserves unmatched build rows: remember who matched
-  let matched_build : FixedArray[Bool] = FixedArray::make(n_build, false)
-  let track = step.kind is Full
-  // int-key fast path: hash Int64s, no key strings per row. One key as it
-  // stands; two int32-width keys packed (see int_key_vecs).
-  let int_keys = int_key_cols(build_keys, left_keys)
-  match int_keys {
-    Some((bd, bv, ld, lv)) => {
-      let map : Map[Int64, Array[Int32]] = Map([])
+}
+
+///|
+/// Build the key -> build-row-ids map, once, when the first probe batch shows
+/// which of the two key shapes this join has: both sides packed into one Int64
+/// (the TPC-H shape) or canonical key strings.
+fn JoinCursor::prime(
+  self : JoinCursor,
+  left_keys : Array[@types.ColumnVector],
+) -> Unit {
+  let n_build = self.build.row_count()
+  match int_key_cols(self.build_keys, left_keys) {
+    Some((bd, bv, _, _)) => {
+      self.fast = true
       for r in 0..<n_build {
         if bv[r] {
           // NULL join keys never match
           let k = bd[r]
-          match map.get(k) {
+          match self.int_map.get(k) {
             Some(ids) => ids.push(r)
-            None => map[k] = [r]
-          }
-        }
-      }
-      for r in 0..<n_left {
-        let mut matched = false
-        if lv[r] {
-          match map.get(ld[r]) {
-            Some(ids) =>
-              for id in ids {
-                if residual_ok(rstate, left, r, build, id) {
-                  left_ids.push(r)
-                  right_ids.push(id)
-                  matched = true
-                  matched_build[id] = true
-                }
-              }
-            None => ()
-          }
-        }
-        if !matched {
-          if step.kind is Left || step.kind is Full {
-            left_ids.push(r)
-            right_ids.push(-1)
+            None => self.int_map[k] = [r]
           }
         }
       }
     }
-    None => {
-      let map : Map[String, Array[Int32]] = Map([])
+    None =>
       for r in 0..<n_build {
         let kv : Array[@types.Scalar] = []
-        for c in build_keys {
+        for c in self.build_keys {
           kv.push(c.get(r))
         }
         if key_has_null(kv) {
           continue // NULL join keys never match
         }
         let key = canonical_key(kv)
-        match map.get(key) {
+        match self.str_map.get(key) {
           Some(ids) => ids.push(r)
-          None => map[key] = [r]
+          None => self.str_map[key] = [r]
         }
       }
-      for r in 0..<n_left {
-        let kv : Array[@types.Scalar] = []
-        for c in left_keys {
-          kv.push(c.get(r))
-        }
-        let mut matched = false
-        if !key_has_null(kv) {
-          match map.get(canonical_key(kv)) {
-            Some(ids) =>
-              for id in ids {
-                if residual_ok(rstate, left, r, build, id) {
-                  left_ids.push(r)
-                  right_ids.push(id)
-                  matched = true
-                  matched_build[id] = true
-                }
+  }
+  self.primed = true
+}
+
+///|
+/// Match one probe batch, appending its output pairs (and remembering which
+/// build rows matched).
+fn JoinCursor::match_batch(
+  self : JoinCursor,
+  left : @types.DataBatch,
+  left_keys : Array[@types.ColumnVector],
+  rstate : ResidualState?,
+) -> Unit raise @types.SqlError {
+  let n_left = left.row_count()
+  let keep_unmatched = self.step.kind is Left || self.step.kind is Full
+  if self.fast {
+    let (ld, lv) = match int_key_vecs(left_keys) {
+      Some(pair) => pair
+      None => abort("fast-path keys changed shape between batches")
+    }
+    for r in 0..<n_left {
+      let mut hit = false
+      if lv[r] {
+        match self.int_map.get(ld[r]) {
+          Some(ids) =>
+            for id in ids {
+              if residual_ok(rstate, left, r, self.build, id) {
+                self.out_l.push(r)
+                self.out_r.push(id)
+                self.matched[id] = true
+                hit = true
               }
-            None => ()
-          }
+            }
+          None => ()
         }
-        if !matched {
-          if step.kind is Left || step.kind is Full {
-            left_ids.push(r)
-            right_ids.push(-1)
-          }
+      }
+      if !hit && keep_unmatched {
+        self.out_l.push(r)
+        self.out_r.push(-1)
+      }
+    }
+  } else {
+    for r in 0..<n_left {
+      let kv : Array[@types.Scalar] = []
+      for c in left_keys {
+        kv.push(c.get(r))
+      }
+      let mut hit = false
+      if !key_has_null(kv) {
+        match self.str_map.get(canonical_key(kv)) {
+          Some(ids) =>
+            for id in ids {
+              if residual_ok(rstate, left, r, self.build, id) {
+                self.out_l.push(r)
+                self.out_r.push(id)
+                self.matched[id] = true
+                hit = true
+              }
+            }
+          None => ()
         }
+      }
+      if !hit && keep_unmatched {
+        self.out_l.push(r)
+        self.out_r.push(-1)
       }
     }
   }
-  // FULL: unmatched build rows survive with a NULL accumulated side
-  if track {
-    for id in 0..<n_build {
-      if !matched_build[id] {
-        left_ids.push(-1)
-        right_ids.push(id)
-      }
-    }
+}
+
+///|
+/// Gather the next slice of pending pairs into a batch of the combined layout.
+fn JoinCursor::slice(self : JoinCursor) -> @types.DataBatch {
+  let total = self.out_l.length()
+  let mut n = total - self.out_at
+  if n > JOIN_OUT_BATCH {
+    n = JOIN_OUT_BATCH
   }
-  // assemble by per-column gather
+  let l : Array[Int32] = []
+  let r : Array[Int32] = []
+  for i in self.out_at..<(self.out_at + n) {
+    l.push(self.out_l[i])
+    r.push(self.out_r[i])
+  }
+  self.out_at += n
+  let left = match self.left_now {
+    Some(b) => b
+    None => self.empty_left
+  }
   let columns : Array[@types.ColumnVector] = []
-  for c in 0..<left_width {
-    columns.push(gather(left.columns()[c], left_ids))
+  for c in 0..<self.left_width {
+    columns.push(gather(left.columns()[c], l))
   }
-  for c in 0..<right_width {
-    columns.push(gather(build.columns()[c], right_ids))
+  for c in 0..<self.step.right_width {
+    columns.push(gather(self.build.columns()[c], r))
   }
-  @types.DataBatch::new(columns, left_ids.length())
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+fn JoinCursor::next(
+  self : JoinCursor,
+) -> @types.DataBatch? raise @types.SqlError {
+  while true {
+    if self.out_at < self.out_l.length() {
+      let batch = self.slice()
+      if self.out_at >= self.out_l.length() {
+        // that probe batch is spent: start the next one on empty buffers
+        self.out_l = []
+        self.out_r = []
+        self.out_at = 0
+      }
+      return Some(batch)
+    }
+    if self.tail_done {
+      return None
+    }
+    match (self.next_left)() {
+      Some(left) => {
+        if left.row_count() == 0 {
+          continue
+        }
+        let left_keys : Array[@types.ColumnVector] = []
+        for e in self.step.keys_l {
+          left_keys.push(eval_vec(e, left))
+        }
+        if !self.primed {
+          self.prime(left_keys)
+        }
+        let rstate : ResidualState? = match self.step.residual {
+          Some(re) =>
+            Some(
+              residual_state(
+                residual_plan(re, self.left_width, self.step.right_width),
+                left,
+                self.build,
+              ),
+            )
+          None => None
+        }
+        self.left_now = Some(left)
+        self.match_batch(left, left_keys, rstate)
+      }
+      None => {
+        self.tail_done = true
+        if self.step.kind is Full {
+          // FULL: unmatched build rows survive with a NULL accumulated side
+          let n_build = self.build.row_count()
+          for id in 0..<n_build {
+            if !self.matched[id] {
+              self.out_l.push(-1)
+              self.out_r.push(id)
+            }
+          }
+        }
+        if self.out_l.length() == 0 {
+          return None
+        }
+      }
+    }
+  }
+  abort("join cursor: the loop leaves only by returning")
+}
+
+///|
+fn drain_join(
+  cursor : JoinCursor,
+) -> Array[@types.DataBatch] raise @types.SqlError {
+  let out : Array[@types.DataBatch] = []
+  while cursor.next() is Some(batch) {
+    out.push(batch)
+  }
+  out
 }
 
 ///|

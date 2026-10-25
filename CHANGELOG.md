@@ -37,9 +37,10 @@ describe implemented changes; planned work is added here after verification.
   `None`. A single-table query whose remaining work is a pushed build filter, a
   `WHERE`, a projection or an `OFFSET`/`LIMIT` window is pulled from the source,
   so no caller collects it and a windowed query stops reading when its window is
-  full. Aggregation, joins, `ORDER BY`, `SELECT DISTINCT` and set operations are
-  computed first and handed back as one batch, because their answer does not
-  exist until every row is in. `execute` / `execute_with` keep their signatures
+  full. At that release aggregation, joins, `ORDER BY`, `SELECT DISTINCT` and set
+  operations were computed first and handed back as one batch, because their
+  answer does not exist until every row is in; aggregation, a budgeted `ORDER BY`
+  and a two-table join are pulled now (see Changed). `execute` / `execute_with` keep their signatures
   and read the same pull, so the collected and streamed deliveries cannot
   disagree; `run_select_stream` / `run_select_stream_opts` are the engine-level
   names. `close()` stops the pull, a pull that raises ends the stream, and
@@ -97,9 +98,25 @@ describe implemented changes; planned work is added here after verification.
   2,000,000 rows and 16 columns went from 109.7 MB to 35.3 MB of peak RSS
   (verification §32). A budgeted `GROUP BY` still collects its input, because the
   grace path sizes its spill partitions from it, and `SELECT DISTINCT` and
-  window functions still see the whole row set — those are E4c. `ORDER BY` was
-  E4b and is below. Answers, `--analyze` counters and the spill path are
-  unchanged; the TPC-H goldens compare the folded answer to DuckDB's.
+  window functions still see the whole row set. Answers, `--analyze` counters and
+  the spill path are unchanged; the TPC-H goldens compare the folded answer to
+  DuckDB's.
+- A two-table join probes a batch at a time instead of collecting both sides.
+  `JoinCursor` reads the build side once, probes the other side as the scan
+  delivers it, and hands the joined rows back in batches of at most 4096, so a
+  probe row never waits for the probe side to end and a caller can stop early:
+  a 1,000-row build appended to a 2,000,000-row 16-column probe went from
+  270.8 MB to 35.3 MB of peak RSS, and the same join under `--memory 8M` no
+  longer spills at all (1.99 s → 0.41 s) because the stream is smaller than the
+  budget (verification §34). `join_step` runs on the same cursor, so the
+  collected and streamed answers cannot diverge, and duplicate keys on both
+  sides, an empty build or probe side, `LEFT`/`FULL` unmatched rows, residual
+  predicates and `NULL` keys are compared against `execute`. A chain of three or
+  more joins, a `RIGHT` or `SEMI`/`ANTI` join, and anything with `ORDER BY`,
+  `GROUP BY`, `DISTINCT` or a window above the join stay collected and yield one
+  batch; so does a keyless cross join, because the budget path refuses one that
+  overflows it instead of partitioning it. `--analyze` counters are the
+  collected path's and are unchanged.
 - `ORDER BY` under a memory budget sorts its scan and merges as it goes. The
   runs are now built from the scan's batches instead of from a collected input
   array, and the final merge is a cursor rather than one concatenated batch, so

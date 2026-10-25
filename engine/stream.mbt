@@ -227,10 +227,24 @@ fn input_pull(
   plan : PrunePlan,
   entry : @catalog.TableEntry,
 ) -> InputPull raise @types.SqlError {
+  table_input_pull(bq, plan, entry, 0, bq.deferred)
+}
+
+///|
+/// `input_pull` for table `t`, filtering with `deferred` instead of the query's
+/// own WHERE: a join probes its first table with the step's probe filter, and
+/// the deferred predicate runs after the join where its columns exist.
+fn table_input_pull(
+  bq : BoundQuery,
+  plan : PrunePlan,
+  entry : @catalog.TableEntry,
+  t : Int32,
+  deferred : PhysExpr?,
+) -> InputPull raise @types.SqlError {
   {
-    stream: entry.stream(scan_request_of(bq, plan.table_cols[0], 0)),
-    build_filter: scan_filter_of(bq, 0),
-    deferred: bq.deferred,
+    stream: entry.stream(scan_request_of(bq, plan.table_cols[t], t)),
+    build_filter: scan_filter_of(bq, t),
+    deferred,
     scanned: 0L,
   }
 }
@@ -295,6 +309,63 @@ fn sort_pre_types(launch : Launch) -> Array[@types.DataType] {
     out.push(launch.schemas[0].columns[c].dtype)
   }
   out
+}
+
+///|
+/// The two tables a join can be pulled from: the probe side, whose rows arrive
+/// a batch at a time, and the build side, which has to be resident because a
+/// probe row has to find its matches.
+priv struct JoinSource {
+  probe : @catalog.TableEntry
+  build : @catalog.TableEntry
+}
+
+///|
+/// The join shape a stream can be pulled from, if this query is one: one join
+/// step over two lazy tables, with no aggregate, ORDER BY, DISTINCT or window
+/// function above it. INNER, LEFT and FULL are the kinds whose output row is
+/// decidable from the pair (RIGHT is a swapped LEFT and SEMI/ANTI drop a side),
+/// and each of those goes through the same hash join the collected path uses.
+///
+/// A chain of two or more joins is not included: its probe side is the join
+/// below it, which a stream would have to pipe into this one. That pipeline is
+/// not built, so a chain collects as before.
+fn streaming_join_source(
+  bq : BoundQuery,
+  sources : Array[@catalog.TableEntry?],
+) -> JoinSource? {
+  if bq.aggregate ||
+    bq.order_by.length() > 0 ||
+    bq.windows.length() > 0 ||
+    bq.distinct {
+    return None
+  }
+  if bq.steps.length() != 2 {
+    return None
+  }
+  let step = bq.steps[1]
+  match step.kind {
+    Inner | Left | Full => ()
+    _ => return None
+  }
+  if bq.steps[0].table != 0 || step.table != 1 {
+    return None
+  }
+  // a keyless join is a cross join: the collected path refuses one that
+  // overflows a budget instead of partitioning it, and the stream keeps that
+  // answer rather than disagreeing with it
+  if step.keys_l.length() == 0 || step.keys_r.length() == 0 {
+    return None
+  }
+  match (sources[0], sources[1]) {
+    (Some(probe), Some(build)) =>
+      if probe.is_lazy() && build.is_lazy() {
+        Some({ probe, build, })
+      } else {
+        None
+      }
+    _ => None
+  }
 }
 
 ///|
@@ -496,12 +567,20 @@ fn drain_scan(
 /// - A single-table scan is pulled: a filter, the projection and an
 ///   OFFSET/LIMIT window run per batch, so the caller never holds more than one
 ///   batch and a windowed query stops reading when the window is full.
-/// - Every other shape (a join, an aggregate, ORDER BY, DISTINCT, a window
-///   function, a derived table, a set operation) must see all rows first, so it
-///   is executed eagerly here and `next` yields that result as one batch. The
-///   rows are the ones `execute` returns for the same query. An aggregate folds
-///   those rows as they arrive rather than collecting them, so it is the answer
-///   that is one batch, not the input array.
+/// - An aggregate fold is pulled the same way when no budget is set: the group
+///   table is a running hash table, so the answer is one batch but the input
+///   rows never are.
+/// - A spilled ORDER BY is pulled from its run files: the merge hands rows back
+///   in order, and a windowed query stops merging once its window is full.
+/// - A two-table INNER/LEFT/FULL join is pulled: the build side is read once
+///   and stays resident — a probe row has to find its matches — but the probe
+///   side arrives a batch at a time and the joined rows leave in batches, so
+///   neither the probe side nor the output is ever held whole.
+/// - Every other shape (a chain of two or more joins, a RIGHT or SEMI/ANTI
+///   join, a keyless cross join, or anything above a join that needs every row
+///   first: ORDER BY, GROUP BY, DISTINCT, a window function, a derived table, a
+///   set operation) is executed eagerly here, and `next` yields that result as
+///   one batch. The rows are the ones `execute` returns for the same query.
 ///
 /// The lifecycle is short enough to state whole:
 ///
@@ -511,13 +590,14 @@ fn drain_scan(
 ///   first `next`, and leaves `next` returning `None`.
 /// - Failure: a pull that raises ends the stream, so a retry after an error
 ///   reports the end rather than resuming a scan whose state is unknown.
-/// - Cleanup: dropping the stream releases the scan cursor. That was the whole
-///   of it until a spilled sort became streamable: a sort under a budget writes
-///   run files and hands out their merge, so it owns files this stream removes
-///   when the merge ends, when `close` stops it, and when it raises. A consumer
-///   that vanishes without either leaves them to the store's owner — the CLI
-///   deletes its per-query directory at exit, and a library caller's `SpillStore`
-///   is the caller's to sweep. Exhaust the stream or close it and nothing is
+/// - Cleanup: dropping the stream releases the scan cursor. A spilled sort goes
+///   further: a sort under a budget writes run files and hands out their merge,
+///   so it owns files this stream removes when the merge ends, when `close`
+///   stops it, and when it raises. A join owns nothing of its own — its build
+///   side is resident and its probe side belongs to the catalog — so `close`
+///   only stops probing. A consumer that vanishes without either leaves them to
+///   the store's owner — the CLI deletes its per-query directory at exit, and a
+///   library caller's `SpillStore` is the caller's to sweep. Exhaust the stream or close it and nothing is
 ///   left behind. `catalog.BatchStream` gains no `close` method for this:
 ///   exhaustion is its whole protocol, and adding one would break every
 ///   implementation outside this module.
@@ -532,6 +612,7 @@ pub struct ResultStream {
 priv enum StreamPull {
   Scanned(ScanPull)
   Sorted(SortedPull)
+  Joined(JoinedPull)
   Materialized(@types.DataBatch?)
 }
 
@@ -611,6 +692,107 @@ fn ResultStream::sorted(
 }
 
 ///|
+/// A pull over a hash join's output: the build side is resident (it has to be),
+/// the probe side arrives a batch at a time and the joined rows leave in batches
+/// — so the peak is the build table plus one probe batch plus one output batch,
+/// not both sides plus the joined row set.
+///
+/// The stages after the join are the ones `ScanPull` runs per batch: the
+/// deferred WHERE, the projection and the OFFSET/LIMIT window, carried across
+/// batches. A windowed join therefore stops reading when its window fills —
+/// `LIMIT 10` reads until ten rows have matched, not to the end.
+priv struct JoinedPull {
+  cursor : JoinCursor
+  deferred : PhysExpr?
+  out_exprs : Array[PhysExpr]
+  out_types : Array[@types.DataType]
+  mut offset_left : Int64
+  mut limit_left : Int64 // negative means the query has no LIMIT
+}
+
+///|
+fn JoinedPull::next(
+  self : JoinedPull,
+) -> @types.DataBatch? raise @types.SqlError {
+  while self.limit_left != 0 {
+    let joined = match self.cursor.next() {
+      None => break
+      Some(batch) => batch
+    }
+    let rows = filter_batches([joined], self.deferred)
+    if rows.length() == 0 || rows[0].row_count() == 0 {
+      continue
+    }
+    let projected = project(rows[0], self.out_exprs, self.out_types)
+    let n = projected.row_count().to_int64()
+    let mut start = 0L
+    if self.offset_left > 0 {
+      start = if self.offset_left < n { self.offset_left } else { n }
+      self.offset_left -= start
+    }
+    let mut take = n - start
+    if self.limit_left >= 0 && take > self.limit_left {
+      take = self.limit_left
+    }
+    if take <= 0 {
+      continue
+    }
+    if self.limit_left >= 0 {
+      self.limit_left -= take
+    }
+    if start == 0 && take == n {
+      return Some(projected)
+    }
+    return Some(
+      order_limit(projected, [], Some(take.to_int()), Some(start.to_int())),
+    )
+  }
+  None
+}
+
+///|
+/// The stream for a two-table hash join: the build side is read first, then the
+/// probe side is pulled batch by batch, matched against it, and handed over.
+/// Nothing here owns a file, so `close` only stops the probe.
+fn ResultStream::joined(
+  src : JoinSource,
+  launch : Launch,
+) -> ResultStream raise @types.SqlError {
+  let bq = launch.bq
+  let step = bq.steps[1]
+  let build_rows = materialize_scan(
+    src.build,
+    scan_request_of(bq, launch.plan.table_cols[1], 1),
+    scan_filter_of(bq, 1),
+  )
+  let build = concat_batches(
+    build_rows,
+    tail_dtypes(step.out_dtypes, step.right_width),
+  )
+  let probe = table_input_pull(bq, launch.plan, src.probe, 0, step.probe_filter)
+  let offset = match bq.offset {
+    Some(n) => n.to_int64()
+    None => 0L
+  }
+  let limit = match bq.limit {
+    Some(n) => n.to_int64()
+    None => -1L
+  }
+  let next_left : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
+    probe.next()
+  }
+  let pull : StreamPull = Joined({
+    cursor: JoinCursor::open(step, build, next_left),
+    deferred: bq.deferred,
+    out_exprs: bq.out_exprs,
+    out_types: bq.out_types,
+    offset_left: offset,
+    limit_left: limit,
+  })
+  { names: bq.names, types: bq.out_types, pull, done: false, }
+}
+
+///|
 /// The stream for a result that is already computed: one batch, then `None`.
 fn ResultStream::materialized(result : SelectResult) -> ResultStream {
   {
@@ -676,6 +858,14 @@ pub fn ResultStream::next(
         None => {
           self.done = true
           pull.release()
+          None
+        }
+      }
+    Joined(pull) =>
+      match pull.next() {
+        Some(batch) => Some(batch)
+        None => {
+          self.done = true
           None
         }
       }

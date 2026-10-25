@@ -67,12 +67,24 @@ pub fn stream(
 }
 
 ///|
-/// `stream` under explicit options. A shape that needs the memory budget — a
-/// join, a budgeted GROUP BY, an external sort — is materialized before this
-/// returns, because a stream owns no spill files; `execute_with` is the right
-/// call when the caller wants the budget to do the work and the result whole.
-/// (A single-table aggregate that never spills is not one of those: a global
-/// aggregate folds the scan under a budget too and hands back one batch.)
+/// `stream` under explicit options. A budget changes what can be pulled rather
+/// than collected, never the rows:
+///
+/// - Ordered rows are pulled from a spilled sort rather than handed back whole:
+///   a sort over budget writes runs into `opts.spill` and the stream is their
+///   merge, so it removes the run files when the merge ends, when it is closed,
+///   or when it fails. A stream is the one caller that can outlive the call, so
+///   it takes ownership of those files.
+/// - A two-table join is pulled with or without a budget: the build side is
+///   resident, and the probe side arrives a batch at a time.
+/// - A `GROUP BY` under a budget, and any shape a pull cannot express — a chain
+///   of joins, a RIGHT or SEMI/ANTI join, a cross join, or ORDER BY / GROUP BY /
+///   DISTINCT / a window above the join — is executed eagerly before this
+///   returns, and the stream hands back its one batch.
+///
+/// `execute_with` is the right call when the caller wants the budget to do the
+/// work and the result whole. (A global aggregate is neither: it folds the scan
+/// under a budget too, running, and hands back one batch.)
 pub fn stream_with(
   sql : String,
   catalog : @catalog.Catalog,

@@ -107,9 +107,13 @@ pub fn run_select_stream(
 }
 
 ///|
-/// `run_select_stream` under explicit options. A shape that needs the budget
-/// (a join, an aggregate, an external sort) is materialized here, before the
-/// stream is handed out, because a stream owns no spill files.
+/// `run_select_stream` under explicit options. Three shapes are pulled rather
+/// than materialized: a single table narrowed by a filter, projection and
+/// window; a two-table join whose build side is read once and whose probe side
+/// arrives a batch at a time; and a spilled ORDER BY, whose runs this stream
+/// owns. A global aggregate folds the scan as it arrives but still hands back
+/// its one-row answer as one batch. Everything else is computed first and
+/// handed back as one batch.
 pub fn run_select_stream_opts(
   sql : String,
   catalog : @catalog.Catalog,
@@ -119,28 +123,35 @@ pub fn run_select_stream_opts(
   match prepare_select(sel, catalog, opts) {
     Setop(result) => ResultStream::materialized(result)
     Ready(launch) =>
-      // a spilled sort is the one shape that hands out a merge: the runs are
-      // built here, and the stream owns them
-      match streaming_sort_source(launch.bq, launch.sources, opts) {
-        Some(entry) => ResultStream::sorted(entry, launch, opts)
+      // a two-table hash join hands out its output as it probes: the build side
+      // is read here, which it has to be, and the probe side is never collected
+      match streaming_join_source(launch.bq, launch.sources) {
+        Some(src) => ResultStream::joined(src, launch)
         None =>
-          match streaming_source(launch.bq, launch.sources) {
-            Some(entry) =>
-              {
-                names: launch.bq.names,
-                types: launch.bq.out_types,
-                pull: Scanned(
-                  scan_pull(
-                    launch.bq,
-                    launch.plan,
-                    entry,
-                    launch.schemas[0].table,
-                    [],
-                  ),
-                ),
-                done: false,
+          // a spilled sort is the one shape that hands out a merge: the runs
+          // are built here, and the stream owns them
+          match streaming_sort_source(launch.bq, launch.sources, opts) {
+            Some(entry) => ResultStream::sorted(entry, launch, opts)
+            None =>
+              match streaming_source(launch.bq, launch.sources) {
+                Some(entry) =>
+                  {
+                    names: launch.bq.names,
+                    types: launch.bq.out_types,
+                    pull: Scanned(
+                      scan_pull(
+                        launch.bq,
+                        launch.plan,
+                        entry,
+                        launch.schemas[0].table,
+                        [],
+                      ),
+                    ),
+                    done: false,
+                  }
+                None =>
+                  ResultStream::materialized(run_pipeline(launch, opts, []))
               }
-            None => ResultStream::materialized(run_pipeline(launch, opts, []))
           }
       }
   }

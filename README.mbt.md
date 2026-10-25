@@ -170,26 +170,34 @@ fn main raise {
 Read them a batch at a time when the result may not fit: `@moonlake.stream`
 (or `stream_with` for `ExecOptions`) returns an `@engine.ResultStream` whose
 `names()` and `types()` describe the columns and whose `next()` yields one
-`@types.DataBatch` per call until it returns `None`. A single-table scan with
-its WHERE, projection and OFFSET/LIMIT streams; joins, ORDER BY, DISTINCT and
-set operations are computed first and handed back as one batch, because their
-answer does not exist until every row has been seen. An aggregate is the case in
-between: its answer is one batch too, but its input need not be an array — a
-single-table GROUP BY or a global aggregate folds the scan's batches as they
-arrive, so it holds its group state and one batch instead of the rows it read
-(2,000,000 rows over 16 columns: 109.7 MB → 35.3 MB of peak RSS). Both
-deliveries run the same plan, so a pulled row and a collected row are the same
-row. `close()` stops the pull before the end, dropping the stream releases the
-scan cursor, a pull that raises ends the stream rather than leaving it
-resumable. An `ORDER BY` under a budget streams too: it builds its sorted runs
-from the scan and hands out the merge a batch at a time, so a 2,000,000-row
-16-column sort no longer materializes its answer (506.8 MB → 178.8 MB of peak
-RSS for `select * … order by id`). That is the one stream that owns files — the
-runs are removed when the merge ends, when `close` stops it, and when it raises
-— so exhaust it or close it; a stream dropped unfinished leaves them to the
-store's owner (the CLI deletes its per-query directory at exit). Shapes that
-still need the whole input first — a join, a budgeted `GROUP BY`, a window —
-are materialized before the stream is returned.
+`@types.DataBatch` per call until it returns `None`. Four shapes are pulled
+rather than collected — the ones whose input can be consumed as it arrives:
+
+- a single-table scan, where the WHERE, the projection and the OFFSET/LIMIT
+  window run per batch, so a windowed query stops reading once it is full;
+- an aggregate, because the group table is a running hash table: its answer is
+  one batch but its input never is (2,000,000 rows over 16 columns: 109.7 MB →
+  35.3 MB of peak RSS);
+- an `ORDER BY` under a memory budget, which builds its sorted runs from the
+  scan and hands out the merge a batch at a time (506.8 MB → 178.8 MB for
+  `select * … order by id`, and it stops merging once a window is full);
+- a two-table INNER/LEFT/FULL join, whose build side is read once and stays
+  resident while the probe side arrives a batch at a time (a 2,000,000-row probe
+  against a 1,000-row build: 270.8 MB → 35.3 MB, and under `--memory 8M` it
+  stops spilling entirely, 1.99 s → 0.41 s).
+
+Everything else is computed first and handed back as one batch, because its
+answer does not exist until every row has been seen: a chain of joins, a RIGHT
+or SEMI/ANTI join, a cross join, and anything with ORDER BY, GROUP BY, DISTINCT
+or a window above a join — as well as a `GROUP BY` under a budget, which would
+have nothing to spill. Both deliveries run the same plan, so a pulled row and a
+collected row are the same row. `close()` stops the pull before the end, dropping
+the stream releases the scan cursor, and a pull that raises ends the stream
+rather than leaving it resumable. The spilled sort is the one stream that owns
+files — the runs are removed when the merge ends, when `close` stops it, and when
+it raises — so exhaust it or close it; a stream dropped unfinished leaves them to
+the store's owner (the CLI deletes its per-query directory at exit). A join owns
+nothing of its own: closing it only stops probing.
 
 ```moonbit nocheck
 ///|

@@ -2556,3 +2556,129 @@ differential is unchanged.
 checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
 sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
 Python harness unit tests, and `harness/check_release.py` ok at 0.6.0.
+
+## 34. A join probes a batch at a time (2026-10-26)
+
+**The claim.** A two-table join is the operator that cannot avoid holding one
+side — a probe row has to find its matches, so the build side stays resident —
+but it was holding three. `exec_joins` collected the probe side, concatenated
+the build side, built the hash maps, and `concat_batches`d every output chunk
+into one batch, so the probe rows, the build rows and the joined row set were
+all alive at the same time. Only the first of those is forced: the probe side
+can arrive a batch at a time, and the joined rows can leave in batches.
+
+**What was in the way.** `join_step(acc : Array[DataBatch], right : Array[DataBatch], step)`
+took both sides as arrays and returned one `DataBatch`. Splitting it needed
+three things: a cursor that owns the hash maps and pulls probe batches, a way to
+slice one probe batch's matches into output batches when a duplicated key makes
+it overflow, and a decision about which shapes can be probed at all.
+
+**What landed.**
+
+- `engine/exec_join.mbt`: `JoinCursor` is one hash join as a cursor —
+  `{ build, int_map, str_map, matched, next_left, out_l, out_r, … }`.
+  `JoinCursor::open(step, build, next_left)` takes the resident build side and a
+  probe source; `prime` builds the map from the first probe batch and picks the
+  int-key fast path (`int_key_cols`) or the canonical-string one; `match_batch`
+  probes one batch, applies the residual per candidate, marks matched build ids
+  and keeps unmatched probe rows for `Left`/`Full` (right id `-1`); `slice`
+  gathers at most `JOIN_OUT_BATCH` (4096) pending pairs into one output batch,
+  mapping `-1` to NULL; `next` drains pending output, pulls the next probe
+  batch, and at exhaustion appends the `Full` tail of unmatched build ids.
+  `join_step`'s plain branch is now build-concat + cursor over `acc` +
+  `drain_join`, so **the collected path and the streamed path are the same
+  cursor** and cannot disagree; `join_swapped` (RIGHT), `join_semi`
+  (SEMI/ANTI/AntiLoose) and `grace_join` are untouched.
+- `engine/stream.mbt`: `streaming_join_source(bq, sources)` is the shape
+  predicate — two lazy tables, `steps.length() == 2`, `steps[0].table == 0`,
+  `steps[1].table == 1`, kind ∈ `Inner|Left|Full`, both keys non-empty, and no
+  `aggregate`/`order_by`/`windows`/`distinct` above it. `ResultStream::joined`
+  materializes the build side through `materialize_scan` with the step's
+  `build_filter`, then wraps `table_input_pull` (the collector factored out of
+  `input_pull`) in `JoinedPull`, which applies the deferred predicate, the
+  projection and the OFFSET/LIMIT window per output batch — so a `LIMIT` stops
+  probing as soon as its window fills.
+- `engine/engine.mbt`: `run_select_stream_opts` dispatches join → sort → scan →
+  materialized. `run_pipeline` is unchanged, so `execute` and `--analyze` still
+  run the collected path over the same cursor.
+
+**What stays eager, and why.** Each of these is a test, not an omission:
+
+- a chain of three or more joins — the probe side is itself a join, which would
+  have to be pulled first;
+- `RIGHT` — `join_swapped` swaps the sides, so the probe table is the one that
+  must be resident;
+- `SEMI`/`ANTI` — decorrelation turns them into a synthetic semi/anti table
+  joined from the probe side, so the surviving shape is a *single-table scan*
+  with a deferred filter: it streams as a scan, which is why its batch count is
+  not one;
+- a keyless cross join — the memory budget refuses one that overflows instead of
+  partitioning it, and a stream that silently answered what `--analyze` refuses
+  would be a worse inconsistency than the collection it saves;
+- anything above the join that needs every row first: `ORDER BY`, `GROUP BY`,
+  `DISTINCT`, a window function, a derived table, a set operation.
+
+The grace/budget path is not fed incrementally: a two-table join of this shape
+never reaches it (it is smaller than the budget in the streamed form), while a
+chain of three or more still does and still spills.
+
+**The number.** 2,000,000 rows and 16 columns on the probe side, release
+builds, one process per measurement, best of three, peak RSS from `os.wait4`
+(raw, floor ~22 MB), same session, pre-E4c binary versus this one:
+
+| query | before | after |
+|---|---|---|
+| `select * from t join d on t.id = d.id` (1,000-row build, no budget) | 582 ms / 270.8 MB | 428 ms / **35.3 MB** |
+| the same under `--memory 8M --spill-dir` | 1986 ms / 270.2 MB | 413 ms / **35.5 MB** |
+| `select t.id, t.i32, t.i64, d2.v from t join d2 on t.id = d2.id` (2,000,000-row build and output) | 1780 ms / 404.1 MB | 1660 ms / **272.4 MB** |
+
+The first two rows are the claim: the probe side and the answer no longer exist
+as arrays, and under a budget the grace path is not entered at all — 1986 ms
+became 413 ms because nothing spills. The third row is the honest ceiling: with a
+2,000,000-row build side the build is resident by necessity, and the remaining
+272 MB is that side plus how it is read (CSV batches, then one concatenated
+batch), not the probe side or the answer.
+
+**The counters do not move.** `--analyze` runs the collected path, so for the
+fixture it still prints `scan l: 5`, `scan r: 6`, `joins: 7`, `result: 7` on both
+deliveries, and `harness/check_all.sh`'s grace-join equivalence checks are
+unchanged. A streamed join reports no counters of its own: it has no spill files
+to account for.
+
+**What the tests pin.** `engine/join_pull_wbtest.mbt` (14 tests) uses a lazy
+two-column fixture whose `cells` array records `[opens, pulls, rows, projection
+width]`, so each test can see what the engine asked the sources for:
+
+- twelve join shapes — inner, left, full, right, semi, anti, residual `and`
+  predicates on each side, `WHERE` on the build and on the probe side —
+  return the same rows from `stream` and from `execute`, compared as multisets;
+- a duplicated probe key fills the size cap exactly: 5,000 probe rows against a
+  two-row build come back as 4,096 + 4,096 + 1,808 rows and 10,000 joined rows;
+- duplicate keys on both sides cross-multiply (2 × 3 = 6 rows);
+- an empty build side leaves an inner join with nothing, `LEFT` keeps every
+  probe row with a NULL right side, and `FULL` degenerates to the `LEFT` answer;
+- an empty probe side emits nothing until the `FULL` tail, which arrives once;
+- `NULL` keys match nothing: `INNER` 1 row, `LEFT` 2, `FULL` 3;
+- a residual decides pairs and `LEFT` keeps a row with no passing pair (2 rows,
+  3 rows);
+- closing after one output batch stops the probe side — `pulls == 1` of eight
+  available probe batches;
+- `LIMIT 3` over 1,000 probe rows pulls fewer than all 100 batches, and
+  `LIMIT 2 OFFSET 998` is carried across batch boundaries;
+- the probe-side filter is applied before the join and the deferred predicate
+  after; the same query with an `ORDER BY desc` above it goes back to one batch;
+- the eagerly executed shapes above each return exactly one batch and the
+  collected answer's rows, and a semi/anti join agrees while streaming as a scan;
+- each table is opened once: two opens total, and the build side is read whole
+  before the probe starts;
+- the collected path is unchanged: one batch, the same row count, and the same
+  `--analyze` counters as before the stream existed.
+
+**Gates.** `moon test --target native` 340/340, `moon test` (wasm-gc) 327/327,
+`moon test --target js` 327/327, `moon check --deny-warn` clean, `moon fmt`
+clean, `.mbti` unchanged (everything new is private to the package),
+`harness/check_all.sh` 33/33 golden comparisons plus the equivalence and reader
+checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
+sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
+Python harness unit tests, and `harness/check_release.py` ok at 0.6.0 (206 files
+in the archive).

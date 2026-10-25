@@ -1830,3 +1830,78 @@ early) and still decodes one column; and a `LIMIT 3` cursor over two runs keeps
 `build_runs`/`MergeCursor` too), the external-sort equivalence checks in
 `harness/check_all.sh`, spill acceptance, CLI checks, the correlation
 differential and 66 Python harness tests green.
+
+## A join probes a batch at a time (2026-10-26): E4c
+
+### Goal
+
+E4c is the "Join input and output use the batch contract" task in
+`docs/ROADMAP.md`. The point is not to make joins cheap — a hash join has to
+keep one side resident — but to stop paying for the other two copies: the probe
+side collected, and the joined row set concatenated into one batch before the
+caller sees a row.
+
+### What landed
+
+`JoinCursor` in `engine/exec_join.mbt` is now one hash join as a cursor: a
+resident build side with its id maps, a probe source it pulls from, and a
+pending-pair buffer it slices into output batches of at most 4,096 rows. It
+holds the int-key fast path and the canonical-string one, marks matched build
+ids so a `FULL` tail can be appended once at exhaustion, and keeps unmatched
+probe rows for `LEFT`/`FULL` with a `-1` right id that the gather renders as
+NULL. `join_step` — the collected path — was moved onto the same cursor, which
+is the reason the two deliveries cannot disagree: there is only one engine.
+
+`streaming_join_source` in `engine/stream.mbt` is the shape predicate, and
+`ResultStream::joined` / `JoinedPull` are the stream: the build side is
+materialized through the same `materialize_scan` the collected path uses, the
+probe side is the existing `table_input_pull` (factored out of `input_pull`),
+and the deferred predicate, the projection and the OFFSET/LIMIT window are
+applied per output batch — so `LIMIT` stops probing.
+
+What stays eager is written down rather than left to be discovered: a chain of
+three or more joins, `RIGHT`, `SEMI`/`ANTI` (decorrelated into a scan, so they
+stream as a scan), a keyless cross join (the budget path refuses one over
+budget; the stream keeps that answer), and anything above the join that needs
+every row first. The grace path is not fed incrementally: this shape never
+reaches it, and a chain still does.
+
+### The number
+
+2,000,000 rows, 16 columns on the probe side, release builds, one process per
+measurement, `os.wait4` peak RSS (raw, floor ~22 MB), pre-E4c binary versus this
+one:
+
+| query | before | after |
+|---|---|---|
+| `select * from t join d on t.id = d.id`, 1,000-row build | 270.8 MB | 35.3 MB |
+| the same under `--memory 8M` | 1986 ms / 270.2 MB | 413 ms / 35.5 MB |
+| `t` joined to a 2,000,000-row build, 2,000,000-row output | 404.1 MB | 272.4 MB |
+
+The second row is the interesting one: under a budget the join no longer spills
+at all, because the stream is smaller than the budget, so the grace machinery is
+never entered. The third row is the ceiling this task does not move — a large
+build side is resident by design, and what is left is that side plus how it is
+read.
+
+### What the tests pin
+
+`engine/join_pull_wbtest.mbt` (14 tests) uses a lazy fixture that records
+`[opens, pulls, rows, projection width]` so each test can see what the engine
+asked for: twelve shapes agree with `execute` as multisets; a duplicated probe
+key fills the 4,096 cap with no empty or oversized batch; duplicate keys on both
+sides cross-multiply; empty build and empty probe sides, `NULL` keys and
+residual predicates behave as the collected answer does; closing after one batch
+stops probing (`pulls == 1` of eight); `LIMIT` cuts probing short and carries
+`OFFSET` across batches; the probe-side filter runs before the join and the
+deferred one after; every eagerly executed shape returns one batch and the same
+rows; each table is opened once and the build side is read whole; and the
+collected path still reports the same counters.
+
+### Evidence
+
+`docs/verification.md` §34. Gates: 340/340 native, 327/327 wasm-gc, 327/327 js,
+`moon check --deny-warn` and `moon fmt` clean, `.mbti` unchanged, 33/33 goldens,
+spill acceptance, all five CLI sections, the correlation differential at 400
+random cases, 66 Python harness tests, and the release check at 0.6.0 with 206
+files in the archive.
