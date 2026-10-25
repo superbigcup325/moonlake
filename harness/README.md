@@ -82,7 +82,14 @@ DuckDB cell for cell. Out of scope, the reader must refuse *by name*. Each
 file's class is recorded in `parquet_corpus_expected.json`; a class change,
 Python/API error or recorded file missing from the verified results fails the
 gate, including a run where DuckDB skips everything. New files are reported
-for review. `test_parquet_corpus.py` checks the gate's success and failure paths
+for review. By default the gate drives `moon run cmd/main`, which is the wasm-gc build, and
+`eprintln` has no stderr channel on that target (`moonbitlang/core` documents the
+fallback to stdout), so a refusal arrives on stdout there. The gate reads either
+stream and records which one, which keeps the default invocation as strict as
+CI's: CI pins `MOONLAKE_BIN` to the native binary, where every diagnostic is on
+stderr.
+
+`test_parquet_corpus.py` checks the gate's success and failure paths
 on every PR. The full corpus runs nightly; third-party data is fetched rather
 than committed.
 

@@ -32,6 +32,17 @@ class CorpusGateTests(unittest.TestCase):
             path.write_bytes(b"not a parquet file")
             self.assertTrue(corpus.duckdb_count(path).startswith("duckdb: "))
 
+    def test_refusal_on_stdout_is_still_a_refusal(self):
+        # wasm-gc has no stderr (eprintln falls back to stdout), so the default
+        # `moon run` runner must not read every refusal as a failure
+        result = corpus.refusal_or_failure(
+            [], 'sql error (scan): parquet: column "c": the dictionary page holds no entries'
+        )
+        self.assertEqual(result["class"], "refused")
+        self.assertIn("on stdout", result["why"])
+        # a run with no message at all is still a failure
+        self.assertEqual(corpus.refusal_or_failure([])["class"], "failing")
+
     def test_python_api_error_is_not_a_refusal(self):
         con = Mock()
         con.execute.side_effect = AttributeError("removed DuckDB API")

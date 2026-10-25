@@ -181,8 +181,15 @@ def moonlake(
     return proc.returncode, proc.stdout.strip(), errors
 
 
-def refusal_or_failure(errors: list[str]) -> dict:
+def refusal_or_failure(errors: list[str], out: str = "") -> dict:
     message = errors[0] if errors else "no sql error on stderr"
+    if not errors and "sql error" in out:
+        # `eprintln` has no stderr channel on wasm-gc and falls back to stdout
+        # (moonbitlang/core documents it), so the default `moon run cmd/main`
+        # invocation still shows the refusal, on the other stream. Native and
+        # js write it to stderr; MOONLAKE_BIN=...a native build... is how CI runs.
+        line = next(l for l in out.splitlines() if "sql error" in l)
+        message = f"{line} (on stdout: wasm-gc has no stderr)"
     if any(r in message for r in REFUSALS):
         return {"class": "refused", "why": message.split("parquet: ", 1)[-1][:90]}
     return {"class": "failing", "why": f"unexpected refusal: {message[:110]}"}
@@ -217,7 +224,7 @@ def classify(runner: list[str], path: pathlib.Path, want_rows: int) -> dict:
     # 1. the footer agrees: row count, schema and annotations readable
     code, out, errors = moonlake(runner, f"select count(*) from {tbl}", path)
     if code != 0:
-        return refusal_or_failure(errors)
+        return refusal_or_failure(errors, out)
     got = out.splitlines()[-1] if out else ""
     if not got.isdigit():
         return {"class": "failing", "why": f"count(*) printed {got!r}"}
@@ -234,9 +241,11 @@ def classify(runner: list[str], path: pathlib.Path, want_rows: int) -> dict:
             "why": f"duckdb cannot describe: {str(e).splitlines()[0][:80]}",
         }
     for column, _ in columns:
-        code, _, errors = moonlake(runner, f"select count({quote(column)}) from {tbl}", path)
+        code, out, errors = moonlake(
+            runner, f"select count({quote(column)}) from {tbl}", path
+        )
         if code != 0:
-            return refusal_or_failure(errors)
+            return refusal_or_failure(errors, out)
 
     # 3. a value sample matches, cell for cell, on up to three columns whose
     #    values cannot be confused with the pipe separator or the null spelling
