@@ -1816,3 +1816,117 @@ all eight, because a count that fell there would be a wrong answer. Nothing
 public changed: `execute`, `execute_with` and `run_select` keep their signatures,
 and the eager path remains the implementation for every shape that cannot stop
 early, so the remaining operators can move to this contract one at a time.
+
+## 26. Pre-release user pass (2026-10-25): what an ordinary session found
+
+0.6.0 was checked the way a reader meets the project rather than the way the
+suite meets it: install the CLI, follow `README` and `docs/DEMO.md`, and use
+every documented feature until something looks wrong. Eleven defects came out
+of that, all of them in the CLI or in a corner of the expression layer rather
+than in the columnar core, and all eleven are fixed. What each one was, and the
+evidence that it is now the answer SQL users expect:
+
+The three that changed a *result* rather than a message:
+
+- **`ORDER BY` on a qualified column sorted by an output alias.** `SELECT k AS
+  z, flag AS k FROM a ORDER BY a.k DESC` bound `a.k` to the output column named
+  `k` (the `flag` alias) instead of to the input column. Read as a user this
+  surfaced three ways — an `ORDER BY` that ignored its direction, `NULLS LAST`
+  not taking effect, and a `LIMIT` over a `LEFT JOIN` returning the wrong rows —
+  because all three queries sorted by the wrong key. It is one defect: a
+  qualified reference is an input-column reference and never an alias. Pinned by
+  `engine/e2e_test.mbt` (two tests, direction and NULLS ordering) and by the
+  99-query differential below.
+- **`round()` and `cast(<double> AS int)` truncated toward zero.** `round` is now
+  half away from zero on both sides, and a float → integer cast rounds the same
+  way, which is PostgreSQL's and DuckDB's convention (C, SQLite and MySQL
+  truncate — the README now says which one this is, since a C-minded reader
+  would assume the other). The cast also refuses a value that does not fit
+  instead of saturating. Checked against DuckDB on the same rows:
+  `round(x)` over `[-2.5, -1.23, 2.5, 1.23]` gives `[-3, -1, 3, 1]` in both,
+  `round(x, 3)` over `[-1.2345, 1.2345]` gives `[-1.235, 1.235]` in both, and
+  `cast(x AS int)` over `[2.9, -2.5, 1e20]` gives `[3, -3, <out of range>]`
+  with the last one an error in both.
+- **A CSV column of `True`/`FALSE` was inferred as STRING.** Only lowercase
+  spellings were compared, so a pandas or Excel export became text and `WHERE
+  flag` failed with `build filter must evaluate to bool, got string`. The
+  comparison is case-insensitive now (both the string and the bytes path), and
+  `sources/csv/scan_test.mbt` pins `True`, `TRUE`, `False`, `FALSE`.
+
+The four that were a wrong or unhelpful *message*:
+
+- A correlated subquery whose correlation is not an equality now says so:
+  `this correlated subquery cannot be decorrelated: only inner.col = outer.col
+  equalities over plain tables are paired, and the subquery may not carry
+  DISTINCT, LIMIT, a set operation or a GROUP BY with HAVING — rewrite a
+  non-equality correlation as a join`. It used to read `unknown table or alias
+  "j1" in FROM`, which points at the wrong thing entirely.
+- Two shapes that were refused are now answered, because the decorrelator can
+  answer them exactly: a correlated `EXISTS` whose subquery carries a `GROUP BY`
+  (existence is independent of the grouping, so it is dropped) and one whose
+  `HAVING` runs over the correlation keys themselves (the grouping the
+  decorrelator builds anyway). On a three-row fixture where `2` and `3` appear
+  twice and three times, `exists (... group by k)` returns `[2,2,3,3,3]` here and
+  in DuckDB, `... group by k having count(*) > 1` returns `[3,3,3]` in both, and
+  the `NOT EXISTS` form returns `[1,2,2,4]` in both. A `HAVING` over some other
+  grouping is still refused, with the reason.
+- `moonlake write` refused an `--out` that is one of its own inputs. It used to
+  replace the source: `write --csv t.csv --out t.csv` exited 0 and left a
+  Parquet file where the CSV had been. The refusal is lexical (so `./t.csv` and
+  `sub/../t.csv` are caught) and covers `--parquet` inputs; `harness/check_cli.sh`
+  pins that the source survives.
+- A Parquet write failure is a `sql error (execute):`, not `sql error (scan):`.
+  A `cannot create <out>.moonlake-tmp-...` was labelled as a reading error;
+  reading failures keep their `scan` label, writing ones moved to the stage they
+  belong to.
+
+The four that were a refusal where a working answer was expected:
+
+- `concat` was binary-only, so the variadic form every other engine accepts
+  (`concat(a, '-', b)`, `concat(1, 2)`) raised `concat() takes exactly two
+  arguments`. It is variadic now, casts its arguments, and skips NULL ones as
+  DuckDB does (`concat('a', NULL, 'b')` is `'ab'`), while `||` keeps its own
+  semantics under its own lowering — `'a' || NULL` is still NULL, which is what
+  the standard says and what a second, distinct function name protects.
+- An untyped `NULL` where a call demands a type is accepted: `length(NULL)`,
+  `upper(NULL)`, `abs(NULL)`, `substring(s, NULL)` are NULL, and `NULL IS NULL`
+  is TRUE (it used to raise the v1 "untyped NULL is only supported as a
+  comparison or arithmetic operand" refusal). A non-NULL argument of the wrong
+  type still errors.
+- `moonlake exec` with no input files ran the query instead of printing usage, so
+  `moonlake exec "SELECT 1 + 1"` works: the empty catalog needed no dummy CSV,
+  and the usage line shows the file group as optional. `--json` and `--explain`
+  work there too (`[{"two":2}]`, `scan __one`).
+- `--out` on top of an input is refused (above), and the one leftover that was
+  not fixable without a directory-listing FFI is documented rather than swept: a
+  write killed outright can leave `<out>.moonlake-tmp-<pid>-<n>` beside the
+  target. Because publication is a `rename`, that is a partial temp file and
+  never a half-written `--out`, and the names do not end in `.csv`/`.parquet`,
+  so a glob scan never picks one up.
+
+Regression cover: `engine/e2e_test.mbt` gained tests for the qualified
+`ORDER BY` (direction and NULLS ordering), the correlation refusal, the grouped
+`EXISTS` (three answers plus the refusal), `round`/`cast`, `concat`, the untyped
+NULL and `NULL IS NULL`; `sources/csv/scan_test.mbt` pins the four bool
+spellings; `types/round_half_away` is pinned from the `round`/`cast` test rather
+than from `types`; and `harness/check_cli.sh` pins the three CLI edges
+(expression-only `exec`, an unknown command's exit code, `write` refusing an
+`--out` that is its input) in CI. The whole suite is 276 tests on wasm-gc and 289
+on native, `moon check --deny-warn` is clean.
+
+The 99-query DuckDB differential that produced these findings agrees on 83 or 84
+cases depending on the run: `window-avg` orders a partition by `y` and two rows
+share that value, so whether its output lines up is a coin flip — a query that
+defines no order cannot disagree on one. In an 83 run the sixteen that disagree
+are these, and none of them is a wrong answer:
+
+| group | cases | why |
+| --- | --- | --- |
+| same rows, order differs | 7 | no `ORDER BY` (`distinct`, the three set operations) or an `ORDER BY` full of ties (`order by k` where `k` is NULL, `order by g` where a partition's rows share the value) — an unordered result compared in order |
+| DATE rendered differently | 5 | DuckDB hands Python a `datetime`, moonlake's `--json` a `YYYY-MM-DD` string; the dates are equal |
+| non-finite doubles | 1 | `7.0/0` is `"Infinity"` in JSON because JSON has no such literal; DuckDB's Python value prints `inf` |
+| `x % 0` | 1 | moonlake is NULL (fmod), DuckDB 2.0 raises by default — documented as deliberate |
+| non-equality correlation | 2 | refused with the message above, where DuckDB answers — the choice this pass made |
+
+The date-arithmetic, division and `%` groups were already recorded as deliberate
+divergences before this pass (sections 5 and 15); the pass added no new ones.

@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `moonlake exec` runs an expression-only query with no input files. It used
+  to print the usage text and exit 1 when no `--csv`/`--parquet` was given, so
+  checking a formula (`moonlake exec "SELECT 1 + 1"`) needed a dummy file; the
+  empty catalog is now allowed and the usage line shows the file group as
+  optional. A query that names a table still fails with `unknown table`.
+- `harness/check_cli.sh`: CLI-level edges that live in argument handling rather
+  than in the engine (no input files, an unknown command's exit code, `write`
+  refusing `--out` on top of its input), wired into the `tpch` CI job next to
+  the native build.
+- `@types.round_half_away`, the rounding convention `round()` and the
+  float → integer casts use.
+
+### Changed
+
+- `concat(a, b, ...)` is variadic, casts its arguments, and skips NULL ones:
+  `concat(1, 2)` is `'12'` and `concat('a', NULL, 'b')` is `'ab'`, as in
+  DuckDB. `||` keeps its own semantics (two string operands, NULL propagates)
+  under its own lowering, so `'a' || NULL` is still NULL.
+- `round()` rounds half away from zero on both sides. It was MoonBit's
+  `Double::round`, which rounds half toward +infinity: `round(-2.5)` gave -2
+  while `round(2.5)` gave 3, and `round(-1.2345, 2)` gave -1.23 against 1.24 for
+  the positive value. It now matches DuckDB and PostgreSQL on both sides.
+- `cast(<double> AS int)` / `AS int64` round rather than truncate, so
+  `cast(2.5 AS int)` is 3 and `cast(-2.5 AS int)` is -3 (DuckDB and PostgreSQL;
+  C, SQLite and MySQL truncate). A value that does not fit the target type now
+  raises `out of range` instead of saturating, and NaN/infinity are refused the
+  same way. The README states the convention next to `round`.
+- A correlated `EXISTS` whose subquery carries a `GROUP BY` is decorrelated
+  rather than refused. Existence does not depend on the grouping, so it is
+  dropped; a `HAVING` is kept when the user grouped by exactly the correlation
+  keys (the grouping the decorrelator builds anyway) and refused with that
+  reason otherwise, since regrouping would change what the HAVING means.
+  `exists (select 1 from orders where orders.custkey = c.id group by
+  orders.custkey having count(*) > 2)` answers now, and matches DuckDB on the
+  same fixture; `group by orders.status having ...` is refused.
+- An untyped `NULL` literal is accepted wherever a call or `IS [NOT] NULL`
+  demands a type: `length(NULL)`, `upper(NULL)`, `abs(NULL)`, `substring(x,
+  NULL)` and `NULL IS NULL` are NULL/TRUE now instead of the v1 "untyped NULL
+  is only supported as a comparison or arithmetic operand" refusal. A
+  non-NULL argument of the wrong type still errors.
+- Parquet write failures report `sql error (execute):`, not `sql error
+  (scan):` — a `cannot create <out>.moonlake-tmp-...` pointed at the reading
+  stage. Scan errors on the input keep their `scan` label.
+
+### Fixed
+
+- `ORDER BY` on a qualified column no longer binds to a same-named *output*
+  alias: `SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC` sorted by the
+  alias. This also produced the reported "outer join ORDER BY / NULLS LAST
+  ignored" and "LIMIT over a left join returns the wrong rows" symptoms, which
+  were the same misbinding. A bare (unqualified) name still resolves to the
+  last same-named output column, as DuckDB does.
+- A CSV `True`/`FALSE` (any letter case) is inferred as BOOL. Only lowercase
+  `true`/`false` were recognised, so a pandas export turned into a string
+  column and `WHERE flag` failed with `build filter must evaluate to bool, got
+  string`.
+- `moonlake write` refuses an `--out` that is one of its inputs. It used to
+  replace the source file: `write --csv t.csv --out t.csv` exited 0 and left a
+  Parquet file at the CSV's path. The check is lexical (`./t.csv`, `sub/../t.csv`
+  and a glob match all count) and covers `--parquet` inputs.
+- A correlated subquery whose correlation is not an equality is refused with a
+  message that says what is supported. `WHERE EXISTS (SELECT 1 FROM u WHERE u.v
+  < t.a)` used to fail with `unknown table or alias "t" in FROM`; it now says
+  the correlation must be `inner.col = outer.col` and points at a join, and the
+  same applies to correlated scalar subqueries in the select list. A correlated
+  scalar subquery that selects no aggregate now reports that reason rather than
+  the generic one.
+
 ## [0.6.0] - 2026-10-24
 
 ### Added

@@ -1368,3 +1368,75 @@ because each of them genuinely needs every row first — the honest count in the
 whitebox test is the one that did not move. Everything public kept its
 signature, and the eager path is still the implementation for the rest, so the
 next operator can move over without a rewrite.
+
+## An ordinary session (2026-10-25): eleven things a reader hits before the
+## core
+
+Every check in this repository drives the engine from the inside: the suite
+binds expressions, the harness compares result sets, and the differential runs
+SQL both sides already agree how to write. That is the right way to test a
+columnar core and the wrong way to find out what a person meets in the first ten
+minutes. So this pass was the other one — install the CLI, follow the README and
+`docs/DEMO.md`, use each documented feature the way it is described, and write
+down whatever looks wrong. Eleven defects came out. None of them was in the
+vectorised operators or the codecs; every one was an argument-handling edge, a
+message, or an expression-layer corner, which is where a user *is* during that
+first ten minutes and where an internal suite has no reason to look.
+
+The one that mattered: `ORDER BY` on a qualified column sorted by an output
+alias. `SELECT k AS z, flag AS k FROM a ORDER BY a.k DESC` bound `a.k` to the
+output column named `k` — the `flag` alias — because the ORDER BY binder looked
+the name up among the select labels before it looked at the input schema. A user
+does not report that as one bug. They report three: "ORDER BY desc ignored",
+"NULLS LAST has no effect", and "LIMIT over a LEFT JOIN returns the wrong rows",
+because those were the three queries they were writing when the sort key was
+silently the wrong one. It is one defect with three faces, and the fix is one
+rule: a qualified reference is an input-column reference, never an alias. A bare
+name still resolves to the last same-named output column, which is what DuckDB
+does and what `select k as a, k as b ... order by b` depends on.
+
+`round` truncated toward zero for negative halves because it was MoonBit's
+`Double::round`, which rounds half toward +infinity. The interesting part is not
+the fix, it is that the fix is a *choice*: `cast(2.5 AS int)` is 3 in PostgreSQL
+and DuckDB and 2 in C, SQLite and MySQL. This engine reads like DuckDB in its
+division (`/` always double, `x/0` infinity) and its CSV inference, so it is
+DuckDB here too, and the README says so next to `round` — a C-minded reader
+would otherwise assume the other convention and never see it in a test. The
+same cast now refuses a value that does not fit instead of saturating, because
+`cast(1e20 AS int)` quietly returning INT32_MAX is a wrong number.
+
+Two refusals turned into answers, and one of them is worth describing. The
+decorrelator pairs `inner.col = outer.col` equalities and says nothing about
+what it could not pair, so a non-equality correlation surfaced as `unknown table
+or alias "j1" in FROM` — a message that sends the reader to look for a missing
+table. It now names the supported shape and what to write instead. That message
+is only honest if the list is complete, and checking it found that a correlated
+`EXISTS` with a `GROUP BY` was refused for no reason at all: existence does not
+depend on the grouping, so the grouping is dropped, and a `HAVING` is kept when
+it runs over the correlation keys (which is the grouping the decorrelator builds
+anyway) and refused with that reason when it does not. Checked against DuckDB on
+a fixture where the keys repeat: `[2,2,3,3,3]`, `[3,3,3]`, `[1,2,2,4]` — equal
+results. So the better message also bought two shapes their answers.
+
+The rest are small and were all reported to us rather than found here: `concat`
+was binary-only in a world where it is variadic (and `||` is the two-argument
+one that propagates NULL, which is why they now lower to different names);
+`TRUE` in a pandas export became a string column and `WHERE flag` failed;
+`NULL IS NULL` and `length(NULL)` raised the v1 "untyped NULL is only supported
+as a comparison or arithmetic operand" refusal; `moonlake exec "SELECT 1 + 1"`
+printed the usage text because it insisted on an input file; `write --out t.csv`
+happily replaced the CSV it had just read; a write failure was labelled
+`sql error (scan):`; and a Parquet write killed with `kill -9` leaves a
+`<out>.moonlake-tmp-<pid>-<n>` file behind. That last one stays: sweeping the
+directory needs a `readdir` FFI the native stub does not have, the leftover is a
+partial temp file rather than a half-written output (publication is a `rename`),
+and its name does not match a `*.csv`/`*.parquet` glob, so a scan cannot pick it
+up. Documented in the README's write paragraph instead of half-fixed.
+
+Verification for all of it is in `docs/verification.md` §26: the 99-query DuckDB
+differential that produced these findings now agrees on 83–84 cases, and each of
+the sixteen that disagree has a named cause (unordered comparisons, DATE rendered
+as a string in JSON, a deliberate `x % 0`, and the two correlations refused on
+purpose). The CLI edges moved into `harness/check_cli.sh` and the `tpch` CI job,
+because they live in argument handling rather than in the engine: exec with no
+input, an unknown command's exit code, and `write` refusing its own input.
