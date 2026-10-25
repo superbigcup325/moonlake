@@ -18,7 +18,7 @@ fn write_usage() -> String {
 ///|
 fn exec_usage() -> String {
   (
-    #|usage: moonlake exec (--csv <file> | --parquet <file> | --date-col <c>)+ <sql | --file <q.sql>>
+    #|usage: moonlake exec [(--csv <file> | --parquet <file> | --date-col <c>)+] <sql | --file <q.sql>>
     #|
     #|CSV: first row is the header, types inferred. Parquet: DATE columns
     #|are declared with --date-col (epoch-day int32). File stems become
@@ -26,11 +26,14 @@ fn exec_usage() -> String {
     #|argument may carry one `*`: the matches scan into one table
     #|named by the pattern. The SQL is
     #|one quoted argument, or a file with --file (handy to skip shell
-    #|quoting; a trailing semicolon is fine).
+    #|quoting; a trailing semicolon is fine). With no --csv/--parquet
+    #|the query runs against an empty catalog, so an expression check
+    #|needs no dummy file.
     #|Examples:
     #|  moonlake exec --csv lineitem.csv \
     #|    "SELECT sum(x) AS s FROM lineitem WHERE x > 1"
     #|  moonlake exec --csv lineitem.csv --file q6.sql
+    #|  moonlake exec "SELECT 1 + 1 AS two"
   )
 }
 

@@ -38,6 +38,37 @@ fn build_groups(
 }
 
 ///|
+/// Lexical path identity, for refusing a `--out` that is one of the inputs:
+/// "./t.csv", "t.csv" and "d/../t.csv" name the same file. This is not a
+/// filesystem identity check (symlinks and hard links are not followed); it
+/// covers the slip it exists for.
+fn same_path(a : String, b : String) -> Bool {
+  normalize_path(a) == normalize_path(b)
+}
+
+///|
+fn normalize_path(path : String) -> String {
+  let parts : Array[String] = []
+  for view in path.split("/") {
+    let seg = view.to_owned()
+    if seg == "" || seg == "." {
+      continue
+    }
+    if seg == ".." && parts.length() > 0 && parts[parts.length() - 1] != ".." {
+      let _ = parts.pop()
+      continue
+    }
+    parts.push(seg)
+  }
+  let joined = parts.join("/")
+  if path.has_prefix("/") {
+    "/" + joined
+  } else {
+    joined
+  }
+}
+
+///|
 /// Register every input as a table. A misspelled `--date-col` would otherwise
 /// be a silent no-op and only surface later as a confusing int32-vs-date type
 /// mismatch, so it is checked against the registered schemas.
@@ -209,7 +240,20 @@ fn write_command(args : Array[String]) -> Unit raise {
   if paths.length() == 0 {
     raise cli_fail(write_usage())
   }
-  let cat = register_inputs(build_groups(paths), date_cols)
+  // the writer streams into a temporary name and renames it over the target,
+  // so an --out that is also an input would replace the source file with the
+  // converted one: `write --csv t.csv --out t.csv` is always a slip
+  let groups = build_groups(paths)
+  for (_, _, files) in groups {
+    for f in files {
+      if same_path(f, out) {
+        raise cli_fail(
+          "--out \{out} is also the input \{f}; write somewhere else (the output would replace the source file)",
+        )
+      }
+    }
+  }
+  let cat = register_inputs(groups, date_cols)
   let entry = match table {
     Some(name) =>
       match cat.lookup(name) {
@@ -290,7 +334,9 @@ fn exec_command(args : Array[String]) -> Unit raise {
       reading = false
     }
   }
-  if paths.length() == 0 || (i >= n && sql_file is None) {
+  // no input files is fine: `exec "SELECT 1 + 1"` runs against an empty
+  // catalog, which is what a quick expression check needs
+  if i >= n && sql_file is None {
     raise cli_fail(exec_usage())
   }
   let groups = build_groups(paths)

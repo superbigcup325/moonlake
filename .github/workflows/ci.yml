@@ -119,6 +119,8 @@ jobs:
           python3 -c 'import sys, duckdb, pyarrow; print(sys.version); print(f"DuckDB {duckdb.__version__}, PyArrow {pyarrow.__version__}")'
       - name: Build the native CLI
         run: moon build cmd/main --target native
+      - name: CLI edges (argument handling, no data needed)
+        run: bash harness/check_cli.sh
       - name: Generate TPC-H data and golden answers
         run: |
           python3 harness/gen_tpch.py

@@ -27,12 +27,14 @@
 
 ///|
 fn write_error(msg : String) -> @types.SqlError {
-  @types.SqlError::Scan("parquet write: " + msg)
+  // writing is an execution step, not a scan: a `sql error (scan):` prefix on
+  // "cannot create /tmp/x.parquet.moonlake-tmp-..." pointed at the wrong stage
+  @types.SqlError::Execute("parquet write: " + msg)
 }
 
 ///|
 fn colenc_write_error(e : @colenc_types.EncodingError) -> @types.SqlError {
-  @types.SqlError::Scan(
+  @types.SqlError::Execute(
     "parquet write: colenc: \{@colenc_types.EncodingError::message(e)}",
   )
 }
