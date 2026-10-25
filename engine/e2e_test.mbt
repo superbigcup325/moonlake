@@ -1339,6 +1339,24 @@ test "a grouped correlated EXISTS drops the GROUP BY and keeps a matching HAVING
 }
 
 ///|
+test "a position the rewriter cannot reach names itself" {
+  let cat = join_catalog()
+  // a HAVING runs against grouped rows, and the synthetic table a JOIN ON
+  // would need joins after the clause: both say so instead of reaching the
+  // inner bind, which reports the outer table as missing
+  let h = run_err(
+    "SELECT cid FROM customers GROUP BY cid HAVING EXISTS (SELECT 1 FROM orders WHERE custkey > cid)",
+    cat,
+  )
+  assert_true(h.to_string().contains("in a HAVING clause"))
+  let j = run_err(
+    "SELECT c.cid FROM customers c JOIN orders o ON o.amount > (SELECT max(oid) FROM orders WHERE custkey > c.cid)",
+    cat,
+  )
+  assert_true(j.to_string().contains("in a JOIN ON clause"))
+}
+
+///|
 test "EXISTS and NOT EXISTS gate rows on the subquery" {
   let cat = join_catalog()
   // customers (cid 1..3); orders (custkey 1, 1, 3, NULL)

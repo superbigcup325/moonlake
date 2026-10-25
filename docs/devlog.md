@@ -1488,7 +1488,11 @@ top-level WHERE conjuncts.
 Two refusals turned into answers and one into a different, smaller refusal. The
 nested-correlation case, the derived-table-in-FROM case and the
 `DISTINCT`/`LIMIT` cases are still refused, and the message now names them
-instead of claiming the equality restriction that no longer holds. A correlated
+instead of claiming the equality restriction that no longer holds. Three
+*positions* turned out to be outside the rewriter — `HAVING`, a `JOIN ON` and
+the select list of a `GROUP BY` query — and each used to fail with `unknown
+table or alias "o" in FROM`, which sends the reader looking for a missing table.
+They name themselves now, next to the same advice. A correlated
 subquery in the select list of a `GROUP BY` query used to fail with `column
 "__scalar0.__sk1" must appear in GROUP BY or inside an aggregate` — a message
 written in the decorrelator's own vocabulary — and now says that its value would

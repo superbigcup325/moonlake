@@ -84,6 +84,30 @@ fn decorrelate(
       }
     }
   }
+  // the rewriter reaches the WHERE clause and the select list; a subquery in a
+  // HAVING clause runs against grouped rows and one in a JOIN ON runs before
+  // the table it would need, so both are refused by name instead of surfacing
+  // as "unknown table or alias <outer> in FROM"
+  match sel.having {
+    Some(h) =>
+      if cor.contains_correlated(h) {
+        raise @types.SqlError::Bind(
+          "a correlated subquery in a HAVING clause cannot be decorrelated: it would have to be evaluated against grouped rows — rewrite it as a join",
+        )
+      }
+    None => ()
+  }
+  for it in sel.from {
+    match it.on {
+      Some(on) =>
+        if cor.contains_correlated(on) {
+          raise @types.SqlError::Bind(
+            "a correlated subquery in a JOIN ON clause cannot be decorrelated: the rewritten table would join after the clause that reads it — rewrite it as a join",
+          )
+        }
+      None => ()
+    }
+  }
   let new_exprs : Array[@sql.LExpr] = []
   let mut items_rewritten = false
   for it in sel.items {
@@ -1049,11 +1073,12 @@ fn Correlator::theta_in(
 }
 
 ///|
-/// Does the subquery reference a column of the enclosing query? The
-/// decorrelator gives up on such a subquery (it only decorrelates equality
-/// correlation), and the inner bind then fails with "unknown table or alias
-/// <outer> in FROM" — which reads as if the outer table were missing rather
-/// than as the limit it is.
+/// Does the subquery reference a column of the enclosing query? A shape the
+/// decorrelator gives up on then reaches the inner bind, which fails with
+/// "unknown table or alias <outer> in FROM" — a message that reads as if the
+/// outer table were missing rather than as the limit it is, which is why the
+/// positions the rewriter cannot reach (HAVING, JOIN ON) and the shapes it
+/// cannot handle are named before that happens.
 fn Correlator::refs_outer(self : Correlator, sub : @sql.Select) -> Bool {
   let saved = self.sub_items
   self.sub_items = sub.from

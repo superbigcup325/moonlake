@@ -2017,10 +2017,14 @@ gone from that list.
 **What is still refused, and why it is named.** A derived table in the
 subquery's FROM (the classification pass only treats `Named` FROM items as
 belonging to one side), `DISTINCT` / `LIMIT` / `OFFSET` / a set operation inside
-it, a grouping or `HAVING` that is not the correlation keys, a reference to a
-table two levels out, and a correlated subquery in the select list of a grouping
-outer query (its value would have to appear in the `GROUP BY`). Each reports its
-reason; none of them guesses.
+it, a grouping or `HAVING` that is not the correlation keys, and a reference to a
+table two levels out. Three *positions* are outside the rewriter, which visits
+the WHERE clause and the select list: the select list of a grouping outer query
+(its value would have to appear in the `GROUP BY`), a `HAVING` clause (it runs
+against grouped rows), and a `JOIN ON` clause (the synthetic table it needs joins
+after the clause that reads it). Each reports its reason and points at a join;
+none of them guesses, and none of them reaches the user as `unknown table or
+alias <outer> in FROM` any more.
 
 **Gates.** `moon test` 279/279 (wasm-gc), `moon test --target native` 292/292,
 `moon check --deny-warn` clean, `harness/check_all.sh` 33/33 golden comparisons

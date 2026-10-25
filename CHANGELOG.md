@@ -98,8 +98,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   / `OFFSET` / a set operation, a grouping that is not the correlation keys, a
   reference two levels out) and still points at rewriting it as a join. A
   correlated scalar subquery that selects no aggregate keeps its own reason, and
-  a correlated subquery in the select list of a `GROUP BY` query says that its
-  value would have to appear in the `GROUP BY`.
+  the positions the rewriter does not reach name themselves instead of letting
+  the inner bind report the outer table as missing: the select list of a
+  `GROUP BY` query (its value would have to appear in the `GROUP BY`), a
+  `HAVING` clause (it runs against grouped rows) and a `JOIN ON` clause (the
+  synthetic table would join after it).
 
 ## [0.6.0] - 2026-10-24
 
