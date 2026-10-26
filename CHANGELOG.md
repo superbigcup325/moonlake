@@ -39,7 +39,8 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   values per group, and 20,000 groups of one value hold 408.0 MB against 17.2 MB
   for `count(DISTINCT ...)`
   (`docs/sketches.md`, verification §43). That measurement promoted sparse sketch
-  state in colenc, which is unreleased and therefore not in this version
+  state in colenc, which 0.1.3 releases; this version consumes it (§44), so a
+  grouped sketch on 20,000 groups of ten values costs 17.3 MB instead of 403.6 MB
 - `approx_quantile(expr, q)`: a t-digest estimate of a quantile at fixed
   compression 100, returning float64. `q` must be a constant literal in [0, 1]
   and is checked at bind time, so a query with no rows or under a LIMIT fails
@@ -171,6 +172,17 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   the tests, goldens, corpus and packaged consumer are the same gates on a new
   artifact. This is C1 of the [follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011);
   the acceptance rerun and the performance pair are verification §41
+- `superbigcup325/colenc` 0.1.2 → 0.1.3: the sketch state change, and nothing
+  else. `HllSketch` now keeps either the dense register array or a sorted array of
+  its live entries, promoting above `min(128, m / 8)`, with the hash, the rank
+  rule, the estimator, the merge law, the v1 serialized bytes and the public
+  interface unchanged — no source change here and no `.mbti` diff. What moves is
+  what a grouped approximate aggregate holds: 20,000 groups of one value drop from
+  408.0 MB to 15.4 MB, 10,000 groups of 100 from 206.8 to 15.4, while the shapes
+  whose groups all promote keep their memory (1,000 × 1,000 reads 35.2 MB against
+  33.7) and pay the sorted-array shift on the way through. The eleven release cases
+  are unchanged within their own run-to-run spread against a control pinned to
+  0.1.2. Verification §44 reruns the acceptance list and re-measures the matrix
 - Aggregation folds its input as the scan delivers it. A single-table `GROUP BY`
   or a global aggregate now builds its group state one batch at a time instead
   of being handed the whole input, so the operator holds its state and one batch

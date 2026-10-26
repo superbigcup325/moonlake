@@ -653,3 +653,49 @@ consistent in all three rounds) is the one small win worth noting beside them.
 **Memory.** Peak RSS is flat: every case is within 1.7 MB between the two
 records, and the sizes that differ most are the two that also have the widest
 run spread.
+
+## colenc 0.1.3 hands the sparse state to the release candidate (2026-10-26)
+
+The dependency moves one patch version and one thing changes: the HLL sketch
+keeps a sparse state until a group outgrows it. None of the eleven release cases
+runs an approximate aggregate, so the pair here answers a narrower question than
+§41's did — whether a new artifact disturbs the cases the release is judged on. It
+should not, and the record says it does not.
+
+- [`harness/baseline/2026-10-26-colenc-0.1.3.json`](../harness/baseline/2026-10-26-colenc-0.1.3.json)
+  — `344d739`, which moves `moon.mod` to the published
+  `superbigcup325/colenc@0.1.3`. Recorded at 23:25, load average 3.2.
+- [`harness/baseline/2026-10-26-colenc-0.1.2-control.json`](../harness/baseline/2026-10-26-colenc-0.1.2-control.json)
+  — a detached worktree at the same commit with `moon.mod` put back on 0.1.2, so
+  the two records differ in the dependency and nothing else. It builds its own CLI
+  and its own `spill_bench` driver, and its header says `git_dirty: true` because
+  that pin is the uncommitted change. Recorded at 23:28, load average 3.8; a first
+  control at load 6.1 (not kept) agreed within noise.
+
+One round each, because the expectation is a wash and a wash is what a single
+round can establish:
+
+| case | 0.1.2 control | 0.1.3 | delta |
+|---|---|---|---|
+| `scan/count_csv` | 164.6 ms | 159.6 ms | −3.0% |
+| `scan/filtered_count_csv` | 183.8 | 177.7 | −3.3 |
+| `join/two_table_count` | 240.9 | 229.9 | −4.6 |
+| `join/q3` | 269.6 | 262.3 | −2.7 |
+| `gather/wide_projection` | 445.9 | 431.1 | −3.3 |
+| `gather/self_join_fanout` | 384.9 | 368.3 | −4.3 |
+| `spill/order_by_wide` | 505.1 | 495.8 | −1.8 |
+| `spill/format_write` | 1206.4 | 1244.7 | +3.2 |
+| `spill/format_read` | 437.1 | 435.2 | −0.4 |
+| `scan/parquet_count` | 3.8 | 4.7 | +23.7 |
+| `scan/parquet_sum` | 11.4 | 11.2 | −1.8 |
+
+`bench_release.py --compare` prints the verdict: `0 case(s) moved further than
+their own run-to-run spread`. The negative column is not a win to claim — the
+control ran at the higher load average of the two, and every case's delta sits
+inside the spread its own seven runs already showed. The two Parquet cases are the
+4 ms and 11 ms pair §41 also left unresolved, with 59% and 57% spreads here. Peak
+RSS is flat within 4 MB (`join/q3` 49.2 → 45.3, `scan/filtered_count_csv` 33.2 →
+35.2, everything else within 1 MB).
+
+The memory this release changes is not in this table: it is in the grouped sketch
+rows that `harness/bench_hll.py` measures, and §44 carries them.

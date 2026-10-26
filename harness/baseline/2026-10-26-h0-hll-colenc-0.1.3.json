@@ -1,0 +1,1655 @@
+{
+  "schema": 1,
+  "kind": "moonlake-h0-hll-baseline",
+  "created_at": "2026-10-26T23:24:04+0800",
+  "build": {
+    "binary": "_build/native/release/build/cmd/main/main.exe",
+    "binary_sha256": "a1f040d7610dfe9f3a5be0f4127be4c1d18848bc7a71bb18ca1676262a3758f4",
+    "binary_mtime": "2026-10-26 23:20:46",
+    "dependency": {
+      "source": "registry",
+      "note": "no moon.work; `moon tree` resolves the published version"
+    },
+    "git_commit": "344d739c9efdc07d4d72f26ce55e8b639d9a95ca",
+    "git_branch": "main",
+    "git_subject": "build: consume colenc 0.1.3",
+    "git_dirty": false
+  },
+  "method": {
+    "repeats": 2,
+    "shapes": 18,
+    "peak_rss": "getrusage(RUSAGE_CHILDREN).ru_maxrss of one child per query",
+    "wall_time": "fastest of the repeats",
+    "answers": "scalar answers verbatim; grouped answers as rows, sum, min, max, nulls",
+    "fixtures": "generated into target/hll-bench by DuckDB; rows = groups x distinct x copies"
+  },
+  "fixtures": [
+    {
+      "fixture": "one-big-group",
+      "groups": 1,
+      "distinct_per_group": 1000000,
+      "copies": 1,
+      "rows": 1000000,
+      "file_bytes": 9124352,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_one_big_group",
+          "peak_mb": 14.3,
+          "wall_ms": 70.1,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_one_big_group",
+          "peak_mb": 116.6,
+          "wall_ms": 508.4,
+          "answer": 1000000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_one_big_group",
+          "peak_mb": 14.6,
+          "wall_ms": 116.9,
+          "answer": 995954
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_one_big_group group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 77.1,
+          "answer": {
+            "rows": 1,
+            "sum": 1000000,
+            "min": 1000000,
+            "max": 1000000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_one_big_group group by k",
+          "peak_mb": 115.6,
+          "wall_ms": 504.2,
+          "answer": {
+            "rows": 1,
+            "sum": 1000000,
+            "min": 1000000,
+            "max": 1000000,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_one_big_group group by k",
+          "peak_mb": 15.5,
+          "wall_ms": 123.0,
+          "answer": {
+            "rows": 1,
+            "sum": 995954,
+            "min": 995954,
+            "max": 995954,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_one_big_group group by k",
+          "peak_mb": 111.4,
+          "wall_ms": 461.5,
+          "answer": {
+            "rows": 1,
+            "sum": 857142,
+            "min": 857142,
+            "max": 857142,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_one_big_group group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 110.4,
+          "answer": {
+            "rows": 1,
+            "sum": 855330,
+            "min": 855330,
+            "max": 855330,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 209715.2
+    },
+    {
+      "fixture": "d100",
+      "groups": 100,
+      "distinct_per_group": 10000,
+      "copies": 1,
+      "rows": 1000000,
+      "file_bytes": 9130460,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_d100",
+          "peak_mb": 15.4,
+          "wall_ms": 69.0,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_d100",
+          "peak_mb": 116.8,
+          "wall_ms": 478.3,
+          "answer": 1000000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_d100",
+          "peak_mb": 15.3,
+          "wall_ms": 109.0,
+          "answer": 989947
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_d100 group by k",
+          "peak_mb": 17.2,
+          "wall_ms": 76.8,
+          "answer": {
+            "rows": 100,
+            "sum": 1000000,
+            "min": 10000,
+            "max": 10000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_d100 group by k",
+          "peak_mb": 115.9,
+          "wall_ms": 314.2,
+          "answer": {
+            "rows": 100,
+            "sum": 1000000,
+            "min": 10000,
+            "max": 10000,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_d100 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 130.5,
+          "answer": {
+            "rows": 100,
+            "sum": 999188,
+            "min": 9801,
+            "max": 10137,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_d100 group by k",
+          "peak_mb": 105.3,
+          "wall_ms": 263.7,
+          "answer": {
+            "rows": 100,
+            "sum": 857142,
+            "min": 8571,
+            "max": 8572,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_d100 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 120.2,
+          "answer": {
+            "rows": 100,
+            "sum": 856416,
+            "min": 8433,
+            "max": 8702,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 1048.6
+    },
+    {
+      "fixture": "d1k",
+      "groups": 1000,
+      "distinct_per_group": 1000,
+      "copies": 1,
+      "rows": 1000000,
+      "file_bytes": 7665306,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_d1k",
+          "peak_mb": 15.4,
+          "wall_ms": 67.4,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_d1k",
+          "peak_mb": 119.3,
+          "wall_ms": 448.0,
+          "answer": 1000000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_d1k",
+          "peak_mb": 15.3,
+          "wall_ms": 109.9,
+          "answer": 998996
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_d1k group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 74.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000000,
+            "min": 1000,
+            "max": 1000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_d1k group by k",
+          "peak_mb": 120.0,
+          "wall_ms": 288.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000000,
+            "min": 1000,
+            "max": 1000,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_d1k group by k",
+          "peak_mb": 35.2,
+          "wall_ms": 180.9,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000054,
+            "min": 979,
+            "max": 1017,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_d1k group by k",
+          "peak_mb": 105.9,
+          "wall_ms": 277.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 857142,
+            "min": 857,
+            "max": 858,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_d1k group by k",
+          "peak_mb": 33.2,
+          "wall_ms": 146.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 857326,
+            "min": 837,
+            "max": 871,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 20866.7
+    },
+    {
+      "fixture": "d10k",
+      "groups": 10000,
+      "distinct_per_group": 100,
+      "copies": 1,
+      "rows": 1000000,
+      "file_bytes": 3583375,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_d10k",
+          "peak_mb": 15.2,
+          "wall_ms": 47.7,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_d10k",
+          "peak_mb": 29.3,
+          "wall_ms": 222.1,
+          "answer": 189100
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_d10k",
+          "peak_mb": 15.3,
+          "wall_ms": 88.2,
+          "answer": 189960
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_d10k group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 55.6,
+          "answer": {
+            "rows": 10000,
+            "sum": 1000000,
+            "min": 100,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_d10k group by k",
+          "peak_mb": 33.3,
+          "wall_ms": 212.1,
+          "answer": {
+            "rows": 10000,
+            "sum": 198100,
+            "min": 10,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_d10k group by k",
+          "peak_mb": 15.4,
+          "wall_ms": 119.4,
+          "answer": {
+            "rows": 10000,
+            "sum": 197789,
+            "min": 9,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_d10k group by k",
+          "peak_mb": 35.3,
+          "wall_ms": 193.2,
+          "answer": {
+            "rows": 10000,
+            "sum": 183558,
+            "min": 10,
+            "max": 86,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_d10k group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 109.8,
+          "answer": {
+            "rows": 10000,
+            "sum": 183320,
+            "min": 9,
+            "max": 86,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 10.5
+    },
+    {
+      "fixture": "small-5k",
+      "groups": 5000,
+      "distinct_per_group": 10,
+      "copies": 1,
+      "rows": 50000,
+      "file_bytes": 245547,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_small_5k",
+          "peak_mb": 13.4,
+          "wall_ms": 6.6,
+          "answer": 50000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_small_5k",
+          "peak_mb": 13.4,
+          "wall_ms": 12.9,
+          "answer": 17200
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_small_5k",
+          "peak_mb": 13.3,
+          "wall_ms": 7.6,
+          "answer": 17054
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_small_5k group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 7.4,
+          "answer": {
+            "rows": 5000,
+            "sum": 50000,
+            "min": 10,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_small_5k group by k",
+          "peak_mb": 13.5,
+          "wall_ms": 14.8,
+          "answer": {
+            "rows": 5000,
+            "sum": 17600,
+            "min": 1,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_small_5k group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 12.1,
+          "answer": {
+            "rows": 5000,
+            "sum": 17597,
+            "min": 1,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_small_5k group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 16.1,
+          "answer": {
+            "rows": 5000,
+            "sum": 16057,
+            "min": 1,
+            "max": 9,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_small_5k group by k",
+          "peak_mb": 13.5,
+          "wall_ms": 10.9,
+          "answer": {
+            "rows": 5000,
+            "sum": 16054,
+            "min": 1,
+            "max": 9,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": -21.0
+    },
+    {
+      "fixture": "small-20k",
+      "groups": 20000,
+      "distinct_per_group": 10,
+      "copies": 1,
+      "rows": 200000,
+      "file_bytes": 872934,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_small_20k",
+          "peak_mb": 13.4,
+          "wall_ms": 11.3,
+          "answer": 200000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_small_20k",
+          "peak_mb": 15.3,
+          "wall_ms": 39.8,
+          "answer": 36100
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_small_20k",
+          "peak_mb": 13.3,
+          "wall_ms": 19.1,
+          "answer": 36712
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_small_20k group by k",
+          "peak_mb": 15.4,
+          "wall_ms": 21.0,
+          "answer": {
+            "rows": 20000,
+            "sum": 200000,
+            "min": 10,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_small_20k group by k",
+          "peak_mb": 21.3,
+          "wall_ms": 50.3,
+          "answer": {
+            "rows": 20000,
+            "sum": 38000,
+            "min": 1,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_small_20k group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 33.4,
+          "answer": {
+            "rows": 20000,
+            "sum": 37997,
+            "min": 1,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_small_20k group by k",
+          "peak_mb": 19.3,
+          "wall_ms": 47.9,
+          "answer": {
+            "rows": 20000,
+            "sum": 36287,
+            "min": 1,
+            "max": 9,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_small_20k group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 32.7,
+          "answer": {
+            "rows": 20000,
+            "sum": 36284,
+            "min": 1,
+            "max": 9,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 99.6
+    },
+    {
+      "fixture": "small-20k-1",
+      "groups": 20000,
+      "distinct_per_group": 1,
+      "copies": 1,
+      "rows": 20000,
+      "file_bytes": 258678,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_small_20k_1",
+          "peak_mb": 13.2,
+          "wall_ms": 3.4,
+          "answer": 20000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_small_20k_1",
+          "peak_mb": 13.3,
+          "wall_ms": 6.8,
+          "answer": 18100
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_small_20k_1",
+          "peak_mb": 13.3,
+          "wall_ms": 4.2,
+          "answer": 18491
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_small_20k_1 group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 11.0,
+          "answer": {
+            "rows": 20000,
+            "sum": 20000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_small_20k_1 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 15.7,
+          "answer": {
+            "rows": 20000,
+            "sum": 20000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_small_20k_1 group by k",
+          "peak_mb": 15.4,
+          "wall_ms": 15.5,
+          "answer": {
+            "rows": 20000,
+            "sum": 20000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_small_20k_1 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 13.9,
+          "answer": {
+            "rows": 20000,
+            "sum": 17142,
+            "min": 0,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_small_20k_1 group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 13.1,
+          "answer": {
+            "rows": 20000,
+            "sum": 17142,
+            "min": 0,
+            "max": 1,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 110.1
+    },
+    {
+      "fixture": "dup-10x",
+      "groups": 1000,
+      "distinct_per_group": 100,
+      "copies": 10,
+      "rows": 1000000,
+      "file_bytes": 1628343,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_dup_10x",
+          "peak_mb": 13.3,
+          "wall_ms": 29.4,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_dup_10x",
+          "peak_mb": 21.3,
+          "wall_ms": 186.2,
+          "answer": 100000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_dup_10x",
+          "peak_mb": 13.3,
+          "wall_ms": 74.1,
+          "answer": 99869
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_dup_10x group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 40.3,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000000,
+            "min": 1000,
+            "max": 1000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_dup_10x group by k",
+          "peak_mb": 21.3,
+          "wall_ms": 183.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 100000,
+            "min": 100,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_dup_10x group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 109.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 99719,
+            "min": 97,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_dup_10x group by k",
+          "peak_mb": 23.3,
+          "wall_ms": 172.9,
+          "answer": {
+            "rows": 1000,
+            "sum": 100000,
+            "min": 100,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_dup_10x group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 106.0,
+          "answer": {
+            "rows": 1000,
+            "sum": 99719,
+            "min": 97,
+            "max": 100,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 0.0
+    },
+    {
+      "fixture": "xover-1",
+      "groups": 1000,
+      "distinct_per_group": 1,
+      "copies": 1,
+      "rows": 1000,
+      "file_bytes": 19781,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_1",
+          "peak_mb": 13.5,
+          "wall_ms": 1.6,
+          "answer": 1000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_1",
+          "peak_mb": 13.4,
+          "wall_ms": 1.8,
+          "answer": 1000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_1",
+          "peak_mb": 13.3,
+          "wall_ms": 1.5,
+          "answer": 998
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_1 group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 1.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_1 group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 2.1,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_1 group by k",
+          "peak_mb": 13.5,
+          "wall_ms": 1.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000,
+            "min": 1,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_1 group by k",
+          "peak_mb": 13.5,
+          "wall_ms": 2.1,
+          "answer": {
+            "rows": 1000,
+            "sum": 857,
+            "min": 0,
+            "max": 1,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_1 group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 2.0,
+          "answer": {
+            "rows": 1000,
+            "sum": 857,
+            "min": 0,
+            "max": 1,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 209.7
+    },
+    {
+      "fixture": "xover-10",
+      "groups": 1000,
+      "distinct_per_group": 10,
+      "copies": 1,
+      "rows": 10000,
+      "file_bytes": 88240,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_10",
+          "peak_mb": 13.4,
+          "wall_ms": 2.5,
+          "answer": 10000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_10",
+          "peak_mb": 13.4,
+          "wall_ms": 4.7,
+          "answer": 10000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_10",
+          "peak_mb": 13.3,
+          "wall_ms": 3.6,
+          "answer": 9982
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_10 group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 2.9,
+          "answer": {
+            "rows": 1000,
+            "sum": 10000,
+            "min": 10,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_10 group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 4.2,
+          "answer": {
+            "rows": 1000,
+            "sum": 10000,
+            "min": 10,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_10 group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 3.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 9997,
+            "min": 9,
+            "max": 10,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_10 group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 5.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 8571,
+            "min": 8,
+            "max": 9,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_10 group by k",
+          "peak_mb": 13.4,
+          "wall_ms": 4.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 8568,
+            "min": 8,
+            "max": 9,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": -104.9
+    },
+    {
+      "fixture": "xover-100",
+      "groups": 1000,
+      "distinct_per_group": 100,
+      "copies": 1,
+      "rows": 100000,
+      "file_bytes": 712313,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_100",
+          "peak_mb": 13.4,
+          "wall_ms": 10.2,
+          "answer": 100000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_100",
+          "peak_mb": 21.3,
+          "wall_ms": 35.7,
+          "answer": 100000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_100",
+          "peak_mb": 13.3,
+          "wall_ms": 14.6,
+          "answer": 99869
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_100 group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 15.1,
+          "answer": {
+            "rows": 1000,
+            "sum": 100000,
+            "min": 100,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_100 group by k",
+          "peak_mb": 18.8,
+          "wall_ms": 31.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 100000,
+            "min": 100,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_100 group by k",
+          "peak_mb": 15.3,
+          "wall_ms": 21.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 99719,
+            "min": 97,
+            "max": 100,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_100 group by k",
+          "peak_mb": 17.7,
+          "wall_ms": 27.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 85714,
+            "min": 85,
+            "max": 86,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_100 group by k",
+          "peak_mb": 13.3,
+          "wall_ms": 19.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 85506,
+            "min": 83,
+            "max": 86,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 0.0
+    },
+    {
+      "fixture": "xover-200",
+      "groups": 1000,
+      "distinct_per_group": 200,
+      "copies": 1,
+      "rows": 200000,
+      "file_bytes": 1468829,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_200",
+          "peak_mb": 13.9,
+          "wall_ms": 20.2,
+          "answer": 200000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_200",
+          "peak_mb": 27.8,
+          "wall_ms": 75.1,
+          "answer": 200000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_200",
+          "peak_mb": 13.6,
+          "wall_ms": 25.9,
+          "answer": 198541
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_200 group by k",
+          "peak_mb": 17.4,
+          "wall_ms": 19.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 200000,
+            "min": 200,
+            "max": 200,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_200 group by k",
+          "peak_mb": 31.3,
+          "wall_ms": 58.3,
+          "answer": {
+            "rows": 1000,
+            "sum": 200000,
+            "min": 200,
+            "max": 200,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_200 group by k",
+          "peak_mb": 31.3,
+          "wall_ms": 44.0,
+          "answer": {
+            "rows": 1000,
+            "sum": 199816,
+            "min": 195,
+            "max": 201,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_200 group by k",
+          "peak_mb": 27.3,
+          "wall_ms": 52.2,
+          "answer": {
+            "rows": 1000,
+            "sum": 171428,
+            "min": 171,
+            "max": 172,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_200 group by k",
+          "peak_mb": 31.4,
+          "wall_ms": 45.0,
+          "answer": {
+            "rows": 1000,
+            "sum": 171547,
+            "min": 167,
+            "max": 173,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 14575.2
+    },
+    {
+      "fixture": "xover-300",
+      "groups": 1000,
+      "distinct_per_group": 300,
+      "copies": 1,
+      "rows": 300000,
+      "file_bytes": 2206003,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_300",
+          "peak_mb": 15.3,
+          "wall_ms": 23.8,
+          "answer": 300000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_300",
+          "peak_mb": 43.3,
+          "wall_ms": 104.7,
+          "answer": 300000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_300",
+          "peak_mb": 15.3,
+          "wall_ms": 36.7,
+          "answer": 297600
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_300 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 26.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 300000,
+            "min": 300,
+            "max": 300,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_300 group by k",
+          "peak_mb": 43.3,
+          "wall_ms": 84.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 300000,
+            "min": 300,
+            "max": 300,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_300 group by k",
+          "peak_mb": 33.2,
+          "wall_ms": 55.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 300318,
+            "min": 292,
+            "max": 303,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_300 group by k",
+          "peak_mb": 39.3,
+          "wall_ms": 77.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 257142,
+            "min": 257,
+            "max": 258,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_300 group by k",
+          "peak_mb": 31.3,
+          "wall_ms": 55.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 257173,
+            "min": 249,
+            "max": 260,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 16672.4
+    },
+    {
+      "fixture": "xover-400",
+      "groups": 1000,
+      "distinct_per_group": 400,
+      "copies": 1,
+      "rows": 400000,
+      "file_bytes": 2951696,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_400",
+          "peak_mb": 15.2,
+          "wall_ms": 28.7,
+          "answer": 400000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_400",
+          "peak_mb": 51.2,
+          "wall_ms": 147.2,
+          "answer": 400000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_400",
+          "peak_mb": 15.3,
+          "wall_ms": 46.7,
+          "answer": 399591
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_400 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 34.1,
+          "answer": {
+            "rows": 1000,
+            "sum": 400000,
+            "min": 400,
+            "max": 400,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_400 group by k",
+          "peak_mb": 53.3,
+          "wall_ms": 111.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 400000,
+            "min": 400,
+            "max": 400,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_400 group by k",
+          "peak_mb": 33.4,
+          "wall_ms": 70.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 400274,
+            "min": 392,
+            "max": 405,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_400 group by k",
+          "peak_mb": 47.3,
+          "wall_ms": 100.3,
+          "answer": {
+            "rows": 1000,
+            "sum": 342857,
+            "min": 342,
+            "max": 343,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_400 group by k",
+          "peak_mb": 33.3,
+          "wall_ms": 65.8,
+          "answer": {
+            "rows": 1000,
+            "sum": 343263,
+            "min": 335,
+            "max": 347,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 16882.1
+    },
+    {
+      "fixture": "xover-500",
+      "groups": 1000,
+      "distinct_per_group": 500,
+      "copies": 1,
+      "rows": 500000,
+      "file_bytes": 3700097,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_500",
+          "peak_mb": 15.3,
+          "wall_ms": 33.9,
+          "answer": 500000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_500",
+          "peak_mb": 67.3,
+          "wall_ms": 199.3,
+          "answer": 500000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_500",
+          "peak_mb": 15.3,
+          "wall_ms": 54.8,
+          "answer": 501266
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_500 group by k",
+          "peak_mb": 17.3,
+          "wall_ms": 42.9,
+          "answer": {
+            "rows": 1000,
+            "sum": 500000,
+            "min": 500,
+            "max": 500,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_500 group by k",
+          "peak_mb": 67.2,
+          "wall_ms": 140.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 500000,
+            "min": 500,
+            "max": 500,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_500 group by k",
+          "peak_mb": 35.3,
+          "wall_ms": 83.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 500384,
+            "min": 488,
+            "max": 508,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_500 group by k",
+          "peak_mb": 59.3,
+          "wall_ms": 127.1,
+          "answer": {
+            "rows": 1000,
+            "sum": 428571,
+            "min": 428,
+            "max": 429,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_500 group by k",
+          "peak_mb": 33.3,
+          "wall_ms": 77.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 429013,
+            "min": 419,
+            "max": 435,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 18874.4
+    },
+    {
+      "fixture": "xover-700",
+      "groups": 1000,
+      "distinct_per_group": 700,
+      "copies": 1,
+      "rows": 700000,
+      "file_bytes": 5256879,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_700",
+          "peak_mb": 15.3,
+          "wall_ms": 46.6,
+          "answer": 700000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_700",
+          "peak_mb": 83.3,
+          "wall_ms": 270.7,
+          "answer": 700000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_700",
+          "peak_mb": 15.4,
+          "wall_ms": 75.7,
+          "answer": 700943
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_700 group by k",
+          "peak_mb": 15.2,
+          "wall_ms": 56.0,
+          "answer": {
+            "rows": 1000,
+            "sum": 700000,
+            "min": 700,
+            "max": 700,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_700 group by k",
+          "peak_mb": 85.3,
+          "wall_ms": 189.3,
+          "answer": {
+            "rows": 1000,
+            "sum": 700000,
+            "min": 700,
+            "max": 700,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_700 group by k",
+          "peak_mb": 35.2,
+          "wall_ms": 108.2,
+          "answer": {
+            "rows": 1000,
+            "sum": 700393,
+            "min": 686,
+            "max": 712,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_700 group by k",
+          "peak_mb": 77.3,
+          "wall_ms": 171.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 600000,
+            "min": 600,
+            "max": 600,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_700 group by k",
+          "peak_mb": 35.3,
+          "wall_ms": 102.7,
+          "answer": {
+            "rows": 1000,
+            "sum": 600336,
+            "min": 589,
+            "max": 609,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 20971.5
+    },
+    {
+      "fixture": "xover-1000",
+      "groups": 1000,
+      "distinct_per_group": 1000,
+      "copies": 1,
+      "rows": 1000000,
+      "file_bytes": 7665306,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_1000",
+          "peak_mb": 15.3,
+          "wall_ms": 71.4,
+          "answer": 1000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_1000",
+          "peak_mb": 121.3,
+          "wall_ms": 435.5,
+          "answer": 1000000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_1000",
+          "peak_mb": 15.3,
+          "wall_ms": 107.9,
+          "answer": 998996
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_1000 group by k",
+          "peak_mb": 15.2,
+          "wall_ms": 76.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000000,
+            "min": 1000,
+            "max": 1000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_1000 group by k",
+          "peak_mb": 121.3,
+          "wall_ms": 286.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000000,
+            "min": 1000,
+            "max": 1000,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_1000 group by k",
+          "peak_mb": 35.3,
+          "wall_ms": 149.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 1000054,
+            "min": 979,
+            "max": 1017,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_1000 group by k",
+          "peak_mb": 109.2,
+          "wall_ms": 255.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 857142,
+            "min": 857,
+            "max": 858,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_1000 group by k",
+          "peak_mb": 33.3,
+          "wall_ms": 136.9,
+          "answer": {
+            "rows": 1000,
+            "sum": 857326,
+            "min": 837,
+            "max": 871,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 21076.4
+    },
+    {
+      "fixture": "xover-10000",
+      "groups": 1000,
+      "distinct_per_group": 10000,
+      "copies": 1,
+      "rows": 10000000,
+      "file_bytes": 89858015,
+      "queries": {
+        "count(s)": {
+          "sql": "select count(s) from t_hll_xover_10000",
+          "peak_mb": 15.3,
+          "wall_ms": 639.1,
+          "answer": 10000000
+        },
+        "count(DISTINCT s)": {
+          "sql": "select count(DISTINCT s) from t_hll_xover_10000",
+          "peak_mb": 1055.6,
+          "wall_ms": 5787.1,
+          "answer": 10000000
+        },
+        "approx_count_distinct(s)": {
+          "sql": "select approx_count_distinct(s) from t_hll_xover_10000",
+          "peak_mb": 15.2,
+          "wall_ms": 1050.9,
+          "answer": 10051345
+        },
+        "k, count(s)": {
+          "sql": "select k, count(s) from t_hll_xover_10000 group by k",
+          "peak_mb": 17.2,
+          "wall_ms": 771.6,
+          "answer": {
+            "rows": 1000,
+            "sum": 10000000,
+            "min": 10000,
+            "max": 10000,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT s)": {
+          "sql": "select k, count(DISTINCT s) from t_hll_xover_10000 group by k",
+          "peak_mb": 1087.9,
+          "wall_ms": 3265.4,
+          "answer": {
+            "rows": 1000,
+            "sum": 10000000,
+            "min": 10000,
+            "max": 10000,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(s)": {
+          "sql": "select k, approx_count_distinct(s) from t_hll_xover_10000 group by k",
+          "peak_mb": 37.2,
+          "wall_ms": 1337.5,
+          "answer": {
+            "rows": 1000,
+            "sum": 10001215,
+            "min": 9775,
+            "max": 10200,
+            "nulls": 0
+          }
+        },
+        "k, count(DISTINCT sn)": {
+          "sql": "select k, count(DISTINCT sn) from t_hll_xover_10000 group by k",
+          "peak_mb": 959.4,
+          "wall_ms": 3011.2,
+          "answer": {
+            "rows": 1000,
+            "sum": 8571428,
+            "min": 8571,
+            "max": 8572,
+            "nulls": 0
+          }
+        },
+        "k, approx_count_distinct(sn)": {
+          "sql": "select k, approx_count_distinct(sn) from t_hll_xover_10000 group by k",
+          "peak_mb": 37.3,
+          "wall_ms": 1249.3,
+          "answer": {
+            "rows": 1000,
+            "sum": 8571580,
+            "min": 8390,
+            "max": 8739,
+            "nulls": 0
+          }
+        }
+      },
+      "per_group_bytes": 20971.5
+    }
+  ],
+  "environment": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "cores": 16,
+    "mem_gb": 15.4,
+    "governor": "powersave",
+    "cpu_mhz_at_start": 1310,
+    "kernel": "7.3.0-4-cachyos",
+    "os": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+    "loadavg": [
+      2.4580078125,
+      1.9169921875,
+      1.7705078125
+    ],
+    "python": "3.12.14",
+    "toolchain": {
+      "raw": [
+        "moon 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moon",
+        "moonc v0.10.17+d971670cd (2026-10-23) ~/.moon/bin/moonc",
+        "moonrun 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moonrun",
+        "",
+        "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+      ],
+      "moon": "moon 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moon"
+    }
+  }
+}

@@ -3390,7 +3390,9 @@ for 1,000 groups that each promote.
 **What this does not close.** The sparse state is **not** in the dependency: the
 published version is still 0.1.2, the workspace override that measured it is not
 in the tree, and consuming it needs a colenc release plus a `moon.mod` bump — a
-release decision, not a source change in this repository. 0.6.0's accepted scope
+release decision, not a source change in this repository. That decision was made
+on 2026-10-26 — colenc released the state as 0.1.3 — and §44 records this tree
+taking it and the same matrix on the shipped artifact. 0.6.0's accepted scope
 is therefore untouched by H0, and no timing in this section is comparable to the
 0.6.0 performance pair: these are new fixtures, a new rig and a single host
 (load average 0.3–1.1), recorded for their memory deltas.
@@ -3405,3 +3407,123 @@ was still uncommitted when it ran, so `git_commit` is one commit short of the
 harness that produced it. Repeating it needs that colenc tree, which is
 why it is recorded rather than left in a log; the kernel's own record states what
 it changed and what it cost.
+
+## 44. colenc 0.1.3 ships the sparse state (2026-10-26): H0b, C3
+
+§43 ended with the sparse registers implemented in colenc's tree but unreleased,
+and the accepted 0.6.0 candidate built against 0.1.2. The release decision went
+the other way from leaving it out: colenc cut 0.1.3 with that state, published and
+tagged on 2026-10-26. This section is the consumer half — take the published
+artifact, rerun the acceptance list rather than inheriting it, and record what the
+shipped version costs.
+
+**The upgrade.** `moon.mod` moves from `superbigcup325/colenc@0.1.2` to
+`superbigcup325/colenc@0.1.3`, resolved from the registry with no `moon.work` and
+no sibling override (the H0 record's dependency block reads `registry`). It is a
+one-line manifest change: 0.1.3 changes one thing inside one sketch — the
+registers are held densely or as a sorted array of live entries and promote above
+`min(128, m / 8)` — and the hash, the rank rule, the estimator, the merge law, the
+v1 serialized bytes and the public interface are unchanged, so nothing here ports.
+The kernel record for that work is colenc's `docs/SKETCHES.md`, not this one.
+
+**Correctness on the candidate (`344d739`).** The whole §40/§41 list, rerun
+rather than inherited:
+
+| Gate | Result |
+|---|---|
+| `moon check --deny-warn`, `moon fmt --check`, `moon info` then a `.mbti` diff | clean |
+| `moon test` (wasm-gc / native / js) | 348 / 361 / 348 passed |
+| 33 goldens, `check_all.sh` on wasm-gc, on js and through the release binary | pass on all three |
+| `check_windows.py`, 13 cases and `--random 400 --seed 20261026` | pass |
+| `check_correlation.py`, fixed cases and `--random 40 --seed 20261026` | pass |
+| `fuzz_pushdown.py 40 20261026` | 40 queries, 0 failures, 0 rejections |
+| `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
+| `check_cli.sh`, `spill_accept.sh` | pass |
+| `check_writer_interop.py` | pass: raw and Snappy, DATE/NULL, DuckDB-written file read back |
+| `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `python3 -m unittest discover -s harness` | 75 tests, OK |
+| `bench_release.py --check-oracles` | eleven timed cases agree with DuckDB |
+| `check_large_write.py` | 34,400,000 rows, 8,399 row groups, 2,408,368,843-byte widest offset, 1,820 of 16,798 chunks past 2^31, read back by pyarrow, DuckDB and moonlake |
+| Playground in headless Chromium (`playground_accept.cjs`) | 16/16 |
+
+The reference-tool gates ran under Python 3.12.14 with `duckdb==2.0.0` and
+`pyarrow==26.0.0`, the pinned environment, on the candidate tree before its
+commit.
+
+**The H0 matrix on the shipped version.** A fresh record,
+`harness/baseline/2026-10-26-h0-hll-colenc-0.1.3.json`: the same rig, the same 18
+shapes, `344d739`, clean tree, load average 2.5–1.9. MB of peak RSS and
+milliseconds of wall time:
+
+| fixture (groups × distinct) | rows | `count(s)` | `count(DISTINCT s)` | `approx_count_distinct(s)` |
+|---|---|---|---:|---:|---:|
+| 1 × 1,000,000 | 1,000,000 | 15.3 MB / 77.1 ms | 115.6 MB / 504.2 ms | 15.5 MB / 123.0 ms |
+| 100 × 10,000 | 1,000,000 | 17.2 / 76.8 | 115.9 / 314.2 | 17.3 / 130.5 |
+| 1,000 × 1,000 | 1,000,000 | 15.3 / 74.4 | 120.0 / 288.4 | 35.2 / 180.9 |
+| 10,000 × 100 | 1,000,000 | 15.3 / 55.6 | 33.3 / 212.1 | 15.4 / 119.4 |
+| 5,000 × 10 | 50,000 | 13.4 / 7.4 | 13.5 / 14.8 | 13.3 / 12.1 |
+| 20,000 × 10 | 200,000 | 15.4 / 21.0 | 21.3 / 50.3 | 17.3 / 33.4 |
+| 20,000 × 1 | 20,000 | 13.3 / 11.0 | 17.3 / 15.7 | 15.4 / 15.5 |
+| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.4 / 40.3 | 21.3 / 183.8 | 13.4 / 109.8 |
+
+The same fixtures, read against §43's 0.1.2 column, where the sketch cost about
+**20 KB per group**:
+
+| shape | 0.1.2 `approx_count_distinct(s)` | 0.1.3 | delta |
+|---|---|---|---|
+| 20,000 × 1 | 408.0 MB / 274.5 ms | 15.4 MB / 15.5 ms | −392.6 MB |
+| 20,000 × 10 | 403.6 / 333.2 | 17.3 / 33.4 | −386.3 |
+| 10,000 × 100 | 206.8 / 247.0 | 15.4 / 119.4 | −191.4 |
+| 5,000 × 10 | 107.5 / 81.9 | 13.3 / 12.1 | −94.2 |
+| 1,000 × 100, duplicates ×10 | 29.3 / 91.9 | 13.4 / 109.8 | −15.9 |
+| 1,000 × 1,000 | 33.7 / 144.1 | 35.2 / 180.9 | +1.5 |
+| 100 × 10,000 | 16.7 / 133.0 | 17.3 / 130.5 | +0.6 |
+| 1 × 1,000,000 | 15.0 / 122.7 | 15.5 / 123.0 | +0.5 |
+
+Two readings and one caveat. The memory columns repeat §43's sparse re-run within
+about 2 MB, which is what makes the numbers trustworthy: an untracked workspace
+override and a published artifact measured the same thing. The crossover against
+the exact set at 1,000 groups is unchanged at about **200 distinct values per
+group** — exact 18.8 MB against 15.3 at 100, both 31.3 at 200, 43.3 against 33.2
+at 300, and the exact side reaching 121.3 MB at 1,000 and 1,087.9 MB at 10,000 —
+because neither representation changes what a group costs once it promotes. The
+caveat is wall time: this record ran at load average 2.5 and §43's dense run at
+0.3–1.1, so the two columns' milliseconds are not a controlled pair. The memory
+deltas are, which is what the state change is about; the timing cost of the
+promotion shapes is colenc's own measured claim (+23% on 1,000 groups that each
+promote), not something this table isolates.
+
+**The release pair.** R3 needs to know that the dependency bump does not move the
+release cases, so the eleven timed cases ran against a control that differs only
+in the pin: `harness/baseline/2026-10-26-colenc-0.1.2-control.json` is a detached
+worktree at the same commit with `moon.mod` back on 0.1.2, building its own CLI and
+its own spill driver, recorded at 23:28; the candidate record is
+`harness/baseline/2026-10-26-colenc-0.1.3.json` from 23:25. One round each, load
+average 3.8 against 3.2:
+
+| case | 0.1.2 control | 0.1.3 | delta |
+|---|---|---|---|
+| `scan/count_csv` | 164.6 ms | 159.6 ms | −3.0% |
+| `scan/filtered_count_csv` | 183.8 | 177.7 | −3.3 |
+| `join/two_table_count` | 240.9 | 229.9 | −4.6 |
+| `join/q3` | 269.6 | 262.3 | −2.7 |
+| `gather/wide_projection` | 445.9 | 431.1 | −3.3 |
+| `gather/self_join_fanout` | 384.9 | 368.3 | −4.3 |
+| `spill/order_by_wide` | 505.1 | 495.8 | −1.8 |
+| `spill/format_write` / `format_read` | 1206.4 / 437.1 | 1244.7 / 435.2 | +3.2% / −0.4% |
+| `scan/parquet_count` / `parquet_sum` | 3.8 / 11.4 | 4.7 / 11.2 | +23.7% / −1.8% |
+
+The honest reading is the tool's own verdict, which is `0 case(s) moved further
+than their own run-to-run spread`. The small negative deltas are the control
+running under a higher load average, not an improvement; the two Parquet cases are
+4 ms and 11 ms with spreads of 59% and 57%, the pair §41 also left unresolved; and
+peak RSS is flat within 4 MB (the widest is `join/q3` at 49.2 against 45.3 MB).
+The record and its framing are in
+[bench-baseline](bench-baseline.md#colenc-013-hands-the-sparse-state-to-the-release-candidate-2026-10-26).
+
+**What this does not close.** moonlake 0.6.0 is still unpublished: tag, artifact,
+publication and deployment need release authorization, and this section only makes
+the tree that will be released depend on the released colenc. The sparse state is
+invisible through SQL except as cost — no syntax, no result change, no interface
+change — so the answer set is the one §40 and §41 accepted, with the gates above
+rerun rather than assumed.

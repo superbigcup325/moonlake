@@ -41,13 +41,15 @@ at fixed precision `p = 14` (16,384 registers, a standard error of about 0.81%).
     per query, so the two cannot appear together in the same accumulator in
     practice; an expression that could produce both would already be a
     mixed-type column, and the approximation does not claim to separate them.
-- **State.** With colenc 0.1.2, one sketch has 16,384 byte registers: 16 KiB of
-  register payload plus object overhead, about 20 KB measured per group in a
-  running query (20,358 B at 20,000 groups). Its v1 serialized state is unchanged at 16,386 bytes. Group
-  count multiplies that cost, so the grouped crossover against the exact set is
-  about 200 distinct values per group and many small groups are the expensive
-  shape (table and numbers below). The 64 KiB payload and ~750-value crossover
-  in the historical table describe 0.1.1.
+- **State.** One sketch holds 16,384 registers, densely (16 KiB of payload plus
+  object overhead, about 20 KB measured per group in a running query) or, below
+  `min(128, m / 8)` live registers, as a sorted array of live entries costing a
+  few hundred bytes. colenc 0.1.3 is the dependency that releases the sparse
+  form; with 0.1.2 every group paid the dense 20,358 B. The v1 serialized state is
+  16,386 bytes either way. Group count multiplies the cost, so the grouped
+  crossover against the exact set is about 200 distinct values per group and many
+  small groups are the expensive shape (tables and numbers below). The 64 KiB
+  payload and ~750-value crossover in the historical table describe 0.1.1.
 
 ## `approx_quantile(expr, q)`
 
@@ -117,14 +119,16 @@ one child process per query for peak RSS. MB is peak RSS, ms is wall time:
 - The old 65,536 B payload and its ~750-value crossover below describe 0.1.1 and
   are kept as history, not as this dependency's threshold.
 
-### The sparse state in the dependency (unreleased)
+### The sparse state, as released (colenc 0.1.3)
 
-The small-group rows above are what promoted sparse HLL state in colenc. A sketch
-there now holds either the dense array or a sorted array of live entries and
-promotes above `min(128, m / 8)` live registers, with the hash, rank, estimator,
-merge law and v1 bytes unchanged. Measured through an untracked `moon.work`
-workspace against the same matrix, the same binary configuration, with identical
-answers ([verification §43](verification.md#43-grouped-hll-costs-measured-2026-10-26-h0)):
+The small-group rows above are what promoted sparse HLL state in colenc: a sketch
+holds either the dense array or a sorted array of live entries and promotes above
+`min(128, m / 8)` live registers, with the hash, rank, estimator, merge law and
+v1 bytes unchanged. colenc released it as 0.1.3 on 2026-10-26 and this module
+consumes it. The table is the workspace measurement that came first — the sparse
+state under an untracked `moon.work`, same matrix, same binary configuration,
+identical answers ([verification §43](verification.md#43-grouped-hll-costs-measured-2026-10-26-h0)) —
+because it is the record that motivated the release:
 
 | groups × distinct | 0.1.2 | sparse state | delta |
 |---|---|---|---:|
@@ -144,10 +148,17 @@ sparse sketch pages in a few hundred bytes per group instead of 16 KiB. A shape
 whose groups all promote holds the memory it held before, inside a ±2.5 MB run
 band, and pays wall time in proportion to how much of the query is the sketch
 update: 2–27% across the 1,000-group crossover sweep, 14% on the duplicate shape,
-4% at one million values in one group and 6% at 1,000 × 1,000. This is **not** in the dependency: 0.1.2 is the published
-version, the override that measured it was removed, and taking the sparse state
-needs a colenc release plus a `moon.mod` bump. 0.6.0's accepted scope does not
-include it.
+4% at one million values in one group and 6% at 1,000 × 1,000.
+
+[Verification §44](verification.md#44-colenc-013-ships-the-sparse-state-2026-10-26-h0b-c3)
+re-measured the matrix through the published artifact, and it reproduces this
+table inside the ±2 MB run band: 20,000 × 1 was 15.4 MB, 20,000 × 10 17.3, 5,000 ×
+10 13.3, 10,000 × 100 15.4, 1,000 × 1,000 35.2 against the pre-release 33.7, and one
+group of ten million distinct values 15.5 against 15.0. The crossover at 1,000
+groups stayed where the dense form put it, near 200 distinct values per group,
+because a promoted group costs what it always did. What 0.1.3 changes is the
+shape this section called the expensive one: 20,000 groups of one value went from
+408.0 MB to 15.4 MB.
 
 ### Historical 0.1.1 baseline
 
