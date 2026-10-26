@@ -46,6 +46,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -53,6 +54,12 @@ import sys
 import time
 
 import duckdb
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+try:
+    import bench_release as baseline  # same environment and git probing as the release record
+except ImportError:  # a trimmed checkout can still measure; it just records less
+    baseline = None
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_DIR = REPO / "target" / "hll-bench"
@@ -269,6 +276,87 @@ def grouped_answers(rows: list[str]) -> list[int | None]:
     return out
 
 
+def display(path: pathlib.Path) -> str:
+    return str(path.relative_to(REPO)) if path.is_relative_to(REPO) else str(path)
+
+
+def sha256_of(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dependency() -> dict:
+    """Which colenc these numbers describe.
+
+    A workspace override shadows the registry, so a record that does not say
+    which one it ran against cannot be reproduced — and the sparse-state run H0
+    triggered is exactly that case.
+    """
+    work = REPO / "moon.work"
+    if not work.exists():
+        return {"source": "registry", "note": "no moon.work; `moon tree` resolves the published version"}
+    entry: dict = {"source": "workspace", "moon_work": str(work.relative_to(REPO))}
+    for member in (REPO / ".colenc", REPO.parent / "colenc"):
+        if not member.exists():
+            continue
+        out = subprocess.run(
+            ["git", "-C", str(member), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode == 0:
+            entry["colenc"] = str(member)
+            entry["colenc_commit"] = out.stdout.strip()
+            break
+    return entry
+
+
+def header(binary: pathlib.Path, repeats: int, shapes: int) -> dict:
+    record = {
+        "schema": 1,
+        "kind": "moonlake-h0-hll-baseline",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "build": {
+            "binary": display(binary),
+            "binary_sha256": sha256_of(binary),
+            "binary_mtime": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(binary.stat().st_mtime)
+            ),
+            "dependency": dependency(),
+        },
+        "method": {
+            "repeats": repeats,
+            "shapes": shapes,
+            "peak_rss": "getrusage(RUSAGE_CHILDREN).ru_maxrss of one child per query",
+            "wall_time": "fastest of the repeats",
+            "answers": "scalar answers verbatim; grouped answers as rows, sum, min, max, nulls",
+            "fixtures": "generated into target/hll-bench by DuckDB; rows = groups x distinct x copies",
+        },
+        "fixtures": [],
+    }
+    if baseline is not None:
+        state = baseline.git_state()
+        record["build"].update(
+            {
+                "git_commit": state["commit"],
+                "git_branch": state["branch"],
+                "git_subject": state["subject"],
+                "git_dirty": state["dirty"],
+            }
+        )
+        try:
+            record["environment"] = baseline.machine() | {
+                "toolchain": baseline.toolchain(baseline.find_moon())
+            }
+        except OSError:
+            pass
+    return record
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=pathlib.Path, default=DEFAULT_DIR)
@@ -283,9 +371,17 @@ def main(argv: list[str]) -> int:
     if not binary.exists():
         raise SystemExit(f"no binary at {binary}")
     print(
-        f"binary {binary.relative_to(REPO) if binary.is_relative_to(REPO) else binary}"
-        f"  built {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(binary.stat().st_mtime))}"
+        f"binary {display(binary)}  "
+        f"built {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(binary.stat().st_mtime))}"
     )
+    dep = dependency()
+    if dep["source"] == "workspace":
+        print(
+            f"dependency workspace {dep.get('colenc', '?')} at "
+            f"{dep.get('colenc_commit', '?')[:12]}"
+        )
+    else:
+        print("dependency registry (no workspace override)")
 
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -294,14 +390,7 @@ def main(argv: list[str]) -> int:
     ]
 
     con = duckdb.connect()
-    record: dict = {
-        "binary": str(binary),
-        "binary_mtime": time.strftime(
-            "%Y-%m-%d %H:%M:%S", time.localtime(binary.stat().st_mtime)
-        ),
-        "repeats": args.repeats,
-        "fixtures": [],
-    }
+    record = header(binary, args.repeats, len(fixtures))
 
     print(
         f"{'fixture':14} {'groups':>7} {'distinct':>9} {'rows':>10} "
