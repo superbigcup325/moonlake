@@ -2156,3 +2156,34 @@ cannot know which side of that line a query is on.
 
 Suites are at 348 wasm-gc / 361 native / 348 js, 18 of them new. What is left
 for 0.6.0 is R2, the acceptance rerun on this revision.
+
+## Accepted again, and the 12% that came with the dependency (2026-10-26): R2
+
+The candidate changed after §36, so the whole list ran again on `bc1a8f5`
+instead of being inherited: three-target suites, the 33 goldens on three paths,
+the correlation differential (fixed and seeded), windows, pushdown, page
+fixtures, CLI, spill, writer interoperability, the corpus at 17 / 51 / 0, the
+2.41 GB write through three readers, the host-free wasm audit, 16/16 in real
+Chromium, and the archive consumer at 213 files with fresh caches. Everything
+passed. §40 is the record.
+
+The performance pair is the part worth reading. The final candidate is about 12%
+slower than `3ab2634` on wide CSV scans, and the honest thing was to chase it
+rather than call it noise. The bisect was clean because the commits are clean:
+`ae6a28c` is the reader fix and measures +0.3%; `24d983b` touches only the
+manifest and measures 9.4% slower against the same control in the same session.
+The previous candidate's source is otherwise identical. A probe build with
+`encoders/roaring.mbt` removed from a local colenc 0.1.1, facade arms refusing,
+comes back to the control's speed on both the scan and the join.
+
+So the 1,137 lines the bitmap added to `colenc/encoders` are linked by every
+Parquet consumer, and what survives dead-code elimination moves the hot CSV loop
+around. It is a packaging problem in the dependency, not a regression in this
+tree, and the fix is to give the bitmap its own package — a colenc release, then
+this pair re-run. Recorded with the rotating A/B (10–12 pairs a side, 1.5%
+measured harness bias), the bisect and the probe in `bench-baseline.md`, because
+the cost should be a decision for the release owner and not a footnote.
+
+Memory is flat across every case, expression-only start-up is unchanged, and the
+Parquet cases did not move. The CSV cost is the only open question before
+publishing; the rest is authorization.

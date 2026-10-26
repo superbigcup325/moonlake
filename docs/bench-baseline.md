@@ -497,3 +497,79 @@ SF0.1) puts it at 176.0 -> 183.3 ms CPU best-of and 194.5 -> 202.6 ms median,
 and the next section of work would be the one that lets a filter run across
 batch boundaries. Recorded here instead of averaged away, exactly as the 0.4.0
 section records what streamed merges cost.
+
+## 0.6.0 final record, beside the candidate it refines (2026-10-26)
+
+The final candidate adds the colenc 0.1.1 upgrade and the two approximate
+aggregates to the revision above, so it needed its own record:
+
+- [`harness/baseline/2026-10-26-0.6.0-final.json`](../harness/baseline/2026-10-26-0.6.0-final.json)
+  — `bc1a8f5`, the revision R2 accepted, oracle green on all eleven cases.
+- [`harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json`](../harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json)
+  — `3ab2634`, the candidate accepted in §36, recorded minutes earlier in the
+  same session with the same script. Both records were taken at 4200 MHz, and
+  no case differs in `sql` or in its stdout hash.
+
+| case | wall 3ab2634 | wall final | delta | peak RSS 3ab2634 -> final |
+|---|---|---|---|---|
+| `scan/count_csv` | 152.1 ms | 180.7 ms | +18.8% | 35.0 -> 35.3 MB |
+| `scan/filtered_count_csv` | 168.8 | 198.2 | +17.4% | 33.3 -> 35.2 MB |
+| `scan/parquet_count` | 4.0 | 3.7 | −7.5% | 21.2 -> 20.9 MB |
+| `scan/parquet_sum` | 11.2 | 10.9 | −2.7% | 21.2 -> 20.9 MB |
+| `join/two_table_count` | 238.0 | 248.0 | +4.2% | 34.5 -> 35.3 MB |
+| `join/q3` | 277.3 | 278.5 | +0.4% | 45.3 -> 45.2 MB |
+| `gather/wide_projection` | 425.2 | 444.6 | +4.6% | 233.9 -> 237.3 MB |
+| `gather/self_join_fanout` | 334.5 | 445.4 | +33.2% | 41.3 -> 41.2 MB |
+| `spill/order_by_wide` | 482.7 | 514.1 | +6.5% | 35.4 -> 35.5 MB |
+| `spill/format_write` | 1184.3 | 1189.9 | +0.5% | 320.0 -> 320.9 MB |
+| `spill/format_read` | 446.0 | 439.0 | −1.6% | 230.4 -> 230.3 MB |
+
+Memory is flat everywhere (within 2.3 MB), so nothing regressed in RSS. Time is
+another matter: the two CSV scans and the fanout join moved more than their own
+run spread, and the investigation found a cause that is not in this tree.
+
+**The bisect.** `ae6a28c`, whose source differs from `3ab2634` only by the
+Parquet reader fix, measures +0.3% on `SELECT count(*)` over SF0.1 lineitem.
+`24d983b` changes only `moon.mod` (colenc 0.1.0 -> 0.1.1) and measures 9.4%
+slower for the same query against the same control, in the same session. So the
+cost comes in with the dependency artifact, not with the code that uses it.
+
+**The probe.** A local copy of colenc 0.1.1 with `encoders/roaring.mbt` deleted
+and the facade's two `Roaring` arms turned into refusals — nothing else changed —
+built through a `moon.work` workspace: `scan/count_csv` comes back at the
+control's speed and the fanout join within ±1.5% of it. The Roaring bitmap is
+1,137 lines that 0.1.1 added to `colenc/encoders`, the package every Parquet
+consumer links for page decoding; the CSV path never calls it, but what survives
+dead-code elimination still moves the hot loops around. Rotating interleaved
+A/B (10–12 pairs per side, so neither binary always runs first, the machine at
+1.0–2.3 load; the harness's own bias, measured by A/B-ing one binary against
+itself, is 1.5%):
+
+| query | 3ab2634 | `bc1a8f5` | delta |
+|---|---|---|---|
+| `SELECT count(*)` over SF0.1 lineitem | 159.1 ms median, 148.8 best | 179.0 ms median, 173.7 best | +12.5% median, +16.7% best |
+| the fanout join | 351.7 ms median, 332.4 best | 397.9 ms median, 374.3 best | +13.1% median, +12.6% best |
+
+Two further checks bound what it is not: the expression-only `SELECT 1 + 1` is
+1.0 ms on both binaries (no startup cost), and the Parquet cases are unchanged
+(the layout that moved is in the CSV scan's path). `orders.csv`, a narrower and
+smaller CSV, shows no regression, so the cost lands on wide-row CSV scans.
+
+**What that means for publishing.** The upgrade is what makes the two new
+aggregates possible, and this tree's own code has no part in the cost. The fix
+belongs upstream: give the bitmap its own colenc package so a Parquet consumer
+that only decodes pages does not link it, then re-run this pair. Until such a
+colenc release exists, 0.6.0 ships about 12% slower wide-CSV scans than the
+candidate in §36, and that is a decision for the release owner rather than
+something to average away. Recorded here, with the bisect and the probe, because
+the next reader should not have to rediscover it.
+
+**What that means for publishing.** The upgrade is what makes the two new
+aggregates possible, and this tree's own code has no part in the cost. The fix
+belongs upstream: give the bitmap its own colenc package so a Parquet consumer
+that only decodes pages does not link it, then re-run this pair. Until such a
+colenc release exists, 0.6.0 ships about 11% slower wide-CSV scans than the
+candidate in §36, and that is a decision for the release owner rather than
+something to average away. Recorded here, with the bisect and the probe, because
+the next reader should not have to rediscover it.
+

@@ -1,14 +1,15 @@
 # Roadmap
 
-**0.6.0 is unreleased.** Its executor delivery plan passed local acceptance on
-`3ab2634` (verification §36). The current tree also carries the Parquet fix in
-`ae6a28c` (§37), consumes colenc 0.1.1 (§38) and the two approximate aggregates
-built on it (§39); the next step is to refresh acceptance on that final
-candidate, as specified
-[below](#follow-up-after-colenc-011). The completed executor tasks stay complete;
-their evidence belongs to the revision on which it was collected. Push, tag,
-publication and deployment require explicit authorization. Directions waiting
-for evidence stay on the hold list until their trigger fires.
+**0.6.0 is accepted locally and unreleased.** Its executor delivery plan passed
+on `3ab2634` (verification §36); the current tree also carries the Parquet fix in
+`ae6a28c` (§37), consumes colenc 0.1.1 (§38), adds the two approximate
+aggregates built on it (§39), and passed the whole acceptance list again on
+`bc1a8f5` (§40). What is left is release work — push, tag, publication and
+deployment — which happens only on explicit authorization, plus one measured
+decision: the final candidate is about 12% slower on wide CSV scans than
+`3ab2634`, because colenc 0.1.1 links its bitmap into every Parquet consumer
+(bench-baseline, §40). Directions waiting for evidence stay on the hold list until
+their trigger fires.
 
 ## Current implementation
 
@@ -145,16 +146,17 @@ approximate state does not belong in the reversible spill-column encoding API.
 
 ### Work order and exit criteria
 
-R2 closes the current candidate; C0, A0, A1 and A2 are done and their code is in
-the tree. Selecting a further feature for the still-unreleased 0.6.0 means
-rerunning its final acceptance after that code lands. The earlier 0.6.0 scope and
-completed R0 through R1 are preserved; I0 can be investigated independently, and
-E5 addresses a separate exact-query limit.
+R2 is done; C0, A0, A1 and A2 are done and their code is in the tree. Selecting
+a further feature for the still-unreleased 0.6.0 means rerunning the final
+acceptance after that code lands. The earlier 0.6.0 scope and completed R0
+through R1 are preserved; I0 can be investigated independently, and E5
+addresses a separate exact-query limit. Nothing else is scheduled before the
+release actions, which need authorization.
 
 | Task | Deliverable | Depends on | Exit |
 |---|---|---|---|
 | C0 | Consume colenc 0.1.1 | Published registry artifact | **Done** (verification §38): the manifest, the README instructions and the AGENTS.md notes name 0.1.1 together; `moon tree` resolves it with no workspace override, after the registry index and the cached 0.1.0 copy were cleared. The new `Encoding` / `EncodingError` variants needed no consumer edit, because the engine translates errors through `EncodingError::message` and never matches on `Encoding`. Three-target suites, page fixtures, writer interoperability, spill round trips, the goldens on wasm-gc, js and the release binary, and `check_release.py --check-consumer` with fresh caches pass. It enables APIs; it introduces no approximate SQL or automatic index |
-| R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | Preserve the short-chunk and genuine-truncation regressions; corpus remains 17 decoded / 51 deliberately refused / 0 failing on the current corpus revision. Rerun §36's correctness, archive-consumer, >2 GiB, host-free wasm and browser gates on one final revision and record it. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks. The final performance update is the last checklist item below |
+| R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | **Done** (verification §40): `bc1a8f5` passed the whole list again — check, format and interfaces clean, 348 wasm-gc / 361 native / 348 js tests, the 33 goldens on all three paths, the correlation differential (fixed and seeded), the window and pushdown gates, page fixtures, CLI, spill, writer interoperability, the corpus at 17 decoded / 51 refused / 0 failing, and the eleven timed cases green against DuckDB. The 2.41 GB write, the host-free wasm build, 16/16 in real Chromium and the 213-file archive consumer with fresh caches all pass. One open decision, not a gate: the 0.1.1 artifact costs about 12% on wide CSV scans (bisect and probe in `bench-baseline.md`), fixable only by a colenc packaging change. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks |
 | A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | **Done** (verification §39): [docs/sketches.md](sketches.md) states input and output types, NULL and empty-input behavior, the value equivalence (type-tagged, `-0.0`/`0.0` one value, every NaN one value, strings as UTF-8 bytes, dates as epoch days), parameter validation, update/finalize, ownership and error translation, plus the measured state per group (HLL 65,536 B, t-digest 52–73 centroids) and the crossover against the exact set (about 750 distinct values per group). It reuses the one fold and states that no partial-state merge is used |
 | A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | **Done** (verification §39): a new `Acc` variant on the same fold, so the in-memory gather, the streaming pull and the grace partitions all reach it, and the window path too. Fixed precision 14, Int64 result rounded to nearest, empty/all-NULL input 0, NULL skipped; canonicalization matches `scalar_key` (type-tagged, both zeros one value, all NaN payloads one value). 1,000,000 distinct strings: 1,010,708 (+1.07%); peak RSS 56.6 MB against 144.7 MB for the exact count and 56.6 MB for a decode-only `count(s)`. Exact `COUNT(DISTINCT ...)` unchanged, no optimizer rewrite, no partition merge. Suites cover native/wasm-gc/js; the grouped shape shows where a sketch loses (1,000 groups × 1,000 distinct: 145.8 MB against 152.8 MB) |
 | A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | **Done** (verification §39): compression 100, numeric input, a constant `q` in [0, 1] folded into `AggSpec.q` and validated at bind time (so an empty input or a LIMIT fails the same way), Float64 output and NULL for empty/all-NULL input. Non-finite input is a SQL error raised at the finish step, because the fold cannot raise; int64 beyond 2^53 is documented as a Double conversion rather than detected. q = 0.5 and 0.9 over 0..999,999 match the exact median and 90th percentile; peak RSS 33.9 MB against 44.4 MB for `median()`. Exact `median()` unchanged |
@@ -275,7 +277,8 @@ a reader can see what acceptance meant for this release:
 work along with push, tag and publication. Current assessment and local
 preparation do not perform those actions. [verification.md](verification.md)
 records completed checks and their limits; a check on an earlier SHA is history,
-not acceptance of the final candidate.
+not acceptance of the final candidate — which is why the whole list ran again on
+`bc1a8f5` (§40) rather than being inherited from `3ab2634`.
 
 ## How to move something up this page
 
@@ -284,25 +287,28 @@ the query, and the number that matters — memory, wall time, or a file that
 cannot be written at all. A limit with a reproduction beats a limit with a
 theory.
 
-## Final reminder: update benchmarks
+## Benchmarks
 
-**Pending.** Update the benchmark records after the final dependency and code
-changes, before calling the new candidate accepted. This planning pass did not
-rerun them; `3ab2634`'s release pair and colenc scoreboard revision `0cb57e9`
-remain historical measurements.
+**moonlake is done; colenc's scoreboard is not.** The final native record and
+its same-session control are committed, and `docs/bench-baseline.md` carries the
+table and the one cost they show.
 
-- colenc: regenerate `docs/scoreboard.md` with `python3 harness/scoreboard.py`;
-  retain `harness/perf` query-operation measurements and report parse,
-  `to_array` and parse-plus-expand separately. Record HLL/t-digest update,
-  merge, query, state size and accuracy separately from encoding throughput.
-- moonlake: record the final native release binary with
-  `python3 harness/bench_release.py --json-out harness/baseline/<date>-<version>.json`,
-  compare with a same-session control using `--compare`, and update
-  `docs/bench-baseline.md`. Keep data/SQL/answer hashes, toolchain, consumption
-  mode, wall/CPU spread, peak RSS and spill bytes with the record.
-- For implemented A1/A2/I0 work, add workload-specific evidence beside the
-  existing exact controls. Report accuracy and group cardinality for sketches;
-  include index construction and reuse for Roaring. An encoding-kernel win
-  becomes an engine-performance claim only after the engine is measured.
+- colenc: still pending. Regenerate `docs/scoreboard.md` with
+  `python3 harness/scoreboard.py`; retain `harness/perf` query-operation
+  measurements and report parse, `to_array` and parse-plus-expand separately.
+  Record HLL/t-digest update, merge, query, state size and accuracy separately
+  from encoding throughput. The current record (`0cb57e9`) predates 0.1.1, so
+  it does not cover the bitmap or the sketches.
+- moonlake: done on `bc1a8f5`. The record is
+  `harness/baseline/2026-10-26-0.6.0-final.json`, beside
+  `harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json` recorded minutes
+  earlier in the same session at the same clock, so `--compare` has nothing to
+  declare missing. Data, SQL and answer hashes match case by case; toolchain,
+  consumption mode, wall/CPU spread and peak RSS are in the record.
+- The sketch evidence A1/A2 asked for is beside the exact controls in
+  `docs/sketches.md` and §39: accuracy against the exact count, the state per
+  group, and the crossover where a dense sketch costs more than the exact set.
+  There is no Roaring evidence yet, because I0 is still an investigation.
 
-**Reminder to the maintainer: update both projects' benchmarks last.**
+**Reminder to the maintainer: update colenc's benchmarks before its next
+release.**

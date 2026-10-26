@@ -3071,3 +3071,62 @@ the estimator's standard error and colenc's measured t-digest rank error, not a
 universal bound. The 0.6.0 candidate now carries both functions, so R2 must run
 its acceptance on the revision that includes them, and the release pair at the
 end of `docs/bench-baseline.md` still belongs to the earlier revision.
+
+## 40. 0.6.0 accepted again on the final candidate (2026-10-26): R2
+
+Everything below ran on `bc1a8f5`, whose tracked tree was clean; the worktrees
+used for the performance control and the bisect live outside the module. The
+point of R2 is that one revision carries the Parquet reader fix, the colenc
+0.1.1 upgrade and the two approximate aggregates, and all of §36's gates were
+re-run on it rather than inherited.
+
+**Correctness.**
+
+| Gate | Result |
+|---|---|
+| `moon check --deny-warn`, `moon fmt --check`, `moon info` then a `.mbti` diff | clean |
+| `moon test` (wasm-gc / native / js) | 348 / 361 / 348 passed |
+| 33 goldens, `check_all.sh` on wasm-gc, on js and through the release binary | pass on all three |
+| `check_correlation.py`, fixed cases and `--random 40 --seed 20261026` | pass |
+| `check_windows.py`, 13 cases and `--random 400 --seed 20261026` | pass |
+| `fuzz_pushdown.py 40 20261026` | pass |
+| `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
+| `check_cli.sh` | pass, including partial output when a scan fails mid-result |
+| `spill_accept.sh` | pass: ownership, reclaim, shared directory, ANALYZE counters |
+| `check_writer_interop.py` | pass: raw and Snappy, DATE/NULL, EXPLAIN rows, DuckDB-written file read back |
+| `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `bench_release.py --check-oracles` | eleven timed cases agree with DuckDB |
+
+**The heavy gates.**
+
+- `check_large_write.py`: 2,465,688,897 bytes of CSV in, a 2,410,475,894-byte
+  Parquet out, 34,400,000 rows in 8,399 row groups, 1,820 of 16,798 column
+  chunks past 2^31, and pyarrow, DuckDB and moonlake all read the same answer
+  back.
+- Playground: `moon build --target wasm-gc playground`, then the import audit —
+  `playground.wasm` imports only `wasm:js-string` and `_` — and
+  `harness/playground_accept.cjs` driving real Chromium: 16/16, the page
+  reporting 0.6.0.
+- `check_release.py --check-consumer`: 213 archive files, no forbidden path,
+  version claims agree, and the unpacked archive passes on native, wasm-gc and
+  js with fresh registry and dependency caches.
+
+**The performance pair is a cost, not a formality.** The final candidate is
+about 12% slower on wide CSV scans than `3ab2634`, and the bisect puts the cause
+outside this tree: `ae6a28c` (reader fix only) measures +0.3%, while `24d983b`
+(the manifest move to colenc 0.1.1, source unchanged) measures 9.4% slower
+against the same control. A local colenc 0.1.1 with `encoders/roaring.mbt`
+removed and its facade arms refusing is back at the control's speed, so the
+1,137 lines of bitmap code 0.1.1 added to the package every Parquet consumer
+links are what moves the hot loops. Memory is flat everywhere. The record,
+the rotating A/B numbers and the probe are in
+[bench-baseline](bench-baseline.md#060-final-record-beside-the-candidate-it-refines-2026-10-26).
+The fix is a colenc packaging change (give the bitmap its own package) followed
+by a re-run of the pair; it is not something this tree can do for itself.
+
+**What it does not close.** Remote CI and the nightly at this SHA need the push;
+`moon publish --dry-run` uploads an archive, and publication, tagging and
+deployment stay unauthorized. The registry consumer for 0.6.0 and the hosted
+playground's version check happen after those. Nothing here is a statement about
+the published 0.5.0, and the 12% CSV cost above is the one open decision before
+publishing.
