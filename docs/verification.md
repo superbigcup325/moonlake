@@ -3460,6 +3460,14 @@ with the collected ones); `check_release.py --publish-dry-run` runs
 across `moon.mod`, `moonlake.mbt` and `CHANGELOG.md`. Publication itself is
 still unauthorized and therefore not done.
 
+**Remote evidence.** The eight local commits were pushed as `9c677a8` (the range
+`a0c7628..9c677a8`), and the hosted runs on that commit passed: CI (all seven
+jobs — check, native, wasm-gc, js, playwright, writer, TPC-H), Pages, and a
+dispatched nightly (`fuzz`, `large-write`). Earlier sections' local gates are
+therefore corroborated on the hosted runners for this dependency, which is what
+R3's "record source/archive/toolchain identity" asks for; the tag and the registry
+consumer still wait for publication.
+
 **The H0 matrix on the shipped version.** A fresh record,
 `harness/baseline/2026-10-26-h0-hll-colenc-0.1.3.json`: the same rig, the same 18
 shapes, `344d739`, clean tree, load average 2.5–1.9. MB of peak RSS and
