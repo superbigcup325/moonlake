@@ -3304,10 +3304,13 @@ shape, a string column `s` whose values are distinct within a group and a key
 column `k`), then runs every query in its own child process so peak RSS comes
 from `getrusage(RUSAGE_CHILDREN).ru_maxrss` and cannot be polluted by an earlier
 query. Multiple copies of the fixture widen duplicates; one variant of each
-fixture makes one value in seven NULL. Peak RSS is the best of two runs and the
-answer of every query is checked against the fixture shape. Binary: the native
-release build of the tree at `49a3ed4`, resolving registry `colenc@0.1.2` with no
-`moon.work` and no sibling override.
+fixture makes one value in seven NULL. Wall time is the faster of two runs and
+peak RSS the higher of the two, which is why a repeated figure is quoted as the
+higher one; the answer of every query is checked against the fixture shape.
+Binary: the native release build of this tree with no `moon.work` and no sibling
+override, resolving registry `colenc@0.1.2` — the record names the commit, the
+binary's SHA-256 and the dependency, and the sources that built it are unchanged
+since `49a3ed4`.
 
 **The cost of the released state.** One sketch per non-empty group, each a
 16,384-byte register array and nothing else, in MB of peak RSS and milliseconds
@@ -3341,11 +3344,13 @@ skipped before the sketch sees it. The 0.1.1 table above this one stays as
 history: its 65,536-byte payload and ~750-value crossover describe a
 representation this tree no longer builds.
 
-Two caveats on the numbers. Peak RSS repeats within about ±2 MB (the same shape
-measured 14.4 and 17.3 MB for one million rows in one group across sessions), so
-read the per-group figure and the crossover, not a single row. Wall time is one
-host under load average 0.3–1.1 and is not comparable to the 0.6.0 performance
-pair, which was recorded on the same binary family and a different rig.
+Two caveats on the numbers. Peak RSS repeats within about ±2 MB — the one-big-
+group row reads 15.0 MB in the dense run and 17.3 MB in the sparse one, and that
+shape takes the same code path in both, since its single group promotes before
+the first million values are in — so read the per-group figure and the crossover,
+not a single row. Wall time is one host under load average 0.3–1.1 and is not
+comparable to the 0.6.0 performance pair, which was recorded on the same binary
+family and a different rig.
 
 **What it triggered.** Many small groups dominating memory is exactly the
 condition the roadmap set for sparse HLL state, so the kernel work was promoted
@@ -3395,7 +3400,8 @@ dense matrix above: a clean tree, the registry dependency, and the binary's
 SHA-256, so it is reproducible from this repository as it stands.
 `harness/baseline/2026-10-26-h0-hll-sparse.json` is the sparse re-run of the same
 rig; its header names what it measured — the workspace override and colenc's
-commit — and says the tree was dirty, because the binary and the fixtures were
-not, but the docs around them were. Repeating it needs that colenc tree, which is
+commit — and marks the tree dirty, truthfully: the binary-selection fix in the rig
+was still uncommitted when it ran, so `git_commit` is one commit short of the
+harness that produced it. Repeating it needs that colenc tree, which is
 why it is recorded rather than left in a log; the kernel's own record states what
 it changed and what it cost.
