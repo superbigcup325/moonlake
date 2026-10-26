@@ -34,9 +34,10 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   where every value is distinct, reports 1,010,708 against the exact 1,000,000,
   at 56.6 MB of peak RSS against the exact path's 144.7 MB (a decode-only
   `count(s)` is 56.6 MB). That measurement used the old 64 KiB register payload.
-  Grouped, the current state costs about 20.5 KB per group: at 1,000 groups it
-  crosses the exact set near 200 distinct values per group, and 20,000 groups of
-  one value hold 408.7 MB against 17.3 MB for `count(DISTINCT ...)`
+  Grouped, the current state costs about 20 KB per group (20,358 B measured at
+  20,000 groups): at 1,000 groups it crosses the exact set near 200 distinct
+  values per group, and 20,000 groups of one value hold 408.0 MB against 17.2 MB
+  for `count(DISTINCT ...)`
   (`docs/sketches.md`, verification §43). That measurement promoted sparse sketch
   state in colenc, which is unreleased and therefore not in this version
 - `approx_quantile(expr, q)`: a t-digest estimate of a quantile at fixed
@@ -59,8 +60,9 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   over 18 group shapes (few large groups, many small groups, duplicates, a 1-in-7
   NULL variant) each in its own child process, and reports peak RSS, wall time and
   the answer for every query, so the per-group state cost and the crossover are
-  reproducible instead of extrapolated. The record is
-  `harness/baseline/2026-10-26-h0-hll.json`
+  reproducible instead of extrapolated. The records are
+  `harness/baseline/2026-10-26-h0-hll.json` for the released dependency and
+  `-sparse.json` for the state the measurement promoted
 - `harness/check_cli.sh`: CLI-level edges that live in argument handling rather
   than in the engine (no input files, an unknown command's exit code, `write`
   refusing `--out` on top of its input), wired into the `tpch` CI job next to

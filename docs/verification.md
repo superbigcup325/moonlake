@@ -3315,28 +3315,28 @@ of wall time:
 
 | fixture (groups × distinct) | rows | `count(s)` | `count(DISTINCT s)` | `approx_count_distinct(s)` |
 |---|---|---|---:|---:|---:|
-| 1 × 1,000,000 | 1,000,000 | 15.5 MB / 79.4 ms | 115.7 MB / 539.7 ms | 14.4 MB / 120.2 ms |
-| 100 × 10,000 | 1,000,000 | 15.5 / 83.0 | 115.2 / 327.8 | 16.0 / 146.5 |
-| 1,000 × 1,000 | 1,000,000 | 15.3 / 78.5 | 119.2 / 326.7 | 33.5 / 156.9 |
-| 10,000 × 100 | 1,000,000 | 14.2 / 58.7 | 34.9 / 217.8 | 206.3 / 258.0 |
-| 5,000 × 10 | 50,000 | 13.4 / 8.8 | 13.3 / 18.4 | 109.8 / 67.7 |
-| 20,000 × 10 | 200,000 | 15.3 / 21.0 | 21.3 / 58.3 | 406.8 / 309.5 |
-| 20,000 × 1 | 20,000 | 13.3 / 9.9 | 17.3 / 14.9 | 408.7 / 279.2 |
-| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.2 / 41.0 | 21.3 / 185.7 | 29.3 / 94.0 |
+| 1 × 1,000,000 | 1,000,000 | 16.9 MB / 92.6 ms | 115.4 MB / 586.0 ms | 15.0 MB / 122.7 ms |
+| 100 × 10,000 | 1,000,000 | 15.6 / 85.9 | 115.3 / 330.8 | 16.7 / 133.0 |
+| 1,000 × 1,000 | 1,000,000 | 14.7 / 88.2 | 119.0 / 354.0 | 33.7 / 144.1 |
+| 10,000 × 100 | 1,000,000 | 15.2 / 54.3 | 35.2 / 213.0 | 206.8 / 247.0 |
+| 5,000 × 10 | 50,000 | 13.3 / 7.6 | 13.4 / 15.9 | 107.5 / 81.9 |
+| 20,000 × 10 | 200,000 | 15.3 / 21.6 | 21.3 / 55.2 | 403.6 / 333.2 |
+| 20,000 × 1 | 20,000 | 13.4 / 10.1 | 17.2 / 14.5 | 408.0 / 274.5 |
+| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.3 / 41.7 | 21.3 / 182.5 | 29.3 / 91.9 |
 
-Three readings. A sketch costs about **20.5 KB per group** in a real process
+Three readings. A sketch costs about **20 KB per group** in a real process
 (16 KiB of payload plus object and group-map overhead), which the closed form
-(`approx` − `count(s)`, over the group count) reports as 20,526 B at 20,000
-groups, 20,143 B at 10,000 and 19,084 B at 1,000 — and less when a group's
-registers are barely touched, 12,373 B at 1,000 × 1, because untouched pages
+(`approx` − `count(s)`, over the group count) reports as 20,358 B at 20,000
+groups, 20,091 B at 10,000 and 19,923 B at 1,000 — and less when a group's
+registers are barely touched, 12,478 B at 1,000 × 1, because untouched pages
 never become resident. The **crossover against the exact set** at 1,000 groups is
 around 200 distinct values per group: exact 21.3 MB at 100 values against 29.3
 for the sketch, both 31.3 MB at 200, and 43.3 against 33.3 at 300, with the exact
-side reaching 121.3 MB at 1,000 and 1,088.0 MB at 10,000. And the shapes that
-hurt are the small ones: 20,000 groups of one value each hold 408.7 MB of
-sketches against 17.3 MB for the exact set, and 5,000 groups of ten hold 109.8 MB
-against 13.3 MB. NULLs cost nothing extra — the 1-in-7-NULL variants land within
-1.2 MB of the packed ones (406.8 → 408.0 MB at 20,000 × 10) — because a NULL is
+side reaching 121.4 MB at 1,000 and 1,089.2 MB at 10,000. And the shapes that
+hurt are the small ones: 20,000 groups of one value each hold 408.0 MB of
+sketches against 17.2 MB for the exact set, and 5,000 groups of ten hold 107.5 MB
+against 13.4 MB. NULLs cost nothing extra — the 1-in-7-NULL variants land within
+3 MB of the packed ones (403.6 → 406.5 MB at 20,000 × 10) — because a NULL is
 skipped before the sketch sees it. The 0.1.1 table above this one stays as
 history: its 65,536-byte payload and ~750-value crossover describe a
 representation this tree no longer builds.
@@ -3355,31 +3355,32 @@ dense array or a sorted array of live entries, promoting above
 the merge law and the v1 serialized bytes unchanged (colenc's pinned byte stream
 and its checksum are identical). The same matrix through a `moon.work` workspace
 and a `.colenc` symlink to that tree, everything else identical, answers every
-query the same and moves only the grouped rows:
+query the same and moves only the grouped rows (the dense run is the record, the
+sparse one a re-run of the same rig in the same session):
 
 | fixture (groups × distinct) | `approx_count_distinct(s)` 0.1.2 | sparse state | delta |
 |---|---|---|---|
-| 20,000 × 1 | 408.7 MB / 279.2 ms | 15.3 MB / 12.8 ms | −393.4 MB |
-| 20,000 × 10 | 406.8 / 309.5 | 17.3 / 34.7 | −389.5 |
-| 5,000 × 10 | 109.8 / 67.7 | 13.3 / 10.8 | −96.5 |
-| 10,000 × 100 | 206.3 / 258.0 | 17.3 / 117.7 | −189.0 |
-| 1,000 × 1 | 25.2 / 12.3 | 13.4 / 1.7 | −11.8 |
-| 1,000 × 100 | 29.3 / 24.7 | 15.3 / 23.2 | −14.0 |
-| 1,000 × 100, duplicates ×10 | 29.3 / 94.0 | 13.4 / 103.9 | −15.9 |
-| 1,000 × 1,000 | 33.5 / 156.9 | 33.3 / 155.6 | −0.2 |
-| 1 × 1,000,000 | 14.4 / 120.2 | 15.6 / 123.5 | +1.2 |
+| 20,000 × 1 | 408.0 MB / 274.5 ms | 15.3 MB / 13.6 ms | −392.7 MB |
+| 20,000 × 10 | 403.6 / 333.2 | 17.3 / 34.0 | −386.3 |
+| 5,000 × 10 | 107.5 / 81.9 | 13.4 / 11.4 | −94.1 |
+| 10,000 × 100 | 206.8 / 247.0 | 17.3 / 116.5 | −189.5 |
+| 1,000 × 1 | 25.3 / 13.0 | 13.0 / 2.0 | −12.3 |
+| 1,000 × 100 | 29.3 / 25.6 | 15.3 / 22.2 | −14.0 |
+| 1,000 × 100, duplicates ×10 | 29.3 / 91.9 | 13.3 / 105.1 | −16.0 |
+| 1,000 × 1,000 | 33.7 / 144.1 | 35.3 / 153.0 | +1.6 |
+| 1 × 1,000,000 | 15.0 / 122.7 | 17.3 / 127.5 | +2.3 |
 
 Below the promotion limit the sketch stops costing anything measurable — the
-closed form is 0 to 210 B per group, and `small-5k`'s grouped
+closed form is 0 to 145 B per group, and `small-5k`'s grouped
 `approx_count_distinct` goes from eight times the decode-only control to within
-0.1 MB of it — and those shapes also run 6–95% faster, because a sparse sketch
+0.1 MB of it — and those shapes also run 13–95% faster, because a sparse sketch
 pages in a few hundred bytes per group instead of 16 KiB. The shapes whose groups
-all promote hold the same memory they held before, within the ±2 MB run band, and
-pay wall time proportional to how much of the query is the sketch update: 9–21%
-across the 1,000-group crossover sweep (200–10,000 distinct values), 11% on the
-duplicate shape, 3% at one million values in one group, and a wash at
-1,000 × 1,000. The kernel's own rig, which times the update loop alone, pins that
-cost at +23% for 1,000 groups that each promote.
+all promote hold the same memory they held before, inside a ±2.5 MB run band, and
+pay wall time proportional to how much of the query is the sketch update: 2–27%
+across the 1,000-group crossover sweep (200–10,000 distinct values), 14% on the
+duplicate shape, 4% at one million values in one group and 6% at 1,000 × 1,000.
+The kernel's own rig, which times the update loop alone, pins that cost at +23%
+for 1,000 groups that each promote.
 
 **What this does not close.** The sparse state is **not** in the dependency: the
 published version is still 0.1.2, the workspace override that measured it is not
@@ -3389,9 +3390,12 @@ is therefore untouched by H0, and no timing in this section is comparable to the
 0.6.0 performance pair: these are new fixtures, a new rig and a single host
 (load average 0.3–1.1), recorded for their memory deltas.
 
-The record is `harness/baseline/2026-10-26-h0-hll.json`: it carries the dense
-matrix above, with the binary identity and pristine timestamp that make it
-reproducible from this repository. The sparse column is a re-run of the same rig
-against colenc's working tree through the workspace override, so it needs that
-unreleased tree to repeat; the kernel's own record states what it changed and
-what it cost.
+Two records, both committed. `harness/baseline/2026-10-26-h0-hll.json` is the
+dense matrix above: a clean tree, the registry dependency, and the binary's
+SHA-256, so it is reproducible from this repository as it stands.
+`harness/baseline/2026-10-26-h0-hll-sparse.json` is the sparse re-run of the same
+rig; its header names what it measured — the workspace override and colenc's
+commit — and says the tree was dirty, because the binary and the fixtures were
+not, but the docs around them were. Repeating it needs that colenc tree, which is
+why it is recorded rather than left in a log; the kernel's own record states what
+it changed and what it cost.

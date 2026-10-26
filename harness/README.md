@@ -231,13 +231,14 @@ NULL), and each fixture is queried ungrouped and grouped by `k`. Eighteen shapes
 cover few large groups, many small groups, duplicates and a 1,000-group crossover
 sweep. `--repeats` sets the best-of-N, `--bin` measures another build (an A/B
 against a previous dependency needs a separate tree, not just a separate binary),
-and `--keep` leaves the fixtures for inspection. The binary is the newest of the
-two build layouts, so a tree with an untracked `moon.work` (artifacts nested under
-the module name) and one without (flat) both work; the chosen path and its
-timestamp are printed. Every answer is checked against the fixture shape before
-it is reported: a grouped query must return exactly one row per group. The
-numbers this produced are in [`docs/sketches.md`](../docs/sketches.md) and
-verification §43.
+and `--keep` leaves the fixtures for inspection. The layout decides which binary
+is measured: a tree with an untracked `moon.work` builds under the module name, one
+without builds flat, and a leftover binary from the other layout is ignored even
+when it is newer — choosing by mtime once measured a stale tree, so the path, its
+timestamp and any ignored sibling are printed instead. Every answer is checked
+against the fixture shape before it is reported: a grouped query must return
+exactly one row per group. The numbers this produced are in
+[`docs/sketches.md`](../docs/sketches.md) and verification §43.
 
 ## Window differential (`check_windows.py`)
 

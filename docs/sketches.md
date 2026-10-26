@@ -42,8 +42,8 @@ at fixed precision `p = 14` (16,384 registers, a standard error of about 0.81%).
     practice; an expression that could produce both would already be a
     mixed-type column, and the approximation does not claim to separate them.
 - **State.** With colenc 0.1.2, one sketch has 16,384 byte registers: 16 KiB of
-  register payload plus object overhead, about 20.5 KB measured per group in a
-  running query. Its v1 serialized state is unchanged at 16,386 bytes. Group
+  register payload plus object overhead, about 20 KB measured per group in a
+  running query (20,358 B at 20,000 groups). Its v1 serialized state is unchanged at 16,386 bytes. Group
   count multiplies that cost, so the grouped crossover against the exact set is
   about 200 distinct values per group and many small groups are the expensive
   shape (table and numbers below). The 64 KiB payload and ~750-value crossover
@@ -89,28 +89,28 @@ one child process per query for peak RSS. MB is peak RSS, ms is wall time:
 
 | groups × distinct | rows | `count(s)` | `count(DISTINCT s)` | `approx_count_distinct(s)` |
 |---|---|---|---:|---:|---:|
-| 1 × 1,000,000 | 1,000,000 | 15.5 MB / 79.4 ms | 115.7 MB / 539.7 ms | 14.4 MB / 120.2 ms |
-| 100 × 10,000 | 1,000,000 | 15.5 / 83.0 | 115.2 / 327.8 | 16.0 / 146.5 |
-| 1,000 × 1,000 | 1,000,000 | 15.3 / 78.5 | 119.2 / 326.7 | 33.5 / 156.9 |
-| 10,000 × 100 | 1,000,000 | 14.2 / 58.7 | 34.9 / 217.8 | 206.3 / 258.0 |
-| 5,000 × 10 | 50,000 | 13.4 / 8.8 | 13.3 / 18.4 | 109.8 / 67.7 |
-| 20,000 × 10 | 200,000 | 15.3 / 21.0 | 21.3 / 58.3 | 406.8 / 309.5 |
-| 20,000 × 1 | 20,000 | 13.3 / 9.9 | 17.3 / 14.9 | 408.7 / 279.2 |
-| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.2 / 41.0 | 21.3 / 185.7 | 29.3 / 94.0 |
+| 1 × 1,000,000 | 1,000,000 | 16.9 MB / 92.6 ms | 115.4 MB / 586.0 ms | 15.0 MB / 122.7 ms |
+| 100 × 10,000 | 1,000,000 | 15.6 / 85.9 | 115.3 / 330.8 | 16.7 / 133.0 |
+| 1,000 × 1,000 | 1,000,000 | 14.7 / 88.2 | 119.0 / 354.0 | 33.7 / 144.1 |
+| 10,000 × 100 | 1,000,000 | 15.2 / 54.3 | 35.2 / 213.0 | 206.8 / 247.0 |
+| 5,000 × 10 | 50,000 | 13.3 / 7.6 | 13.4 / 15.9 | 107.5 / 81.9 |
+| 20,000 × 10 | 200,000 | 15.3 / 21.6 | 21.3 / 55.2 | 403.6 / 333.2 |
+| 20,000 × 1 | 20,000 | 13.4 / 10.1 | 17.2 / 14.5 | 408.0 / 274.5 |
+| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.3 / 41.7 | 21.3 / 182.5 | 29.3 / 91.9 |
 
-- **Per group, about 20.5 KB.** 16 KiB of registers plus object and group-map
-  overhead: the closed form (`approx` − `count(s)`) reports 20,526 B at 20,000
-  groups, 20,143 B at 10,000 and 19,084 B at 1,000, and less when a group's
-  registers are barely touched (12,373 B at 1,000 × 1) because untouched pages
+- **Per group, about 20 KB.** 16 KiB of registers plus object and group-map
+  overhead: the closed form (`approx` − `count(s)`) reports 20,358 B at 20,000
+  groups, 20,091 B at 10,000 and 19,923 B at 1,000, and less when a group's
+  registers are barely touched (12,478 B at 1,000 × 1) because untouched pages
   never become resident.
 - **The crossover against the exact set is about 200 distinct values per group**
   at 1,000 groups: exact 21.3 MB at 100 values against 29.3 MB for the sketch,
   both 31.3 MB at 200, and 43.3 against 33.3 at 300. The exact side reaches
-  121.3 MB at 1,000 values and 1,088.0 MB at 10,000.
-- **Small groups are the cost.** 20,000 groups of one value hold 408.7 MB of
-  sketches against 17.3 MB for the exact set; 5,000 groups of ten hold 109.8 MB
-  against 13.3 MB. NULLs are skipped before a sketch sees them, so the 1-in-7
-  NULL variants land within 1.2 MB of the packed ones.
+  121.4 MB at 1,000 values and 1,089.2 MB at 10,000.
+- **Small groups are the cost.** 20,000 groups of one value hold 408.0 MB of
+  sketches against 17.2 MB for the exact set; 5,000 groups of ten hold 107.5 MB
+  against 13.4 MB. NULLs are skipped before a sketch sees them, so the 1-in-7
+  NULL variants land within 3 MB of the packed ones.
 - Peak RSS repeats within about ±2 MB, so the per-group figure and the crossover
   are the claims, not any single row; wall time is one host and not comparable to
   the release performance pair.
@@ -128,24 +128,23 @@ answers ([verification §43](verification.md#43-grouped-hll-costs-measured-2026-
 
 | groups × distinct | 0.1.2 | sparse state | delta |
 |---|---|---|---:|
-| 20,000 × 1 | 408.7 MB / 279.2 ms | 15.3 MB / 12.8 ms | −393.4 MB |
-| 20,000 × 10 | 406.8 / 309.5 | 17.3 / 34.7 | −389.5 |
-| 5,000 × 10 | 109.8 / 67.7 | 13.3 / 10.8 | −96.5 |
-| 10,000 × 100 | 206.3 / 258.0 | 17.3 / 117.7 | −189.0 |
-| 1,000 × 1 | 25.2 / 12.3 | 13.4 / 1.7 | −11.8 |
-| 1,000 × 100 | 29.3 / 24.7 | 15.3 / 23.2 | −14.0 |
-| 1,000 × 100, duplicates ×10 | 29.3 / 94.0 | 13.4 / 103.9 | −15.9 |
-| 1,000 × 1,000 | 33.5 / 156.9 | 33.3 / 155.6 | −0.2 |
-| 1 × 1,000,000 | 14.4 / 120.2 | 15.6 / 123.5 | +1.2 |
+| 20,000 × 1 | 408.0 MB / 274.5 ms | 15.3 MB / 13.6 ms | −392.7 MB |
+| 20,000 × 10 | 403.6 / 333.2 | 17.3 / 34.0 | −386.3 |
+| 5,000 × 10 | 107.5 / 81.9 | 13.4 / 11.4 | −94.1 |
+| 10,000 × 100 | 206.8 / 247.0 | 17.3 / 116.5 | −189.5 |
+| 1,000 × 1 | 25.3 / 13.0 | 13.0 / 2.0 | −12.3 |
+| 1,000 × 100 | 29.3 / 25.6 | 15.3 / 22.2 | −14.0 |
+| 1,000 × 100, duplicates ×10 | 29.3 / 91.9 | 13.3 / 105.1 | −16.0 |
+| 1,000 × 1,000 | 33.7 / 144.1 | 35.3 / 153.0 | +1.6 |
+| 1 × 1,000,000 | 15.0 / 122.7 | 17.3 / 127.5 | +2.3 |
 
 Below the promotion limit a sketch stops costing anything measurable — the closed
-form is 0 to 210 B per group — and those shapes also run 6–95% faster, because a
+form is 0 to 145 B per group — and those shapes also run 13–95% faster, because a
 sparse sketch pages in a few hundred bytes per group instead of 16 KiB. A shape
-whose groups all promote holds the memory it held before, within the ±2 MB run
+whose groups all promote holds the memory it held before, inside a ±2.5 MB run
 band, and pays wall time in proportion to how much of the query is the sketch
-update: 9–21% across the 1,000-group crossover sweep, 11% on the duplicate shape,
-3% at one million values in one group, and a wash at 1,000 × 1,000 against 1,000
-groups of one value. This is **not** in the dependency: 0.1.2 is the published
+update: 2–27% across the 1,000-group crossover sweep, 14% on the duplicate shape,
+4% at one million values in one group and 6% at 1,000 × 1,000. This is **not** in the dependency: 0.1.2 is the published
 version, the override that measured it was removed, and taking the sparse state
 needs a colenc release plus a `moon.mod` bump. 0.6.0's accepted scope does not
 include it.

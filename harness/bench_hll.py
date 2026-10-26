@@ -66,23 +66,39 @@ DEFAULT_DIR = REPO / "target" / "hll-bench"
 
 # Where the native release binary lands. A plain checkout builds it at the flat
 # path; a `moon.work` workspace (the colenc co-development setup) nests every
-# artifact under the module name and leaves the flat one behind, stale. Both can
-# exist, so the newest one wins and the choice is printed: a number is only as
-# good as the binary it came from. `--bin` overrides both.
-BIN_CANDIDATES = [
-    REPO / "_build/native/release/build/cmd/main/main.exe",
-    REPO / "_build/native/release/build/superbigcup325/moonlake/cmd/main/main.exe",
-]
+# artifact under the module name. Both files can exist at once, and the stale one
+# can be the newer one: after rebuilding the flat binary, re-creating the
+# workspace leaves the nested binary older but correct. Choosing by mtime measured
+# the wrong tree exactly once, so the layout decides, and a binary from the other
+# layout that happens to be newer is reported as ignored. `--bin` overrides both.
+FLAT_BIN = REPO / "_build/native/release/build/cmd/main/main.exe"
+NESTED_BIN = (
+    REPO / "_build/native/release/build/superbigcup325/moonlake/cmd/main/main.exe"
+)
 
 
 def find_bin() -> pathlib.Path:
-    present = [c for c in BIN_CANDIDATES if c.exists()]
-    if not present:
+    if (REPO / "moon.work").exists():
+        if NESTED_BIN.exists():
+            return NESTED_BIN
         raise SystemExit(
-            "no native release binary; run `moon build --release --target native` "
-            f"(looked in {', '.join(str(c) for c in BIN_CANDIDATES)})"
+            "moon.work is present, so the build belongs under the module name, but "
+            f"{display(NESTED_BIN)} is missing; run "
+            "`moon build --release --target native`"
         )
-    return max(present, key=lambda c: c.stat().st_mtime)
+    if FLAT_BIN.exists():
+        return FLAT_BIN
+    raise SystemExit(
+        "no native release binary; run `moon build --release --target native` "
+        f"(looked in {display(FLAT_BIN)})"
+    )
+
+
+def other_layout_note(chosen: pathlib.Path) -> str:
+    other = NESTED_BIN if chosen == FLAT_BIN else FLAT_BIN
+    if other.exists() and other.stat().st_mtime > chosen.stat().st_mtime:
+        return f"  (ignoring the newer {display(other)}: different layout)"
+    return ""
 
 # (label, groups, distinct per group, copies per distinct value)
 #
@@ -373,6 +389,7 @@ def main(argv: list[str]) -> int:
     print(
         f"binary {display(binary)}  "
         f"built {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(binary.stat().st_mtime))}"
+        f"{other_layout_note(binary)}"
     )
     dep = dependency()
     if dep["source"] == "workspace":
