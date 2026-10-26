@@ -6,7 +6,9 @@ and `approx_quantile(expr, q)`. The engine seam is `engine/exec_agg.mbt`'s
 accumulator fold; the state machines are colenc's `sketches` package, whose own
 contracts live in that project's `docs/SKETCHES.md`. This file is the SQL side:
 types, NULL rules, value equivalence, parameter validation, error translation and
-memory. [verification.md](verification.md) §39 records the evidence.
+memory. [verification.md](verification.md) §39 records the original 0.1.1
+evidence; §41 records acceptance after the move to 0.1.2. The state-cost section
+below separates the current representation from those earlier measurements.
 
 Both functions are explicit. Neither is reached by an optimizer, and neither
 replaces the exact form: `COUNT(DISTINCT ...)` stays exact, `median()` keeps
@@ -39,11 +41,13 @@ at fixed precision `p = 14` (16,384 registers, a standard error of about 0.81%).
     per query, so the two cannot appear together in the same accumulator in
     practice; an expression that could produce both would already be a
     mixed-type column, and the approximation does not claim to separate them.
-- **State.** One dense sketch per non-empty group: 16,384 registers of four
-  bytes, 65,536 bytes in memory (a serialized state would be 16,386 bytes, which
-  is not what a running query holds). A group that gets no non-NULL value never
-  allocates one. Group count × 64 KiB is the floor, which is why the exact path
-  is cheaper below a few hundred distinct values per group (table below).
+- **State.** With colenc 0.1.2, one sketch has 16,384 byte registers: 16 KiB of
+  register payload plus object overhead, about 20.5 KB measured per group in a
+  running query. Its v1 serialized state is unchanged at 16,386 bytes. Group
+  count multiplies that cost, so the grouped crossover against the exact set is
+  about 200 distinct values per group and many small groups are the expensive
+  shape (table and numbers below). The 64 KiB payload and ~750-value crossover
+  in the historical table describe 0.1.1.
 
 ## `approx_quantile(expr, q)`
 
@@ -75,6 +79,79 @@ compression 100.
 
 ## State cost, measured
 
+The released 0.1.2 representation is one byte per register: 16 KiB of payload at
+p14, `2^p` bytes at general precision, plus object overhead. Hashing, rank,
+estimator and the 16,386-byte p14 serialized state are unchanged from 0.1.1.
+
+H0 measured what that costs a grouped query ([verification §43](verification.md#43-grouped-hll-costs-measured-2026-10-26-h0)).
+Rig: `harness/bench_hll.py` at `49a3ed4`, native release, no workspace override,
+one child process per query for peak RSS. MB is peak RSS, ms is wall time:
+
+| groups × distinct | rows | `count(s)` | `count(DISTINCT s)` | `approx_count_distinct(s)` |
+|---|---|---|---:|---:|---:|
+| 1 × 1,000,000 | 1,000,000 | 15.5 MB / 79.4 ms | 115.7 MB / 539.7 ms | 14.4 MB / 120.2 ms |
+| 100 × 10,000 | 1,000,000 | 15.5 / 83.0 | 115.2 / 327.8 | 16.0 / 146.5 |
+| 1,000 × 1,000 | 1,000,000 | 15.3 / 78.5 | 119.2 / 326.7 | 33.5 / 156.9 |
+| 10,000 × 100 | 1,000,000 | 14.2 / 58.7 | 34.9 / 217.8 | 206.3 / 258.0 |
+| 5,000 × 10 | 50,000 | 13.4 / 8.8 | 13.3 / 18.4 | 109.8 / 67.7 |
+| 20,000 × 10 | 200,000 | 15.3 / 21.0 | 21.3 / 58.3 | 406.8 / 309.5 |
+| 20,000 × 1 | 20,000 | 13.3 / 9.9 | 17.3 / 14.9 | 408.7 / 279.2 |
+| 1,000 × 100, duplicates ×10 | 1,000,000 | 13.2 / 41.0 | 21.3 / 185.7 | 29.3 / 94.0 |
+
+- **Per group, about 20.5 KB.** 16 KiB of registers plus object and group-map
+  overhead: the closed form (`approx` − `count(s)`) reports 20,526 B at 20,000
+  groups, 20,143 B at 10,000 and 19,084 B at 1,000, and less when a group's
+  registers are barely touched (12,373 B at 1,000 × 1) because untouched pages
+  never become resident.
+- **The crossover against the exact set is about 200 distinct values per group**
+  at 1,000 groups: exact 21.3 MB at 100 values against 29.3 MB for the sketch,
+  both 31.3 MB at 200, and 43.3 against 33.3 at 300. The exact side reaches
+  121.3 MB at 1,000 values and 1,088.0 MB at 10,000.
+- **Small groups are the cost.** 20,000 groups of one value hold 408.7 MB of
+  sketches against 17.3 MB for the exact set; 5,000 groups of ten hold 109.8 MB
+  against 13.3 MB. NULLs are skipped before a sketch sees them, so the 1-in-7
+  NULL variants land within 1.2 MB of the packed ones.
+- Peak RSS repeats within about ±2 MB, so the per-group figure and the crossover
+  are the claims, not any single row; wall time is one host and not comparable to
+  the release performance pair.
+- The old 65,536 B payload and its ~750-value crossover below describe 0.1.1 and
+  are kept as history, not as this dependency's threshold.
+
+### The sparse state in the dependency (unreleased)
+
+The small-group rows above are what promoted sparse HLL state in colenc. A sketch
+there now holds either the dense array or a sorted array of live entries and
+promotes above `min(128, m / 8)` live registers, with the hash, rank, estimator,
+merge law and v1 bytes unchanged. Measured through an untracked `moon.work`
+workspace against the same matrix, the same binary configuration, with identical
+answers ([verification §43](verification.md#43-grouped-hll-costs-measured-2026-10-26-h0)):
+
+| groups × distinct | 0.1.2 | sparse state | delta |
+|---|---|---|---:|
+| 20,000 × 1 | 408.7 MB / 279.2 ms | 15.3 MB / 12.8 ms | −393.4 MB |
+| 20,000 × 10 | 406.8 / 309.5 | 17.3 / 34.7 | −389.5 |
+| 5,000 × 10 | 109.8 / 67.7 | 13.3 / 10.8 | −96.5 |
+| 10,000 × 100 | 206.3 / 258.0 | 17.3 / 117.7 | −189.0 |
+| 1,000 × 1 | 25.2 / 12.3 | 13.4 / 1.7 | −11.8 |
+| 1,000 × 100 | 29.3 / 24.7 | 15.3 / 23.2 | −14.0 |
+| 1,000 × 100, duplicates ×10 | 29.3 / 94.0 | 13.4 / 103.9 | −15.9 |
+| 1,000 × 1,000 | 33.5 / 156.9 | 33.3 / 155.6 | −0.2 |
+| 1 × 1,000,000 | 14.4 / 120.2 | 15.6 / 123.5 | +1.2 |
+
+Below the promotion limit a sketch stops costing anything measurable — the closed
+form is 0 to 210 B per group — and those shapes also run 6–95% faster, because a
+sparse sketch pages in a few hundred bytes per group instead of 16 KiB. A shape
+whose groups all promote holds the memory it held before, within the ±2 MB run
+band, and pays wall time in proportion to how much of the query is the sketch
+update: 9–21% across the 1,000-group crossover sweep, 11% on the duplicate shape,
+3% at one million values in one group, and a wash at 1,000 × 1,000 against 1,000
+groups of one value. This is **not** in the dependency: 0.1.2 is the published
+version, the override that measured it was removed, and taking the sparse state
+needs a colenc release plus a `moon.mod` bump. 0.6.0's accepted scope does not
+include it.
+
+### Historical 0.1.1 baseline
+
 The per-group numbers come from a scratch probe against `colenc/sketches` 0.1.1;
 the query numbers come from the native release binary of this tree
 (`_build/native/release/build/cmd/main/main.exe`) over one Parquet file with
@@ -100,14 +177,12 @@ separate process per query.
 | `k, count(DISTINCT s) GROUP BY k` (1,000 groups × 1,000 distinct) | 152.8 MB | — |
 | `k, approx_count_distinct(s) GROUP BY k` (same groups) | 145.8 MB | — |
 
-The crossover that matters: a dense sketch costs 65,536 B whatever it holds,
-while the exact set costs roughly 88 B per distinct value here, so a group needs
-about **750 distinct values** before the sketch is the cheaper representation.
-Below that, `COUNT(DISTINCT ...)` wins on memory, and the 1,000-group row above
-shows the shape: 1,000 sketches are 64 MB no matter how few values each group
-holds. A precision option or an adaptive sparse representation is a colenc
-decision that waits for a consumer measurement in which per-group memory is the
-limiting cost.
+On this 0.1.1 baseline, the 65,536 B dense payload and roughly 88 B per exact
+set entry put the observed crossover at about **750 distinct values per group**.
+The 1,000-group row above belongs to that representation. These are retained as
+historical measurements, not the cost or crossover of the current dependency.
+Do not divide 750 by four to claim a new SQL threshold: object, group-map and
+scan costs still have to be measured together in H0.
 
 ## What is not claimed
 

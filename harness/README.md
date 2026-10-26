@@ -211,6 +211,34 @@ rule applies to `spill_bench.py`, which recomputes the first column's text
 checksum from the CSV instead of trusting the format's write/read checksum
 pair.
 
+## Grouped sketch cost (`bench_hll.py`)
+
+```bash
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_hll.py
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_hll.py --quick
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_hll.py \
+  --json-out harness/baseline/<date>-h0-hll.json
+```
+
+An approximate aggregate is cheap or expensive depending on how many groups it
+keeps state for, so this rig measures process RSS, not bytes: each query runs in
+its own child process and peak RSS is that child's `ru_maxrss`, with a decode-only
+`count(s)` as the floor and the exact `count(DISTINCT s)` as the comparison.
+DuckDB writes one Parquet fixture per shape into gitignored `target/hll-bench/`
+(a grouping column `k` and a string column `s` whose values are distinct within a
+group, widened to more rows by copies, plus a `sn` variant with one value in seven
+NULL), and each fixture is queried ungrouped and grouped by `k`. Eighteen shapes
+cover few large groups, many small groups, duplicates and a 1,000-group crossover
+sweep. `--repeats` sets the best-of-N, `--bin` measures another build (an A/B
+against a previous dependency needs a separate tree, not just a separate binary),
+and `--keep` leaves the fixtures for inspection. The binary is the newest of the
+two build layouts, so a tree with an untracked `moon.work` (artifacts nested under
+the module name) and one without (flat) both work; the chosen path and its
+timestamp are printed. Every answer is checked against the fixture shape before
+it is reported: a grouped query must return exactly one row per group. The
+numbers this produced are in [`docs/sketches.md`](../docs/sketches.md) and
+verification §43.
+
 ## Window differential (`check_windows.py`)
 
 ```bash

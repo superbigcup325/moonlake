@@ -27,13 +27,18 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   standard error), returning int64. It hashes the same value equivalence the
   exact path keeps — type-tagged, so int32 1 and int64 1 differ; both zeros are
   one value and every NaN is one value, matching what their text form does —
-  and it skips NULL, so an empty or all-NULL input answers 0. One 64 KiB sketch
-  per non-empty group. `COUNT(DISTINCT ...)` stays exact and no optimizer
-  rewrites one into the other. On a 1,000,000-row string column where every
-  value is distinct it reports 1,010,708 against the exact 1,000,000, at
-  56.6 MB of peak RSS against the exact path's 144.7 MB (a `count(s)` over the
-  same file, which decodes the column without keeping state, is 56.6 MB, so the
-  sketch itself is the 64 KiB one, not the 88 MB the map needs)
+  and it skips NULL, so an empty or all-NULL input answers 0. The current colenc
+  0.1.2 sketch has 16 KiB of register payload plus object overhead.
+  `COUNT(DISTINCT ...)` stays exact and no optimizer rewrites one into the other.
+  The original measurement with colenc 0.1.1, on a 1,000,000-row string column
+  where every value is distinct, reports 1,010,708 against the exact 1,000,000,
+  at 56.6 MB of peak RSS against the exact path's 144.7 MB (a decode-only
+  `count(s)` is 56.6 MB). That measurement used the old 64 KiB register payload.
+  Grouped, the current state costs about 20.5 KB per group: at 1,000 groups it
+  crosses the exact set near 200 distinct values per group, and 20,000 groups of
+  one value hold 408.7 MB against 17.3 MB for `count(DISTINCT ...)`
+  (`docs/sketches.md`, verification §43). That measurement promoted sparse sketch
+  state in colenc, which is unreleased and therefore not in this version
 - `approx_quantile(expr, q)`: a t-digest estimate of a quantile at fixed
   compression 100, returning float64. `q` must be a constant literal in [0, 1]
   and is checked at bind time, so a query with no rows or under a LIMIT fails
@@ -49,6 +54,13 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   checking a formula (`moonlake exec "SELECT 1 + 1"`) needed a dummy file; the
   empty catalog is now allowed and the usage line shows the file group as
   optional. A query that names a table still fails with `unknown table`.
+- `harness/bench_hll.py`: the grouped `approx_count_distinct` rig. It generates
+  Parquet fixtures with DuckDB, runs decode-only, exact-count and sketch queries
+  over 18 group shapes (few large groups, many small groups, duplicates, a 1-in-7
+  NULL variant) each in its own child process, and reports peak RSS, wall time and
+  the answer for every query, so the per-group state cost and the crossover are
+  reproducible instead of extrapolated. The record is
+  `harness/baseline/2026-10-26-h0-hll.json`
 - `harness/check_cli.sh`: CLI-level edges that live in argument handling rather
   than in the engine (no input files, an unknown command's exit code, `write`
   refusing `--out` on top of its input), wired into the `tpch` CI job next to
