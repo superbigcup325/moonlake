@@ -297,8 +297,10 @@ table and the one cost they show.
   `python3 harness/scoreboard.py`; retain `harness/perf` query-operation
   measurements and report parse, `to_array` and parse-plus-expand separately.
   Record HLL/t-digest update, merge, query, state size and accuracy separately
-  from encoding throughput. The current record (`0cb57e9`) predates 0.1.1, so
-  it does not cover the bitmap or the sketches.
+  from encoding throughput. The record stays at `0cb57e9`: it covers the bitmap
+  but predates the two bitmap speed-ups and has no sketch rows, and two
+  regeneration attempts on this host swung 24–45% round to round (the record it
+  replaced swung 12%), so the numbers were not committed.
 - moonlake: done on `bc1a8f5`. The record is
   `harness/baseline/2026-10-26-0.6.0-final.json`, beside
   `harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json` recorded minutes
