@@ -3213,3 +3213,75 @@ publication needs authorization and stays outside this section, and the 0.6.0
 registry consumer, the hosted playground version check and the deployment happen
 after that. Remote CI and the nightly do certify these commits — `4de8077` on
 `main` passed the push CI and a dispatched nightly, and pages deployed from it.
+
+## 42. The toolchain moved and the tree needed nothing (2026-10-26): T1
+
+The environment moved from `moon 0.1.20261016` (moonc `v0.10.16`) to
+`moon 0.1.20261023` (moonc `v0.10.17`); `moon version --all` now also prints the
+enabled feature flags (`rr_moon_mod`, `rr_moon_pkg`). CI installs `latest`, so
+this toolchain arrives without the repository choosing it, and every acceptance
+recorded in §36–§41 was taken on the older one. This section is the same tree
+re-run — `a0c7628`, clean, with no source, manifest or interface change.
+
+**Nothing in the tree had to change.** `moon check --deny-warn` is clean on
+wasm-gc, native and js; `moon fmt --check` has nothing to rewrite (the
+`Int` → `Int32` rewrite that followed 0.1.20261012 is not re-triggered) and
+`moon info` leaves every `.mbti` byte-identical. `moon.mod` still parses on the
+same keys — this CLI rejects an unknown key outright, which is how the key's
+existence was checked rather than assumed — and `preferred_target = "wasm-gc"`
+still selects the default backend: a scratch module carrying that line builds
+`_build/wasm-gc` only. The dependency graph resolves unchanged
+(`moonbitlang/x@0.5.6`, `moonbitlang/quickcheck@0.15.0`,
+`superbigcup325/colenc@0.1.2`).
+
+**The gates, re-run rather than inherited.**
+
+| Gate | Result |
+|---|---|
+| `moon check --deny-warn` on wasm-gc / native / js | clean |
+| `moon fmt --check`, `moon info` then a `.mbti` diff | clean, no diff |
+| `moon test` (wasm-gc / native / js) | 348 / 361 / 348 passed |
+| 33 goldens, `check_all.sh` on wasm-gc (36 CLI runs: `pqall` and `pqdict` run plain and Snappy) | every answer matches DuckDB |
+| `check_cli.sh` | pass |
+| `spill_accept.sh` | 10/10 |
+| `check_windows.py` | 13 value cases matched, 1 legality-only, 2 refused by design, 6 refused in agreement with DuckDB |
+| `check_correlation.py` | 45 value cases matched, 11 refused by design |
+| `fuzz_pushdown.py 40 20261026` | 40 queries, 0 failures, 0 rejections |
+| `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
+| `check_writer_interop.py` | pass: raw and Snappy output read by pyarrow, DuckDB and moonlake, a DuckDB-written file read back, `EXPLAIN` report |
+| `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `python3 -m unittest discover -s harness` | 75 tests, OK |
+| Playground in real Chromium (`playground_accept.cjs`) | 16/16 |
+| Playground wasm import gate | `playground.wasm` imports only `wasm:js-string` |
+| `check_consumer.py` (fresh registry and dependency cache) | pass on native / wasm-gc / js |
+| `check_release.py` | version claims agree, 217 archive files, no forbidden path, clean tree |
+| `moon publish --dry-run` (writable scratch `MOON_HOME`) | `202 Accepted ... Dry run completed successfully` |
+
+The Python gates ran on 3.12.14 with `duckdb==2.0.0` and `pyarrow==26.0.0` from
+`harness/requirements.txt`.
+
+**What was deliberately not re-run.** The performance pair: the toolchain is
+part of `bench_release.py`'s fingerprint, so a record taken on 0.1.20261016 is
+refused as a comparison target instead of being mixed with new timings.
+Re-recording the 0.6.0 pair on this toolchain is a decision for the release
+owner, not a gate, and this section makes no timing claim. `--check-oracles`
+wants the SF0.1 data set, and `check_large_write.py` (34.4 M rows) exercises the
+writer's wide-offset path that a compiler bump does not reach; neither was run.
+
+**Two CLI surfaces still behave as the release gates expect.** `moon package
+--list` writes its file list to **stderr**, mixed with the `moon check` progress
+lines, and ends by packaging `_build/publish/superbigcup325-moonlake-0.6.0.zip`;
+`moon publish --dry-run` answers `202 Accepted` and still exits 255, so the
+recorded rule — read the `Server status` line, not the exit code — holds. The
+dry run also still needs a writable `MOON_HOME`, because the default one is
+read-only here and the unpacked-copy check fails without it.
+
+**One thing the re-run surfaced, unrelated to the compiler.** The three fixture
+generators rewrite tracked files under `harness/data/`, so running the CI
+integration list locally leaves the tree dirty and `check_release.py` then fails
+its clean-tree claim until `git restore -- harness/data`. Regeneration is
+deterministic run to run, so the changed bytes are reference-toolchain drift: the
+committed Parquet fixtures were written by DuckDB 1.5.6 and are all-nullable,
+while 2.0.0 writes seven of the eight columns `NOT NULL`. Both forms pass the
+goldens and the unit tests; refreshing the committed copies is a separate
+decision, recorded as a pitfall in `AGENTS.md`.

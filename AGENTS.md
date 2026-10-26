@@ -39,7 +39,7 @@ You can browse and install extra skills here:
 
 ## Tooling
 
-- Verified against `moon 0.1.20261016` (moonc `v0.10.16`, 2026-10-16). CI
+- Verified against `moon 0.1.20261023` (moonc `v0.10.17`, 2026-10-23). CI
   installs `latest` and prints `moon version --all` per job: toolchain behavior
   does change between releases (0.1.20261016 repurposed `moon install`), so when
   a step that used to pass starts failing, read that version line before
@@ -108,6 +108,16 @@ You can browse and install extra skills here:
   results before a relation query: 2.0 rejects an unfinished result. The corpus
   gate must fail on Python/API errors or missing recorded files, not count
   them as successful skips.
+- The fixtures under `harness/data/` are gate inputs, and the three generators
+  (`harness/gen_tpch.py`, `harness/gen_parquet_fixtures.py`,
+  `harness/gen_multigroup.py`) rewrite them in place, so a local run of the CI
+  integration list leaves tracked files modified and `check_release.py` then
+  fails its clean-tree claim — `git restore -- harness/data` afterwards.
+  Regeneration is deterministic, so the changed bytes are reference-toolchain
+  drift rather than noise: the committed Parquet fixtures were written by
+  DuckDB 1.5.6 and are all-nullable, while 2.0.0 writes seven of eight columns
+  `NOT NULL`. Both forms pass the goldens and the unit tests, so committing a
+  refresh is a separate decision.
 - Recent `moon` (since 0.1.20261012) rejects dependencies that still ship the old
   `moon.mod.json` manifest: graph resolution (now run by
   `moon check`/`moon build`/`moon test`, since a bare `moon install` no longer

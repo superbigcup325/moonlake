@@ -1,7 +1,7 @@
 # Reproducible demo
 
 Everything below runs from a fresh clone on Linux/macOS with
-[MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20261016 or newer — CI
+[MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20261023 or newer — CI
 installs `latest`), and `uv` (which can supply Python 3.12). Reference tools are
 pinned in `harness/requirements.txt`; a Python 3.12 virtual environment with
 `pip install -r harness/requirements.txt` works too. The engine needs no
