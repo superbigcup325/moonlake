@@ -126,11 +126,11 @@ moon add superbigcup325/moonlake
 > [CHANGELOG.md](CHANGELOG.md).
 > The next release is 0.6.0: every change since 0.5.0 and the whole
 > [delivery plan](docs/ROADMAP.md#060-delivery-plan) passed, and the final
-> candidate — reader fix, colenc 0.1.1 and the two approximate aggregates —
+> candidate — reader fix, colenc 0.1.2 and the two approximate aggregates —
 > passed the same list again (`verification.md` §§36 and 40). It is unreleased,
 > so `moon add` still gives you 0.5.0.
 
-**Building from source.** `main` depends on `superbigcup325/colenc@0.1.1`,
+**Building from source.** `main` depends on `superbigcup325/colenc@0.1.2`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
 
 ```bash

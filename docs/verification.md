@@ -3127,6 +3127,8 @@ and the probes are in
 [bench-baseline](bench-baseline.md#060-final-record-beside-the-candidate-it-refines-2026-10-26).
 The fix is to take the `Roaring` arms out of that dispatch into dedicated
 functions, then re-run the pair; it is not something this tree can do for itself.
+**Closed by §41**: colenc 0.1.2 publishes exactly that split, and the re-record
+on this tree puts the cost at zero.
 That change is implemented on colenc's unreleased `main`, and a build of this
 tree against it is at control speed (157.9 against 163.0 ms median, 8,248 bytes
 smaller), so what remains is a colenc release and a re-record.
@@ -3137,3 +3139,77 @@ deployment stay unauthorized. The registry consumer for 0.6.0 and the hosted
 playground's version check happen after those. Nothing here is a statement about
 the published 0.5.0, and the CSV cost above is the one open decision before
 publishing.
+
+## 41. The CSV cost is gone with colenc 0.1.2 (2026-10-26): C1, C2
+
+§40 left one measured decision open: colenc 0.1.1 kept the bitmap reachable from
+the generic dispatch, and this tree built against it scanned wide CSV about 10%
+slower than `3ab2634`. The fix was specified there and shipped upstream, so this
+section is the consumer half — take the published artifact, rerun the whole
+acceptance list, and record the pair the decision was waiting for.
+
+**The upgrade.** `moon.mod` moves from `superbigcup325/colenc@0.1.1` to
+`superbigcup325/colenc@0.1.2`, resolved from the registry with no `moon.work` and
+no sibling override. It is a one-line manifest change: the two observable colenc
+changes (`encode_column` / `decode_column` now refuse `Encoding::Roaring`, and
+`HllSketch::registers()` returns a snapshot) are both invisible here, because the
+engine reaches the bitmap through `encode_roaring_column` / `decode_roaring_column`
+where it reaches it at all, and reads registers through `register(index)`.
+
+**Correctness on the candidate (`95c42c6`).** The whole §40 list, rerun rather
+than inherited:
+
+| Gate | Result |
+|---|---|
+| `moon check --deny-warn`, `moon fmt --check`, `moon info` then a `.mbti` diff | clean |
+| `moon test` (wasm-gc / native / js) | 348 / 361 / 348 passed |
+| 33 goldens, `check_all.sh` on wasm-gc, on js and through the release binary | pass on all three |
+| `check_windows.py`, 13 cases and `--random 400 --seed 20261026` | pass |
+| `check_correlation.py`, fixed cases and `--random 40 --seed 20261026` | pass |
+| `fuzz_pushdown.py 40 20261026` | 40 queries, 0 failures, 0 rejections |
+| `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases at page level |
+| `check_cli.sh`, `spill_accept.sh` | pass |
+| `check_writer_interop.py` | pass: raw and Snappy, DATE/NULL, DuckDB-written file read back |
+| `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `python3 -m unittest discover -s harness` | 75 tests, OK |
+| `bench_release.py --check-oracles` | eleven timed cases agree with DuckDB |
+| `check_large_write.py` | 34,400,000 rows, 8,399 row groups, 2,410,836,843-byte widest offset, 1,820 of 16,798 chunks past 2^31, read back by pyarrow, DuckDB and moonlake |
+| Playground in real Chromium (`playground_accept.cjs`) | 16/16 |
+| `check_release.py --check-consumer` | version claims agree, 215 archive files, no forbidden path, clean tree, three-target archive consumer with fresh caches |
+
+The gates that need reference tools ran under `duckdb==2.0.0` and
+`pyarrow==26.0.0` from `harness/requirements.txt`, in a scratch Python 3.12
+environment; the system interpreter has neither, and the four checks that shell
+out to DuckDB fail loudly rather than skipping when they are missing, which is
+how the first pass reported them.
+
+**The pair.** Candidate `95c42c6` (colenc 0.1.2) against control `bc1a8f5`
+(colenc 0.1.1) in a scratch worktree, each building its own CLI and its own
+`spill_bench` driver so the control could not be measured with the candidate's
+code. Three pairs, candidate first, at load average 0.9–1.7, seven runs a case
+with two warm-ups, medians of the three pairs reported:
+
+| case | 0.1.1 | 0.1.2 | delta |
+|---|---|---|---|
+| `scan/count_csv` | 171.3 ms | 153.0 ms | −10.7% |
+| `scan/filtered_count_csv` | 188.5 | 170.0 | −9.8% |
+| `join/two_table_count` | 235.4 | 214.8 | −8.8% |
+| `join/q3` | 266.7 | 249.6 | −6.4% |
+| `gather/self_join_fanout` | 383.2 | 348.4 | −9.1% |
+| `gather/wide_projection` | 430.2 | 411.9 | −4.3% |
+| `spill/order_by_wide` | 492.3 | 478.7 | −2.8% |
+| `spill/format_write` / `format_read` | 1136.4 / 427.5 | 1147.0 / 420.2 | +0.9% / −1.7% |
+| `scan/parquet_count` / `parquet_sum` | 3.9 / 10.8 | 4.6 / 11.4 | unresolved |
+
+The CSV family is negative in all three rounds and the Parquet pair is the
+opposite: 4 ms and 11 ms cases whose in-record spread reached 73%, with the
+earlier session disagreeing on the sign for `parquet_count`. The record and the
+reasoning are in
+[bench-baseline](bench-baseline.md#colenc-012-removes-the-cost-on-a-quiet-host-2026-10-26).
+Peak RSS is flat within 1.7 MB everywhere.
+
+**What it does not close.** The commit carrying this evidence is local until it
+is pushed, so this revision's CI and nightly are unverified, and the published
+moonlake release is still 0.5.0 — publication needs authorization and stays
+outside this section. The 0.6.0 registry consumer, the hosted playground version
+check and the deployment happen after that.

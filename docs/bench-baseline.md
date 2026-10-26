@@ -584,3 +584,72 @@ slower wide-CSV scans (7–14% by run) than the candidate in §36, and that stay
 decision for the release owner rather than something to average away. Recorded
 here, with the bisect and all three probes, because the next reader should not
 have to rediscover it.
+
+## colenc 0.1.2 removes the cost, on a quiet host (2026-10-26)
+
+The cost the section above had to accept belonged to the colenc 0.1.1 artifact,
+not to this tree, and colenc 0.1.2 ships the specified fix: the `Roaring` arms
+left the generic `encode_column` / `decode_column` dispatch for
+`encode_roaring_column` / `decode_roaring_column`. This is the re-record that
+was owed, and the cost is gone.
+
+- [`harness/baseline/2026-10-26-colenc-0.1.2.json`](../harness/baseline/2026-10-26-colenc-0.1.2.json)
+  — this tree at `95c42c6`, which moves the dependency to the published
+  `superbigcup325/colenc@0.1.2`. No source change was needed.
+- [`harness/baseline/2026-10-26-colenc-0.1.1-control.json`](../harness/baseline/2026-10-26-colenc-0.1.1-control.json)
+  — `bc1a8f5`, the revision §40 accepted, consuming 0.1.1. Built and measured
+  in a scratch worktree outside the module, so its `spill_bench` driver and CLI
+  are its own and not the candidate's.
+
+Both committed records are the first of the three pairs; the table below reports
+the median of all three, because the two runs in a pair differ by a few percent
+even on a quiet host. Order was candidate, control, three times, so neither
+binary always ran first. Each `bench_release.py` run is the fastest of seven
+after two warm-ups, all eleven cases passed their DuckDB oracle, and the output
+SHA-256 of every case is identical across all six records, so the two sides did
+the same work.
+
+Load average at the six starts was 0.91, 1.20, 1.69, 1.57, 1.57 and 1.71, and
+the governor is `powersave`, which shows in the recorded clock: the six values
+of `cpu_mhz_at_start` were 3889, 4362, 4063, 3355, 442 and 3595. That is why the
+per-round delta is listed beside the median — a pair whose sides landed on
+different clocks moves, but the sign does not.
+
+| case | 0.1.1 control | 0.1.2 | delta | per-round delta |
+|---|---|---|---|---|
+| `scan/count_csv` | 171.3 ms | 153.0 ms | **−10.7%** | −12.3 / −7.6 / −11.0 |
+| `scan/filtered_count_csv` | 188.5 | 170.0 | **−9.8%** | −9.8 / −9.7 / −9.8 |
+| `scan/parquet_count` | 3.9 | 4.6 | +17.9% | +17.9 / +45.7 / +12.8 |
+| `scan/parquet_sum` | 10.8 | 11.4 | +5.6% | +5.6 / +2.8 / +5.4 |
+| `join/two_table_count` | 235.4 | 214.8 | **−8.8%** | −9.5 / −8.2 / −9.4 |
+| `join/q3` | 266.7 | 249.6 | **−6.4%** | −7.6 / −6.4 / −5.7 |
+| `gather/wide_projection` | 430.2 | 411.9 | −4.3% | −3.6 / −3.8 / −4.7 |
+| `gather/self_join_fanout` | 383.2 | 348.4 | **−9.1%** | −9.0 / −8.7 / −10.1 |
+| `spill/order_by_wide` | 492.3 | 478.7 | −2.8% | −3.6 / −3.1 / −2.1 |
+| `spill/format_write` | 1136.4 | 1147.0 | +0.9% | +1.4 / −0.2 / +0.9 |
+| `spill/format_read` | 427.5 | 420.2 | −1.7% | −1.7 / −0.9 / −4.2 |
+
+**What this settles.** The wide CSV scan and the queries built on it moved back
+to the control's speed and past it: −10.7% on `count(*)`, −9.8% on the filtered
+count, −8.8% on the two-table join, −6.4% on Q3 and −9.1% on the fanout join,
+positive in every one of the three rounds. §40 measured 0.1.1 at 9.5–13% above
+the pre-upgrade control for the same queries, so the two measurements bracket the
+same cost from opposite sides. The candidate's 153.0 ms is also below the
+159.1 ms the pre-upgrade control measured in the earlier session — across
+sessions, so indicative rather than a claim: it says the scan did not merely
+return to where it was, and a same-session pair against `3ab2634` would be
+needed to assert that.
+
+**What this does not settle.** The two Parquet cases stay unresolved, and the
+table says so rather than picking a side. They are 4 ms and 11 ms cases whose
+round-to-round spread inside a single record reached 73% and 69%; a 0.6 ms
+difference is under what this rig resolves, and the earlier session's pair
+disagreed on the sign for `parquet_count` (−2.5% then, +17.9% here). Nothing on
+the Parquet read path changed between the two artifacts, and `parquet_sum` is
+identical to the digit on three of its six runs. Treat both as unchanged. The
+spill-format pair is flat within ±1.4%, and `gather/wide_projection` (−4.3%,
+consistent in all three rounds) is the one small win worth noting beside them.
+
+**Memory.** Peak RSS is flat: every case is within 1.7 MB between the two
+records, and the sizes that differ most are the two that also have the widest
+run spread.

@@ -4,14 +4,14 @@
 on `3ab2634` (verification §36); the current tree also carries the Parquet fix in
 `ae6a28c` (§37), consumes colenc 0.1.1 (§38), adds the two approximate
 aggregates built on it (§39), and passed the whole acceptance list again on
-`bc1a8f5` (§40). What is left is release work — push, tag, publication and
-deployment — which happens only on explicit authorization, plus one measured
-decision: the final candidate is about 10% slower on wide CSV scans than
-`3ab2634`, because colenc 0.1.1's generic dispatch keeps its bitmap reachable
-from every Parquet consumer (bench-baseline, §40). The fix is implemented on
-colenc's unreleased `main` — its own `encode_roaring_column` /
-`decode_roaring_column` entry points, measured back at control speed — so this
-is a sequencing question: release colenc, re-record the pair, or accept it. Directions waiting for evidence stay on the hold list until
+`bc1a8f5` (§40). The one measured decision that section left open — the 0.1.1
+artifact costing about 10% on wide CSV scans, because its generic dispatch kept
+the bitmap reachable from every Parquet consumer — is closed. colenc 0.1.2
+publishes the `encode_roaring_column` / `decode_roaring_column` split, `95c42c6`
+consumes it, and on a quiet host the CSV cases now run 6–11% faster than the
+0.1.1 control with the whole acceptance list rerun (§41). What is left is release
+work — push, tag, publication and deployment — which happens only on explicit
+authorization. Directions waiting for evidence stay on the hold list until
 their trigger fires.
 
 ## Current implementation
@@ -137,8 +137,8 @@ inspection and live release/CI queries; it adds no implemented SQL or index API.
 
 | Project | Current evidence | Consequence for the plan |
 |---|---|---|
-| colenc | [0.1.1 is released](https://github.com/superbigcup325/colenc/releases/tag/v0.1.1); `main` is `c04d7e1`, whose [CI passed](https://github.com/superbigcup325/colenc/actions/runs/40205435645). The release records registry-consumer acceptance on three targets. The artifact was built from `504092a`; the tag adds documentation and consumer coverage, with identical library code | Roaring, HLL and t-digest are available. Their implementation and the bitmap rewrites are completed work. The companion colenc NEXT-STEPS now tracks consumer adoption and conditional library work |
-| moonlake | `24d983b` consumes colenc 0.1.1 (C0, verification §38): `moon.mod` selects it at version 0.6.0, and no `moon.work` or `.colenc` override exists. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | The dependency surface is available to the engine; using it is A0/A1/A2 and I0. Their acceptance is not implied by the upgrade |
+| colenc | [0.1.2 is released](https://github.com/superbigcup325/colenc/releases/tag/v0.1.2) (2026-10-26), the successor to the 0.1.1 above: it takes the bitmap out of the generic `encode_column` / `decode_column` dispatch into `encode_roaring_column` / `decode_roaring_column` and carries the PLAIN, dictionary, HLL, t-digest and FSST kernel work. `main` is `b1b2b7f`, whose [CI passed](https://github.com/superbigcup325/colenc/actions/runs/40302072598); registry-consumer acceptance passed on three targets | Roaring, HLL, t-digest and reusable FSST models are available. The reachability cost 0.1.1 charged a Parquet-only consumer is gone, measured here in §41. The companion colenc NEXT-STEPS tracks the remaining conditional library work |
+| moonlake | `95c42c6` consumes colenc 0.1.2 (C1, verification §41): `moon.mod` selects it at version 0.6.0, and no `moon.work` or `.colenc` override exists. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | The dependency surface is available to the engine; A0/A1/A2 are done, and I0 stays an investigation. The upgrade closed the CSV cost, see §41 |
 | moonlake verification | The full local acceptance and performance pair are on `3ab2634` (§36). The later reader fix has targeted evidence in §37, and the upgrade in §38. Remote `main` is still `750b98c`, 40 commits behind the inspected local tree; its [latest nightly failed](https://github.com/superbigcup325/moonlake/actions/runs/40177160450) on the corpus regression fixed locally | Refresh the final candidate on the revision that carries both the fix and the upgrade. The old acceptance and remote CI cannot certify either |
 
 colenc owns buffer encodings, bitmap operations, sketch state and their typed
@@ -159,7 +159,7 @@ release actions, which need authorization.
 | Task | Deliverable | Depends on | Exit |
 |---|---|---|---|
 | C0 | Consume colenc 0.1.1 | Published registry artifact | **Done** (verification §38): the manifest, the README instructions and the AGENTS.md notes name 0.1.1 together; `moon tree` resolves it with no workspace override, after the registry index and the cached 0.1.0 copy were cleared. The new `Encoding` / `EncodingError` variants needed no consumer edit, because the engine translates errors through `EncodingError::message` and never matches on `Encoding`. Three-target suites, page fixtures, writer interoperability, spill round trips, the goldens on wasm-gc, js and the release binary, and `check_release.py --check-consumer` with fresh caches pass. It enables APIs; it introduces no approximate SQL or automatic index |
-| R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | **Done** (verification §40): `bc1a8f5` passed the whole list again — check, format and interfaces clean, 348 wasm-gc / 361 native / 348 js tests, the 33 goldens on all three paths, the correlation differential (fixed and seeded), the window and pushdown gates, page fixtures, CLI, spill, writer interoperability, the corpus at 17 decoded / 51 refused / 0 failing, and the eleven timed cases green against DuckDB. The 2.41 GB write, the host-free wasm build, 16/16 in real Chromium and the 213-file archive consumer with fresh caches all pass. One open decision, not a gate: the 0.1.1 artifact costs about 10% on wide CSV scans (7–14% by run; bisect and probes in `bench-baseline.md`), fixable by taking the bitmap out of colenc's generic encode/decode dispatch (implemented on colenc's unreleased `main`; a colenc release plus a re-record removes it). After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks |
+| R2 | Refresh 0.6.0 on the final source and dependency | C0, `ae6a28c` | **Done** (verification §40): `bc1a8f5` passed the whole list again — check, format and interfaces clean, 348 wasm-gc / 361 native / 348 js tests, the 33 goldens on all three paths, the correlation differential (fixed and seeded), the window and pushdown gates, page fixtures, CLI, spill, writer interoperability, the corpus at 17 decoded / 51 refused / 0 failing, and the eleven timed cases green against DuckDB. The 2.41 GB write, the host-free wasm build, 16/16 in real Chromium and the 213-file archive consumer with fresh caches all pass. Its one open decision — the 0.1.1 artifact costing about 10% on wide CSV scans (7–14% by run; bisect and probes in `bench-baseline.md`) — is **closed** by C2/§41: colenc 0.1.2 ships the dispatch split and the re-record puts those cases 6–11% faster than the 0.1.1 control. After an authorized push, require that revision's CI and nightly; after publication/deployment, run the exact registry/page-version checks |
 | A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | **Done** (verification §39): [docs/sketches.md](sketches.md) states input and output types, NULL and empty-input behavior, the value equivalence (type-tagged, `-0.0`/`0.0` one value, every NaN one value, strings as UTF-8 bytes, dates as epoch days), parameter validation, update/finalize, ownership and error translation, plus the measured state per group (HLL 65,536 B, t-digest 52–73 centroids) and the crossover against the exact set (about 750 distinct values per group). It reuses the one fold and states that no partial-state merge is used |
 | A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | **Done** (verification §39): a new `Acc` variant on the same fold, so the in-memory gather, the streaming pull and the grace partitions all reach it, and the window path too. Fixed precision 14, Int64 result rounded to nearest, empty/all-NULL input 0, NULL skipped; canonicalization matches `scalar_key` (type-tagged, both zeros one value, all NaN payloads one value). 1,000,000 distinct strings: 1,010,708 (+1.07%); peak RSS 56.6 MB against 144.7 MB for the exact count and 56.6 MB for a decode-only `count(s)`. Exact `COUNT(DISTINCT ...)` unchanged, no optimizer rewrite, no partition merge. Suites cover native/wasm-gc/js; the grouped shape shows where a sketch loses (1,000 groups × 1,000 distinct: 145.8 MB against 152.8 MB) |
 | A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | **Done** (verification §39): compression 100, numeric input, a constant `q` in [0, 1] folded into `AggSpec.q` and validated at bind time (so an empty input or a LIMIT fails the same way), Float64 output and NULL for empty/all-NULL input. Non-finite input is a SQL error raised at the finish step, because the fold cannot raise; int64 beyond 2^53 is documented as a Double conversion rather than detected. q = 0.5 and 0.9 over 0..999,999 match the exact median and 90th percentile; peak RSS 33.9 MB against 44.4 MB for `median()`. Exact `median()` unchanged |
@@ -310,6 +310,11 @@ table and the one cost they show.
   earlier in the same session at the same clock, so `--compare` has nothing to
   declare missing. Data, SQL and answer hashes match case by case; toolchain,
   consumption mode, wall/CPU spread and peak RSS are in the record.
+- moonlake after the dependency move: `harness/baseline/2026-10-26-colenc-0.1.2.json`
+  (`95c42c6`) beside `harness/baseline/2026-10-26-colenc-0.1.1-control.json`
+  (`bc1a8f5`, built in its own worktree), the first of three alternating pairs.
+  The three pairs are what the table in §41 reports; clocks were not pinned, so
+  the per-round delta is quoted beside each median.
 - The sketch evidence A1/A2 asked for is beside the exact controls in
   `docs/sketches.md` and §39: accuracy against the exact count, the state per
   group, and the crossover where a dense sketch costs more than the exact set.

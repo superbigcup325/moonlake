@@ -14,12 +14,11 @@ fix has targeted evidence in §37, the colenc 0.1.1 upgrade in §38, the two
 approximate aggregates in §39, and the final candidate passed the same list again
 in §40. The entries below describe implemented changes; proposed index work stays
 in the roadmap. Push, tag, publication and deployment follow authorization, and
-the release date is set then. The one open decision is the upgrade's cost: the
-final candidate is about 10% slower on wide CSV scans, traced to the bitmap code
-that colenc 0.1.1's generic dispatch keeps reachable from this tree rather than
-to this tree (`docs/bench-baseline.md`); the upstream fix exists on colenc's
-unreleased `main` and measures this tree back at control speed, so the cost
-disappears with the next colenc release.
+the release date is set then. The dependency upgrade's cost is closed rather
+than accepted: colenc 0.1.1 was about 10% slower on wide CSV scans because its
+generic dispatch kept the bitmap reachable from this tree, colenc 0.1.2 publishes
+the split that removes it, and the re-record puts those cases 6-11% below the
+0.1.1 control (`docs/bench-baseline.md`, verification §41).
 
 ### Added
 
@@ -147,6 +146,17 @@ disappears with the next colenc release.
   an approximate SQL function or an automatic index. This is C0 of the
   [follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011); the evidence is
   verification §38
+- `superbigcup325/colenc` 0.1.1 → 0.1.2, the published artifact that carries the
+  reachability fix and the kernel work behind it: PLAIN word loads, the
+  dictionary early exit, byte-sized HLL registers, the bitmap query methods, the
+  t-digest compression change and reusable FSST models. Two colenc API changes
+  are visible to callers — the generic `encode_column` / `decode_column` refuse
+  `Encoding::Roaring`, and `HllSketch::registers()` returns a snapshot — and
+  neither touches this tree, because the engine reaches the bitmap through the
+  dedicated entry points where it reaches it at all. No source change here, so
+  the tests, goldens, corpus and packaged consumer are the same gates on a new
+  artifact. This is C1 of the [follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011);
+  the acceptance rerun and the performance pair are verification §41
 - Aggregation folds its input as the scan delivers it. A single-table `GROUP BY`
   or a global aggregate now builds its group state one batch at a time instead
   of being handed the whole input, so the operator holds its state and one batch
