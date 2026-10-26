@@ -2177,13 +2177,22 @@ The previous candidate's source is otherwise identical. A probe build with
 `encoders/roaring.mbt` removed from a local colenc 0.1.1, facade arms refusing,
 comes back to the control's speed on both the scan and the join.
 
-So the 1,137 lines the bitmap added to `colenc/encoders` are linked by every
-Parquet consumer, and what survives dead-code elimination moves the hot CSV loop
-around. It is a packaging problem in the dependency, not a regression in this
-tree, and the fix is to give the bitmap its own package — a colenc release, then
-this pair re-run. Recorded with the rotating A/B (10–12 pairs a side, 1.5%
-measured harness bias), the bisect and the probe in `bench-baseline.md`, because
-the cost should be a decision for the release owner and not a footnote.
+So the 1,137 lines the bitmap added to `colenc/encoders` stay linked: the
+generic `encode_column` / `decode_column` dispatch that the spill format calls
+reaches them, and what survives dead-code elimination moves the hot CSV loop
+around. A second probe made that precise — keep the file, refuse only the two
+facade arms, and the binary is the same size as a deletion build and the scan is
+back at the control's speed. It is a dispatch problem in the dependency, not a
+regression in this tree, and the fix is to move the `Roaring` arms out of the
+generic dispatch — a colenc release, then this pair re-run. A package move alone
+would not have done it, which is why the probe was worth running twice. The
+change itself is small and lives in colenc: `encode_column` / `decode_column`
+refuse the set encoding, and `encode_roaring_column` / `decode_roaring_column`
+carry its path. A build of this tree against it is 8,248 bytes smaller and at
+control speed. Recorded
+with the rotating A/B (10–12 pairs a side, 1.5% measured harness bias), the
+bisect and both probes in `bench-baseline.md`, because the cost should be a
+decision for the release owner and not a footnote.
 
 Memory is flat across every case, expression-only start-up is unchanged, and the
 Parquet cases did not move. The CSV cost is the only open question before

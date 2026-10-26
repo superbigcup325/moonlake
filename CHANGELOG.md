@@ -16,8 +16,10 @@ in §40. The entries below describe implemented changes; proposed index work sta
 in the roadmap. Push, tag, publication and deployment follow authorization, and
 the release date is set then. The one open decision is the upgrade's cost: the
 final candidate is about 10% slower on wide CSV scans, traced to the bitmap code
-colenc 0.1.1 added to the package every Parquet consumer links rather than to
-this tree (`docs/bench-baseline.md`).
+that colenc 0.1.1's generic dispatch keeps reachable from this tree rather than
+to this tree (`docs/bench-baseline.md`); the upstream fix exists on colenc's
+unreleased `main` and measures this tree back at control speed, so the cost
+disappears with the next colenc release.
 
 ### Added
 

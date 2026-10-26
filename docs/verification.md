@@ -3116,14 +3116,20 @@ about 10% slower on wide CSV scans than `3ab2634` (7–14% by run), and the bise
 puts the cause
 outside this tree: `ae6a28c` (reader fix only) measures +0.3%, while `24d983b`
 (the manifest move to colenc 0.1.1, source unchanged) measures 9.4% slower
-against the same control. A local colenc 0.1.1 with `encoders/roaring.mbt`
-removed and its facade arms refusing is back at the control's speed, so the
-1,137 lines of bitmap code 0.1.1 added to the package every Parquet consumer
-links are what moves the hot loops. Memory is flat everywhere. The record,
-the rotating A/B numbers and the probe are in
+against the same control. Two local colenc probes settle what the cause is: one
+deletes `encoders/roaring.mbt` and refuses the facade arms, the other keeps the
+file and only refuses the arms. Both produce the same 1,632,744-byte binary and
+both return to the control's speed, so the cost is reachability — the generic
+`encode_column` / `decode_column` dispatch that the spill format calls reaches
+the 1,137 lines, so dead-code elimination cannot drop them and what remains moves
+the hot loops. Memory is flat everywhere. The record, the rotating A/B numbers
+and the probes are in
 [bench-baseline](bench-baseline.md#060-final-record-beside-the-candidate-it-refines-2026-10-26).
-The fix is a colenc packaging change (give the bitmap its own package) followed
-by a re-run of the pair; it is not something this tree can do for itself.
+The fix is to take the `Roaring` arms out of that dispatch into dedicated
+functions, then re-run the pair; it is not something this tree can do for itself.
+That change is implemented on colenc's unreleased `main`, and a build of this
+tree against it is at control speed (157.9 against 163.0 ms median, 8,248 bytes
+smaller), so what remains is a colenc release and a re-record.
 
 **What it does not close.** Remote CI and the nightly at this SHA need the push;
 `moon publish --dry-run` uploads an archive, and publication, tagging and

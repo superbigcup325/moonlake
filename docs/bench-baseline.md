@@ -534,16 +534,20 @@ Parquet reader fix, measures +0.3% on `SELECT count(*)` over SF0.1 lineitem.
 slower for the same query against the same control, in the same session. So the
 cost comes in with the dependency artifact, not with the code that uses it.
 
-**The probe.** A local copy of colenc 0.1.1 with `encoders/roaring.mbt` deleted
+**The probes.** A local copy of colenc 0.1.1 with `encoders/roaring.mbt` deleted
 and the facade's two `Roaring` arms turned into refusals — nothing else changed —
 built through a `moon.work` workspace: `scan/count_csv` comes back at the
-control's speed and the fanout join within ±1.5% of it. The Roaring bitmap is
-1,137 lines that 0.1.1 added to `colenc/encoders`, the package every Parquet
-consumer links for page decoding; the CSV path never calls it, but what survives
-dead-code elimination still moves the hot loops around. Rotating interleaved
-A/B (10–12 pairs per side, so neither binary always runs first, the machine at
-0.4–2.5 load; the harness's own bias, measured by A/B-ing one binary against
-itself, is 1.5%), taken twice on different days:
+control's speed and the fanout join within ±1.5% of it. The decisive variant
+keeps `roaring.mbt` where it is and only refuses the two facade arms: the binary
+is the same 1,632,744 bytes as the deletion probe, 8,248 fewer than the shipped
+one, and measures 159.1 ms median against the control's 159.1 while the shipped
+candidate sits 10.8% above it. So the cost is reachability, not the file's
+package: nothing in the CSV path calls the bitmap, but the generic
+`encode_column` / `decode_column` dispatch that the spill format calls does, so
+dead-code elimination cannot drop the 1,137 lines and what remains moves the hot
+loops. Rotating interleaved A/B (10–12 pairs per side, so neither binary always
+runs first, the machine at 0.4–2.5 load; the harness's own bias, measured by
+A/B-ing one binary against itself, is 1.5%), taken twice on different days:
 
 | query | 3ab2634 | `bc1a8f5` | delta |
 |---|---|---|---|
@@ -565,20 +569,18 @@ smaller CSV, shows no regression, so the cost lands on wide-row CSV scans.
 
 **What that means for publishing.** The upgrade is what makes the two new
 aggregates possible, and this tree's own code has no part in the cost. The fix
-belongs upstream: give the bitmap its own colenc package so a Parquet consumer
-that only decodes pages does not link it, then re-run this pair. Until such a
-colenc release exists, 0.6.0 ships about 10% slower wide-CSV scans (7–14%
-by run) than the
-candidate in §36, and that is a decision for the release owner rather than
-something to average away. Recorded here, with the bisect and the probe, because
-the next reader should not have to rediscover it.
-
-**What that means for publishing.** The upgrade is what makes the two new
-aggregates possible, and this tree's own code has no part in the cost. The fix
-belongs upstream: give the bitmap its own colenc package so a Parquet consumer
-that only decodes pages does not link it, then re-run this pair. Until such a
-colenc release exists, 0.6.0 ships about 11% slower wide-CSV scans than the
-candidate in §36, and that is a decision for the release owner rather than
-something to average away. Recorded here, with the bisect and the probe, because
-the next reader should not have to rediscover it.
-
+belongs upstream, and the second probe says what it has to be: a package move
+alone would not help, because the generic dispatch still reaches the bitmap.
+Taking the `Roaring` arms out of `encode_column` and `decode_column` and into
+dedicated functions — so a caller that only ever passes PLAIN, DELTA, the
+length-family or dictionary never links a bitmap — removes the cost without
+touching this tree, at the price of a small semantic change for Roaring callers.
+That change exists now on colenc's unreleased `main` and was measured the same
+way: this tree built against it is 1,632,744 bytes, 8,248 fewer, and measures
+157.9 ms against the control's 163.0 for the scan and parity on the join, ten
+interleaved pairs a side. So the cost is removable rather than intrinsic. Until a
+colenc release carries it and this pair is recorded again, 0.6.0 ships about 10%
+slower wide-CSV scans (7–14% by run) than the candidate in §36, and that stays a
+decision for the release owner rather than something to average away. Recorded
+here, with the bisect and all three probes, because the next reader should not
+have to rediscover it.
