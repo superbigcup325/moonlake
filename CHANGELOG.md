@@ -15,7 +15,7 @@ approximate aggregates in §39, and the final candidate passed the same list aga
 in §40. The entries below describe implemented changes; proposed index work stays
 in the roadmap. Push, tag, publication and deployment follow authorization, and
 the release date is set then. The one open decision is the upgrade's cost: the
-final candidate is about 12% slower on wide CSV scans, traced to the bitmap code
+final candidate is about 10% slower on wide CSV scans, traced to the bitmap code
 colenc 0.1.1 added to the package every Parquet consumer links rather than to
 this tree (`docs/bench-baseline.md`).
 

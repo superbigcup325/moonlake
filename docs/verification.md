@@ -3112,7 +3112,8 @@ re-run on it rather than inherited.
   js with fresh registry and dependency caches.
 
 **The performance pair is a cost, not a formality.** The final candidate is
-about 12% slower on wide CSV scans than `3ab2634`, and the bisect puts the cause
+about 10% slower on wide CSV scans than `3ab2634` (7–14% by run), and the bisect
+puts the cause
 outside this tree: `ae6a28c` (reader fix only) measures +0.3%, while `24d983b`
 (the manifest move to colenc 0.1.1, source unchanged) measures 9.4% slower
 against the same control. A local colenc 0.1.1 with `encoders/roaring.mbt`
@@ -3128,5 +3129,5 @@ by a re-run of the pair; it is not something this tree can do for itself.
 `moon publish --dry-run` uploads an archive, and publication, tagging and
 deployment stay unauthorized. The registry consumer for 0.6.0 and the hosted
 playground's version check happen after those. Nothing here is a statement about
-the published 0.5.0, and the 12% CSV cost above is the one open decision before
+the published 0.5.0, and the CSV cost above is the one open decision before
 publishing.

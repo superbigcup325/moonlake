@@ -2157,7 +2157,7 @@ cannot know which side of that line a query is on.
 Suites are at 348 wasm-gc / 361 native / 348 js, 18 of them new. What is left
 for 0.6.0 is R2, the acceptance rerun on this revision.
 
-## Accepted again, and the 12% that came with the dependency (2026-10-26): R2
+## Accepted again, and the 10% that came with the dependency (2026-10-26): R2
 
 The candidate changed after §36, so the whole list ran again on `bc1a8f5`
 instead of being inherited: three-target suites, the 33 goldens on three paths,
@@ -2167,8 +2167,9 @@ fixtures, CLI, spill, writer interoperability, the corpus at 17 / 51 / 0, the
 Chromium, and the archive consumer at 213 files with fresh caches. Everything
 passed. §40 is the record.
 
-The performance pair is the part worth reading. The final candidate is about 12%
-slower than `3ab2634` on wide CSV scans, and the honest thing was to chase it
+The performance pair is the part worth reading. The final candidate is about 10%
+slower than `3ab2634` on wide CSV scans (7–14% by run; the recorded pair overstates
+it because it is taken case by case rather than interleaved), and the honest thing was to chase it
 rather than call it noise. The bisect was clean because the commits are clean:
 `ae6a28c` is the reader fix and measures +0.3%; `24d983b` touches only the
 manifest and measures 9.4% slower against the same control in the same session.

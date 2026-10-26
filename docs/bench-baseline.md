@@ -542,13 +542,21 @@ control's speed and the fanout join within ±1.5% of it. The Roaring bitmap is
 consumer links for page decoding; the CSV path never calls it, but what survives
 dead-code elimination still moves the hot loops around. Rotating interleaved
 A/B (10–12 pairs per side, so neither binary always runs first, the machine at
-1.0–2.3 load; the harness's own bias, measured by A/B-ing one binary against
-itself, is 1.5%):
+0.4–2.5 load; the harness's own bias, measured by A/B-ing one binary against
+itself, is 1.5%), taken twice on different days:
 
 | query | 3ab2634 | `bc1a8f5` | delta |
 |---|---|---|---|
-| `SELECT count(*)` over SF0.1 lineitem | 159.1 ms median, 148.8 best | 179.0 ms median, 173.7 best | +12.5% median, +16.7% best |
-| the fanout join | 351.7 ms median, 332.4 best | 397.9 ms median, 374.3 best | +13.1% median, +12.6% best |
+| `SELECT count(*)` over SF0.1 lineitem, first | 159.1 ms median, 148.8 best | 179.0 ms median, 173.7 best | +12.5% median, +16.7% best |
+| the fanout join, first | 351.7 ms median, 332.4 best | 397.9 ms median, 374.3 best | +13.1% median, +12.6% best |
+| `SELECT count(*)`, second | 163.4 ms median, 156.5 best | 179.0 ms median, 176.5 best | +9.5% median, +12.8% best |
+| the fanout join, second | 372.8 ms median, 363.4 best | 400.9 ms median, 389.0 best | +7.5% median, +7.0% best |
+
+So the honest figure is a range, not a digit: the scan costs about 10% and the
+join 7–8%, with single sessions as high as 14%. The recorded pair above reports
++18.8% and +33.2% because the pair is taken case by case rather than interleaved;
+the rotating A/B, which alternates and rotates the order, is the number to
+quote. The conclusion does not depend on which of these one picks.
 
 Two further checks bound what it is not: the expression-only `SELECT 1 + 1` is
 1.0 ms on both binaries (no startup cost), and the Parquet cases are unchanged
@@ -559,7 +567,8 @@ smaller CSV, shows no regression, so the cost lands on wide-row CSV scans.
 aggregates possible, and this tree's own code has no part in the cost. The fix
 belongs upstream: give the bitmap its own colenc package so a Parquet consumer
 that only decodes pages does not link it, then re-run this pair. Until such a
-colenc release exists, 0.6.0 ships about 12% slower wide-CSV scans than the
+colenc release exists, 0.6.0 ships about 10% slower wide-CSV scans (7–14%
+by run) than the
 candidate in §36, and that is a decision for the release owner rather than
 something to average away. Recorded here, with the bisect and the probe, because
 the next reader should not have to rediscover it.
