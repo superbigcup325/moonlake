@@ -3208,8 +3208,8 @@ reasoning are in
 [bench-baseline](bench-baseline.md#colenc-012-removes-the-cost-on-a-quiet-host-2026-10-26).
 Peak RSS is flat within 1.7 MB everywhere.
 
-**What it does not close.** The commit carrying this evidence is local until it
-is pushed, so this revision's CI and nightly are unverified, and the published
-moonlake release is still 0.5.0 — publication needs authorization and stays
-outside this section. The 0.6.0 registry consumer, the hosted playground version
-check and the deployment happen after that.
+**What it does not close.** The published moonlake release is still 0.5.0:
+publication needs authorization and stays outside this section, and the 0.6.0
+registry consumer, the hosted playground version check and the deployment happen
+after that. Remote CI and the nightly do certify these commits — `4de8077` on
+`main` passed the push CI and a dispatched nightly, and pages deployed from it.
