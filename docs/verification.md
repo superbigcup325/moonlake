@@ -3450,6 +3450,16 @@ The reference-tool gates ran under Python 3.12.14 with `duckdb==2.0.0` and
 `pyarrow==26.0.0`, the pinned environment, on the candidate tree before its
 commit.
 
+**Release-side checks.** Both ran afterwards, on the tree as `bacea04` — clean, no
+workspace override, fresh registry and dependency caches — and nothing but this
+record changed after it: `check_release.py --check-consumer` packs the 223-file
+archive and passes in a separate consumer on native, wasm-gc and js (version,
+CSV, Parquet raw and Snappy, DATE/NULL, drop, and four streamed shapes agreeing
+with the collected ones); `check_release.py --publish-dry-run` runs
+`moon publish --dry-run` over the same archive and the version claims agree
+across `moon.mod`, `moonlake.mbt` and `CHANGELOG.md`. Publication itself is
+still unauthorized and therefore not done.
+
 **The H0 matrix on the shipped version.** A fresh record,
 `harness/baseline/2026-10-26-h0-hll-colenc-0.1.3.json`: the same rig, the same 18
 shapes, `344d739`, clean tree, load average 2.5–1.9. MB of peak RSS and
