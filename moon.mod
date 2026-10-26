@@ -28,5 +28,5 @@ description = "Embeddable analytical query engine for MoonBit: run SQL over CSV/
 import {
   "moonbitlang/x@0.5.6",
   "moonbitlang/quickcheck@0.15.0",
-  "superbigcup325/colenc@0.1.2",
+  "superbigcup325/colenc@0.1.3",
 }
