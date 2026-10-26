@@ -10,11 +10,14 @@ Everything since 0.5.0 belongs to this version, and its
 [0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan) is complete: one
 candidate passed the whole acceptance list, recorded in `verification.md` §36 and
 in the performance pair at the end of `docs/bench-baseline.md`. The later Parquet
-fix has targeted evidence in §37. The [colenc 0.1.1 follow-up plan](docs/ROADMAP.md#follow-up-after-colenc-011)
-calls for a dependency upgrade and acceptance on the final candidate. The
-entries below describe implemented changes; proposed index work stays
+fix has targeted evidence in §37, the colenc 0.1.1 upgrade in §38, the two
+approximate aggregates in §39, and the final candidate passed the same list again
+in §40. The entries below describe implemented changes; proposed index work stays
 in the roadmap. Push, tag, publication and deployment follow authorization, and
-the release date is set then.
+the release date is set then. The one open decision is the upgrade's cost: the
+final candidate is about 12% slower on wide CSV scans, traced to the bitmap code
+colenc 0.1.1 added to the package every Parquet consumer links rather than to
+this tree (`docs/bench-baseline.md`).
 
 ### Added
 
