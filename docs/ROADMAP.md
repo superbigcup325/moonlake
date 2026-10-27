@@ -248,13 +248,16 @@ exact. It adds no colenc API.
    is flushed as a run. Retained input is at most the budget plus one scan batch
    and does not depend on the total row count.
 3. *Partition count is fixed at the first overflow and derived from the budget,
-   not from the input.* `P = clamp((budget / 4) / MIN_RUN, 2, 64)` with `MIN_RUN`
-   256 KiB, so a small budget does not produce many tiny runs. 64 KiB was
-   measured first and gave 64 partitions at a 16M budget, 20% slower than the
-   collected path; 256 KiB stayed within 6% of it at the 4M, 16M and 32M budgets
-   tried (E5c records the table). Growing
-   `P` mid-stream (`hash mod 2P` refines `hash mod P`) is kept in reserve and is
-   only worth building if E5c shows the file count or small-run cost matters.
+   not from the input.* `P = clamp((budget / 4) / MIN_RUN, 2, CAP)` with
+   `MIN_RUN` 32 KiB and `CAP` 16. Both ends were measured: 64 partitions cost
+   the cheap aggregates about 20% because every batch is split that many ways,
+   while 2 partitions cost `string_agg` a quarter of its time and js 100,000
+   groups 15% (E5c records both tables). The cap is reached at a 2M budget and
+   holds above it, so no native shape at 4M or 16M is more than 3% slower than
+   the collected path, and two are faster. The cost is file count: 269 files against 78 for the same
+   bytes on 4,000,000 rows at a 4M budget, which was not measured against
+   filesystem limits. Growing `P` mid-stream (`hash mod 2P` refines
+   `hash mod P`) stays in reserve.
 4. *Skew and one oversized exact state stay exact.* A partition is aggregated
    run by run through `aggregate_seq`, so it costs its group state plus one run,
    and a hot key only unbalances I/O. The state of a single group under
@@ -299,7 +302,7 @@ memory limit independently of sketches.
 | 2 | H0, moonlake: current grouped-HLL baseline | **Done** (verification §43, re-measured on the released artifact in §44). `harness/bench_hll.py` sweeps 18 shapes in isolated processes with decode-only and exact-count controls, duplicates and NULL variants; against colenc 0.1.2 a sketch cost about 20 KB per group, the crossover at 1,000 groups was near 200 distinct values, and 20,000 groups of one value held 408.0 MB against 17.2 MB for the exact set. That promoted sparse sketch state, which colenc released as 0.1.3: the same matrix through the registry artifact moves those rows to 15.4 MB, 392.6 MB less, answers identically and leaves the crossover where it was. The 0.1.1 and 0.1.2 tables stay as history |
 | 3 | E5a, moonlake: input-buffer and spill contract | State how to choose or grow partitions without knowing the total input size, share a budget across all partition buffers, and preserve group-key equality and exact aggregate semantics. Decide the over-budget policy for skew and for one exact distinct/median/string state before implementation. Specify ownership and cleanup on source/spill failure. Record the decision before changing behavior. **Recorded** in the "Budgeted GROUP BY input" paragraph under Semantic and memory decisions; E5b implements it and E5c measures it |
 | 4 | E5b, moonlake: consume batches before grace aggregation | Replace the collected scan input with bounded partition buffering for the existing single-table budgeted GROUP BY shape. Reuse the accumulator fold and spill format; retain explicit fallback behavior for other shapes. Exact queries stay exact. This task requires no new colenc API. **Done** (verification section 45) |
-| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation. **Partly done** (verification section 45, `harness/bench_agg_pull.py`): the rows-grow table, five other shapes, `string_agg`, the partition-size choice and DuckDB answers are recorded. The buffered-bytes and largest-partition counters exist. On wasm-gc and js the path runs, reports the same counters and returns the same answers (verification section 45). Open: showing bounded retained input there, which the runtime baseline hides at the sizes tried, and a 15% slowdown on js at 100,000 groups under a 2M budget, which follows the partition count (2 against the old path's 16; verification section 45). A better partition rule, for example a cap of 16 with a lower floor, is untested on native and wasm-gc. `string_agg` time follows the partition count and not the path (verification section 45) |
+| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation. **Partly done** (verification section 45, `harness/bench_agg_pull.py`): the rows-grow table, five other shapes, `string_agg`, the partition-size choice and DuckDB answers are recorded. The buffered-bytes and largest-partition counters exist. On wasm-gc and js the path runs with the same counters and answers (verification section 45). Open: showing bounded retained input there, which the runtime baseline hides at the sizes tried, and whether the file counts the partition cap produces matter. `string_agg` time follows the partition count and not the path (verification section 45) |
 
 E5 started at `engine/stream.mbt`'s `streaming_agg_source` (which excluded a
 budgeted GROUP BY) and `engine/extagg.mbt`'s
