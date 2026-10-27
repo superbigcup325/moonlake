@@ -157,7 +157,7 @@ sequence below adds no implemented SQL or index API.
 | Project | Current evidence | Consequence for the plan |
 |---|---|---|
 | colenc | [0.1.3 is released](https://github.com/superbigcup325/colenc/releases/tag/v0.1.3) from `a97c230`; checked upstream `main` is `d6a892e`, with [CI passing](https://github.com/superbigcup325/colenc/actions/runs/40347165504). Registry-consumer acceptance passed on three targets for both 0.1.2 and 0.1.3 | The dedicated Roaring entry points, compact HLL registers, the sparse sketch state, t-digest changes and reusable FSST models are available. Kernel and publication work is complete; no new colenc release blocks 0.6.0 |
-| moonlake | `344d739` consumes colenc 0.1.3 at version 0.6.0 without a workspace override; `main` is `a0c7628`. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | C0, R2, A0/A1/A2, the 0.1.2 acceptance/baseline pair and the 0.1.3 upgrade are complete. Keep the accepted 0.6.0 scope frozen while preparing release |
+| moonlake | `344d739` consumes colenc 0.1.3 at version 0.6.0 without a workspace override; `main` is `a0c7628`. The [latest release is 0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0) | C0, R2, A0/A1/A2, the 0.1.2 acceptance/baseline pair and the 0.1.3 upgrade are complete. E5 (verification §45) now belongs to 0.6.0 by decision on 2026-10-27, so the acceptance list reruns on the final candidate before release |
 | moonlake verification | §41 records the full list on `95c42c6` and §44 the same list on `344d739` (colenc 0.1.3): 348 wasm-gc / 361 native / 348 js tests, goldens, differentials, corpus, large-file and playground checks, plus the archive consumer and publish dry run at `bacea04`. `4de8077` passed CI and nightly; `a0c7628` passed CI, and `9c677a8` passed CI, Pages and a dispatched nightly | The old remote-nightly failure is resolved. The 0.6.0 registry consumer and hosted-page version acceptance can only run after publication; tag and artifact identity are recorded, publication awaits authorization |
 
 colenc owns buffer encodings, bitmap operations, sketch state and their typed
@@ -173,8 +173,8 @@ baseline in §41 and the 0.1.3 upgrade in §44. The earlier scope and completed 
 through R1 are preserved. A0/A1's state-cost numbers below describe colenc 0.1.1;
 the current p14 register payload is 16 KiB, H0 refreshed the SQL crossover (§43)
 and the sparse state it promoted is released in the dependency this tree now
-consumes. E5 is implemented (verification section 45) and I0 remains unimplemented. Adding another feature to 0.6.0 would require the final acceptance
-to run again, so the next sequence keeps implementation outside that candidate.
+consumes. E5 is implemented (verification section 45) and is part of 0.6.0 by decision on 2026-10-27, so
+the acceptance list has to run again on the final candidate. I0 remains unimplemented and outside it.
 
 | Task | Deliverable | Depends on | Exit |
 |---|---|---|---|
@@ -261,8 +261,8 @@ exact. It adds no colenc API.
    `median`, `count(DISTINCT)` or `string_agg` grows with that group's rows; a
    hard cap would turn queries that answer today into errors, so there is none.
    `--analyze` reports the partition count and, on the existing `aggregate`
-   line, the group count; the largest partition's spill bytes are a counter E5c
-   adds. Combining partial states (which would let `count` or `sum` be
+   line, the group count; the buffered-bytes peak and the largest partition's spilled bytes are
+   reported by `--analyze` too, as estimates. Combining partial states (which would let `count` or `sum` be
    pre-aggregated) needs a combine phase and is outside E5.
 5. *Ownership.* The cleanup is registered before the first run is written and
    each run id is recorded as soon as its write returns, so a source failure, a
@@ -287,8 +287,9 @@ byte/statistical gates when evaluating a new implementation.
 
 ## Next delivery after colenc 0.1.3
 
-This is the proposed work order, not another feature commitment for 0.6.0 or a
-new version reservation. R3 closes the accepted release; H0 measures the current
+This is the work order. E5 was added to 0.6.0 after it was written, so R3 reruns
+the acceptance list on the candidate that carries it; no other new feature is
+committed and no new version is reserved. R3 closes the release; H0 measures the current
 state before another sketch decision; E5 addresses an existing exact-query
 memory limit independently of sketches.
 
@@ -298,7 +299,7 @@ memory limit independently of sketches.
 | 2 | H0, moonlake: current grouped-HLL baseline | **Done** (verification §43, re-measured on the released artifact in §44). `harness/bench_hll.py` sweeps 18 shapes in isolated processes with decode-only and exact-count controls, duplicates and NULL variants; against colenc 0.1.2 a sketch cost about 20 KB per group, the crossover at 1,000 groups was near 200 distinct values, and 20,000 groups of one value held 408.0 MB against 17.2 MB for the exact set. That promoted sparse sketch state, which colenc released as 0.1.3: the same matrix through the registry artifact moves those rows to 15.4 MB, 392.6 MB less, answers identically and leaves the crossover where it was. The 0.1.1 and 0.1.2 tables stay as history |
 | 3 | E5a, moonlake: input-buffer and spill contract | State how to choose or grow partitions without knowing the total input size, share a budget across all partition buffers, and preserve group-key equality and exact aggregate semantics. Decide the over-budget policy for skew and for one exact distinct/median/string state before implementation. Specify ownership and cleanup on source/spill failure. Record the decision before changing behavior. **Recorded** in the "Budgeted GROUP BY input" paragraph under Semantic and memory decisions; E5b implements it and E5c measures it |
 | 4 | E5b, moonlake: consume batches before grace aggregation | Replace the collected scan input with bounded partition buffering for the existing single-table budgeted GROUP BY shape. Reuse the accumulator fold and spill format; retain explicit fallback behavior for other shapes. Exact queries stay exact. This task requires no new colenc API. **Done** (verification section 45) |
-| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation. **Partly done** (verification section 45, `harness/bench_agg_pull.py`): the rows-grow table, five other shapes, `string_agg`, the partition-size choice and DuckDB answers are recorded. Open: a buffered-bytes counter, wasm-gc and js measurements. `string_agg` time follows the partition count and not the path (verification section 45) |
+| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation. **Partly done** (verification section 45, `harness/bench_agg_pull.py`): the rows-grow table, five other shapes, `string_agg`, the partition-size choice and DuckDB answers are recorded. The buffered-bytes and largest-partition counters exist. Open: wasm-gc and js resource measurements (the path runs on both and reports the same counters). `string_agg` time follows the partition count and not the path (verification section 45) |
 
 E5 started at `engine/stream.mbt`'s `streaming_agg_source` (which excluded a
 budgeted GROUP BY) and `engine/extagg.mbt`'s
