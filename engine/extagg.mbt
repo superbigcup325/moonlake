@@ -74,6 +74,9 @@ fn grace_agg(
   for _ in 0..<p {
     writers.push(RunWriter::partitioned(store, budget))
   }
+  // registered before the first run is written: a failure while partitioning or
+  // flushing must remove the runs already on disk
+  errdefer remove_writers(store, writers)
   for batch in joined {
     partition_side(batch, group_exprs, writers)
   }
@@ -83,10 +86,23 @@ fn grace_agg(
   if stats.length() > 0 {
     stats.push(("spill partitions", p.to_int64()))
   }
-  errdefer remove_writers(store, writers)
+  grace_finish(store, writers, group_exprs, group_types, aggs)
+}
+
+///|
+/// Aggregate every partition the writers hold, one run at a time, remove their
+/// files and concatenate the groups. Shared by the collected and the pulled
+/// grace aggregation: both end with every partition's runs on the store.
+fn grace_finish(
+  store : SpillStore,
+  writers : Array[RunWriter],
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch raise @types.SqlError {
   let out : Array[@types.DataBatch] = []
   let dtypes : Array[@types.DataType] = []
-  for k in 0..<p {
+  for k in 0..<writers.length() {
     if writers[k].ids.length() == 0 {
       continue // more partitions than distinct keys: nothing to aggregate
     }
@@ -108,4 +124,157 @@ fn grace_agg(
   }
   remove_writers(store, writers)
   concat_batches(out, dtypes)
+}
+
+///|
+/// The smallest run worth writing when the input size is not known: the shared
+/// pool is split over at most `budget / 4 / AGG_MIN_RUN` partitions, so a small
+/// budget does not turn into many tiny files. Measured on 8M rows, 100 groups,
+/// at 16M and 32M budgets: 64 KiB gave 64 partitions and ran 20% slower than the
+/// collected path (every batch is split 64 ways), 256 KiB stayed within 6% of it
+/// at every budget tried, and 1 MiB within 7%.
+const AGG_MIN_RUN : Int32 = 262144
+
+///|
+/// Partition count for a pulled aggregation: fixed by the budget alone, because
+/// the input size is not known when the first batch overflows.
+fn agg_pull_partitions(budget : Int32) -> Int32 {
+  let mut p = budget / 4 / AGG_MIN_RUN
+  if p < 2 {
+    p = 2
+  }
+  if p > AGG_PARTITION_CAP {
+    p = AGG_PARTITION_CAP
+  }
+  p
+}
+
+///|
+/// The partition writers of one pulled aggregation and the single buffer they
+/// share. Each writer used to hold its own `budget / 4`, so up to 64 of them
+/// could keep 16 times the budget; here the buffers add up to `limit`, and when
+/// they do not fit the largest one is written out as a run.
+priv struct PartitionPool {
+  writers : Array[RunWriter]
+  limit : Int32
+  mut pooled : Int32
+}
+
+///|
+/// Route each row of `batch` into its key-hash partition buffer, then write out
+/// the largest buffers until the pool fits again.
+fn PartitionPool::add(
+  self : PartitionPool,
+  batch : @types.DataBatch,
+  key_exprs : Array[PhysExpr],
+) -> Unit raise @types.SqlError {
+  let p = self.writers.length()
+  let key_vecs : Array[@types.ColumnVector] = []
+  for e in key_exprs {
+    key_vecs.push(eval_vec(e, batch))
+  }
+  let idx : Array[Array[Int32]] = []
+  for _ in 0..<p {
+    idx.push([])
+  }
+  for r in 0..<batch.row_count() {
+    idx[key_partition(key_vecs, r, p)].push(r)
+  }
+  for k in 0..<p {
+    if idx[k].length() > 0 {
+      let part = take_rows(batch, idx[k])
+      let bytes = estimate_batch_bytes(part)
+      self.writers[k].stage(part, bytes)
+      self.pooled += bytes
+    }
+  }
+  while self.pooled > self.limit {
+    self.flush_largest()
+  }
+}
+
+///|
+/// Write the largest buffer as one run and release what it held.
+fn PartitionPool::flush_largest(
+  self : PartitionPool,
+) -> Unit raise @types.SqlError {
+  let mut best = 0
+  for k in 1..<self.writers.length() {
+    if self.writers[k].acc_bytes > self.writers[best].acc_bytes {
+      best = k
+    }
+  }
+  let w = self.writers[best]
+  let held = w.acc_bytes
+  if held == 0 {
+    self.pooled = 0
+    return
+  }
+  w.flush()
+  self.pooled -= held
+}
+
+///|
+/// A GROUP BY under `--memory`, fed from a pull instead of a collected input.
+/// Batches are buffered while their estimated bytes (summed in 64 bits) stay
+/// within the budget; if the pull ends first, the buffered batches are aggregated
+/// exactly as the within-budget path does and no spill store is needed. The first
+/// overflow needs one: the buffer is then routed into a fixed number of hash
+/// partitions that share one `budget / 4` pool, the rest of the pull follows, and
+/// each partition is aggregated run by run. Retained input is the budget plus one
+/// scan batch, whatever the total row count; group state and the grouped result
+/// are not bounded by this. Returns the grouped batch and the partition count
+/// (0 when nothing spilled).
+fn aggregate_pulled(
+  next : () -> @types.DataBatch? raise @types.SqlError,
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+  opts : ExecOptions,
+) -> (@types.DataBatch, Int32) raise @types.SqlError {
+  let limit = opts.budget.to_int64()
+  let buffered : Array[@types.DataBatch] = []
+  let mut bytes = 0L
+  let mut exhausted = false
+  while !exhausted && bytes <= limit {
+    match next() {
+      Some(batch) => {
+        buffered.push(batch)
+        bytes += estimate_batch_bytes(batch).to_int64()
+      }
+      None => exhausted = true
+    }
+  }
+  if exhausted {
+    return (aggregate(buffered, group_exprs, group_types, aggs), 0)
+  }
+  let store = match opts.spill {
+    Some(store) => store
+    None =>
+      raise @types.SqlError::Execute(
+        "aggregate input exceeds the memory budget (\{bytes} bytes > \{opts.budget}); provide a spill store (--spill-dir) or raise the budget (--memory)",
+      )
+  }
+  let p = agg_pull_partitions(opts.budget)
+  let writers : Array[RunWriter] = []
+  for _ in 0..<p {
+    writers.push(RunWriter::partitioned(store, opts.budget))
+  }
+  // registered before the first run is written, so a failing source, a failing
+  // store and a failing aggregation all leave through the same removal
+  errdefer remove_writers(store, writers)
+  let pool : PartitionPool = { writers, limit: opts.budget / 4, pooled: 0, }
+  // drain the buffer front to back while releasing it, so it shrinks as the
+  // pool fills instead of both being resident
+  buffered.rev_in_place()
+  while buffered.pop() is Some(batch) {
+    pool.add(batch, group_exprs)
+  }
+  while next() is Some(batch) {
+    pool.add(batch, group_exprs)
+  }
+  for w in writers {
+    w.flush()
+  }
+  (grace_finish(store, writers, group_exprs, group_types, aggs), p)
 }

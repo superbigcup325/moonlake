@@ -84,22 +84,17 @@ fn streaming_source(
 /// order or the whole row set first. GROUP BY is fine — the group state is built
 /// per batch — and so is HAVING, which runs on the finished groups.
 ///
-/// A budget is what excludes the rest: under `--memory` the grace path chooses
-/// between memory and spill partitions from the size of the input it was handed,
-/// so it still needs that input collected first. A global aggregate never spills
-/// (one row is one row), so it streams under a budget too.
+/// A memory budget does not change the shape: a budgeted GROUP BY is also pulled,
+/// and `run_agg_pull` buffers the batches up to the budget and partitions them
+/// into spill runs only when they do not fit (`aggregate_pulled`).
 fn streaming_agg_source(
   bq : BoundQuery,
   sources : Array[@catalog.TableEntry?],
-  opts : ExecOptions,
 ) -> @catalog.TableEntry? {
   if !bq.aggregate ||
     bq.order_by.length() > 0 ||
     bq.windows.length() > 0 ||
     bq.distinct {
-    return None
-  }
-  if opts.budget > 0 && bq.group_exprs.length() > 0 {
     return None
   }
   if bq.steps.length() != 1 || bq.steps[0].table != 0 {
@@ -279,19 +274,27 @@ fn InputPull::next(self : InputPull) -> @types.DataBatch? raise @types.SqlError 
 fn run_agg_pull(
   entry : @catalog.TableEntry,
   launch : Launch,
+  opts : ExecOptions,
   stats : Array[(String, Int64)],
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
   let pull = input_pull(bq, launch.plan, entry)
-  let seq : BatchSeq = {
-    next: fn() -> @types.DataBatch? raise @types.SqlError { pull.next() },
+  let next = fn() -> @types.DataBatch? raise @types.SqlError { pull.next() }
+  // a GROUP BY under a budget may have to spill; everything else folds the pull
+  // directly, as before
+  let (grouped, partitions) = if opts.budget > 0 && bq.group_exprs.length() > 0 {
+    aggregate_pulled(next, bq.group_exprs, bq.group_types, bq.aggs, opts)
+  } else {
+    (aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs), 0)
   }
-  let grouped = aggregate_seq(seq, bq.group_exprs, bq.group_types, bq.aggs)
   let grouped = match bq.having {
     Some(h) => compact(grouped, eval_mask(h, grouped))
     None => grouped
   }
   stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
+  if partitions > 0 {
+    stats.push(("spill partitions", partitions.to_int64()))
+  }
   stats.push(("aggregate", grouped.row_count().to_int64()))
   let projected = project(grouped, bq.out_exprs, bq.out_types)
   let batch = order_limit(projected, [], bq.limit, bq.offset)

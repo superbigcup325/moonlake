@@ -299,11 +299,12 @@ fn run_pipeline(
   let tables = launch.tables
   // A single-table aggregate is fed from the scan instead of a collected
   // input: the group state is built as batches arrive, so the operator holds
-  // its state and one batch rather than its input. Shapes that need the row
-  // order or the whole row set first (ORDER BY, DISTINCT, a window function)
-  // and budgeted GROUP BY inputs stay on the eager path below.
-  match streaming_agg_source(bq, sources, opts) {
-    Some(entry) => return run_agg_pull(entry, launch, stats)
+  // its state and one batch rather than its input. A budgeted GROUP BY buffers
+  // up to the budget and spills only past it. Shapes that need the row order or
+  // the whole row set first (ORDER BY, DISTINCT, a window function) stay on the
+  // eager path below.
+  match streaming_agg_source(bq, sources) {
+    Some(entry) => return run_agg_pull(entry, launch, opts, stats)
     None => ()
   }
   // An ORDER BY under a budget is fed from the scan the same way: the runs are

@@ -193,8 +193,7 @@ test "an aggregate pull hands over one batch at a time" {
   // the pull keeps is what the collected path reports as this table's scan.
   let (cat, _cells) = agg_catalog(agg_batches())
   let launch = agg_launch("select count(*) as n from t", cat)
-  let opts = ExecOptions::in_memory()
-  let entry = match streaming_agg_source(launch.bq, launch.sources, opts) {
+  let entry = match streaming_agg_source(launch.bq, launch.sources) {
     Some(entry) => entry
     None => abort("a single-table aggregate must be fed from its scan")
   }
@@ -218,8 +217,7 @@ test "an aggregate pull skips the batches its filters empty" {
   // dropped.
   let (cat, _cells) = agg_catalog(agg_batches())
   let launch = agg_launch("select count(*) as n from t where v > 90", cat)
-  let opts = ExecOptions::in_memory()
-  let entry = match streaming_agg_source(launch.bq, launch.sources, opts) {
+  let entry = match streaming_agg_source(launch.bq, launch.sources) {
     Some(entry) => entry
     None => abort("a single-table aggregate must be fed from its scan")
   }
@@ -339,10 +337,8 @@ test "an empty input still answers one row globally and none grouped" {
 
 ///|
 test "the pulled and collected aggregates report the same counters" {
-  // A budgeted GROUP BY keeps the collected input (the grace path chooses
-  // memory or spill partitions from its size), so the same SQL with a budget
-  // is the collected run: the counters must not depend on which path fed the
-  // fold.
+  // A budgeted GROUP BY that fits its budget is aggregated from the buffered
+  // batches, so the counters must not depend on whether a budget was set.
   let sql = "select k, count(*) as n from t group by k"
   let (cat1, _c1) = agg_catalog(agg_batches())
   let pulled_stats : Array[(String, Int64)] = []
@@ -392,4 +388,184 @@ test "a global aggregate answers under a budget without a spill store" {
     e => abort("\{e}")
   }
   assert_eq(agg_rows(r.batch()), [[@types.Int64(12)]])
+}
+
+///|
+/// A hermetic spill store and the files it still holds.
+fn agg_mem_store() -> (SpillStore, Map[Int32, Bytes]) {
+  let files : Map[Int32, Bytes] = Map([])
+  let next : Array[Int32] = [0]
+  let store : SpillStore = {
+    write: fn(b : Bytes) -> Int32 {
+      let id = next[0]
+      next[0] = id + 1
+      files[id] = b
+      id
+    },
+    read: fn(id : Int32) -> Bytes raise @types.SqlError {
+      match files.get(id) {
+        Some(b) => b
+        None => raise @types.SqlError::Execute("mem store: missing \{id}")
+      }
+    },
+    remove: fn(id : Int32) -> Unit { let _ = files.remove(id) },
+  }
+  (store, files)
+}
+
+///|
+test "a budgeted GROUP BY folds the scan, spills and answers as the unbudgeted run" {
+  let sql = "select k, g, count(*) as n, sum(v) as s, median(v) as m, count(distinct v) as d from t group by k, g"
+  let (cat1, _c1) = agg_catalog(agg_batches())
+  let plain = run_parsed(
+    @sql.parse_select(sql),
+    cat1,
+    [],
+    ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  let (cat2, _c2) = agg_catalog(agg_batches())
+  let (store, files) = agg_mem_store()
+  let stats : Array[(String, Int64)] = []
+  let spilled = run_parsed(@sql.parse_select(sql), cat2, stats, {
+    budget: 64,
+    spill: Some(store),
+  }) catch {
+    e => abort("\{e}")
+  }
+  let want = agg_rows(plain.batch())
+  let got = agg_rows(spilled.batch())
+  assert_eq(got.length(), want.length())
+  for row in got {
+    assert_true(want.contains(row))
+  }
+  assert_eq(stats[0], ("scan t", 12L))
+  assert_eq(stats.filter(fn(p) { p.0 == "spill partitions" }), [
+    ("spill partitions", 2L),
+  ])
+  // every run the query wrote is gone when it returns
+  assert_eq(files.length(), 0)
+}
+
+///|
+test "a budgeted GROUP BY that overflows without a spill store is a clean error" {
+  let (cat, _cells) = agg_catalog(agg_batches())
+  let msg = try {
+    ignore(
+      run_select_opts("select k, count(*) as n from t group by k", cat, {
+        budget: 64,
+        spill: None,
+      }),
+    )
+    ""
+  } catch {
+    e => e.to_string()
+  }
+  assert_true(msg.contains("provide a spill store"))
+}
+
+///|
+test "a spill write that fails leaves no run behind" {
+  let (base, files) = agg_mem_store()
+  let writes : Array[Int32] = [0]
+  let store : SpillStore = {
+    write: fn(b : Bytes) -> Int32 raise @types.SqlError {
+      writes[0] += 1
+      if writes[0] == 2 {
+        raise @types.SqlError::Execute("disk full")
+      }
+      (base.write)(b)
+    },
+    read: base.read,
+    remove: base.remove,
+  }
+  let (cat, _cells) = agg_catalog(agg_batches())
+  let msg = try {
+    ignore(
+      run_select_opts("select k, count(*) as n from t group by k", cat, {
+        budget: 64,
+        spill: Some(store),
+      }),
+    )
+    ""
+  } catch {
+    e => e.to_string()
+  }
+  assert_true(msg.contains("disk full"))
+  assert_eq(files.length(), 0)
+}
+
+///|
+/// Run `sql` over `batches` unbudgeted and under a 64-byte budget with a store:
+/// both row sets, the stats of the budgeted run and how many spill files it left.
+fn agg_both(
+  sql : String,
+  batches : Array[@types.DataBatch],
+) -> (
+  Array[Array[@types.Scalar]],
+  Array[Array[@types.Scalar]],
+  Array[(String, Int64)],
+  Int32,
+) {
+  let (cat1, _c1) = agg_catalog(batches)
+  let plain = run_parsed(
+    @sql.parse_select(sql),
+    cat1,
+    [],
+    ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  let (cat2, _c2) = agg_catalog(batches)
+  let (store, files) = agg_mem_store()
+  let stats : Array[(String, Int64)] = []
+  let spilled = run_parsed(@sql.parse_select(sql), cat2, stats, {
+    budget: 64,
+    spill: Some(store),
+  }) catch {
+    e => abort("\{e}")
+  }
+  (agg_rows(plain.batch()), agg_rows(spilled.batch()), stats, files.length())
+}
+
+///|
+test "a budgeted GROUP BY over an empty input answers no rows and writes nothing" {
+  let (want, got, stats, left) = agg_both(
+    "select k, count(*) as n from t group by k",
+    [],
+  )
+  assert_eq(want.length(), 0)
+  assert_eq(got.length(), 0)
+  assert_eq(left, 0)
+  assert_true(stats.filter(fn(p) { p.0 == "spill partitions" }).is_empty())
+}
+
+///|
+test "a budgeted GROUP BY applies HAVING to the finished groups after spilling" {
+  // only group 'a' has more than three rows, and its rows arrive in all four
+  // batches, so the count is only right if every partition folded them all
+  let (want, got, stats, left) = agg_both(
+    "select k, count(*) as n from t group by k having count(*) > 3",
+    agg_batches(),
+  )
+  assert_eq(want.length(), 1)
+  assert_eq(got, want)
+  assert_eq(stats.filter(fn(p) { p.0 == "spill partitions" }).length(), 1)
+  assert_eq(left, 0)
+}
+
+///|
+test "a budgeted GROUP BY keeps duplicate keys of a multi-column key together" {
+  let (want, got, stats, left) = agg_both(
+    "select g, k, count(*) as n, sum(v) as s, min(v) as lo, max(v) as hi from t group by g, k",
+    agg_batches(),
+  )
+  assert_true(want.length() > 4)
+  assert_eq(got.length(), want.length())
+  for row in got {
+    assert_true(want.contains(row))
+  }
+  assert_eq(stats.filter(fn(p) { p.0 == "spill partitions" }).length(), 1)
+  assert_eq(left, 0)
 }

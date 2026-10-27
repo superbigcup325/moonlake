@@ -81,6 +81,19 @@ fn RunWriter::push(
 }
 
 ///|
+/// Add a batch to the current run without the per-writer size check: the caller
+/// owns the budget for a group of writers (see `PartitionPool`) and decides which
+/// writer to flush. `bytes` is the batch's estimate, so it is not computed twice.
+fn RunWriter::stage(
+  self : RunWriter,
+  batch : @types.DataBatch,
+  bytes : Int32,
+) -> Unit {
+  self.acc.push(batch)
+  self.acc_bytes += bytes
+}
+
+///|
 /// Write the accumulated batches as one run file, then start a new run.
 fn RunWriter::flush(self : RunWriter) -> Unit raise @types.SqlError {
   if self.acc.length() == 0 {
