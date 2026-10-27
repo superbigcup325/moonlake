@@ -180,7 +180,11 @@ rather than collected — the ones whose input can be consumed as it arrives:
   window run per batch, so a windowed query stops reading once it is full;
 - an aggregate, because the group table is a running hash table: its answer is
   one batch but its input never is (2,000,000 rows over 16 columns: 109.7 MB →
-  35.3 MB of peak RSS);
+  35.3 MB of peak RSS). A `GROUP BY` under a budget is fed the same way: its
+  batches are buffered up to `--memory` and partitioned only past it, so
+  retained input stops growing with the rows (100 groups, 8,000,000 rows, 4M
+  budget: 195 MB → 63 MB) while the group state and the finished result stay
+  unbounded;
 - an `ORDER BY` under a memory budget, which builds its sorted runs from the
   scan and hands out the merge a batch at a time (506.8 MB → 178.8 MB for
   `select * … order by id`, and it stops merging once a window is full);
@@ -192,9 +196,8 @@ rather than collected — the ones whose input can be consumed as it arrives:
 Everything else is computed first and handed back as one batch, because its
 answer does not exist until every row has been seen: a chain of joins, a RIGHT
 or SEMI/ANTI join, a cross join, and anything with ORDER BY, GROUP BY, DISTINCT
-or a window above a join — as well as a `GROUP BY` under a budget, which would
-have nothing to spill. Both deliveries run the same plan, so a pulled row and a
-collected row are the same row. `close()` stops the pull before the end, dropping
+or a window above a join. Both deliveries run the same plan, so a pulled row and
+a collected row are the same row. `close()` stops the pull before the end, dropping
 the stream releases the scan cursor, and a pull that raises ends the stream
 rather than leaving it resumable. The spilled sort is the one stream that owns
 files — the runs are removed when the merge ends, when `close` stops it, and when

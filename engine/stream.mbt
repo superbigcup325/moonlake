@@ -587,9 +587,10 @@ fn drain_scan(
 /// - A single-table scan is pulled: a filter, the projection and an
 ///   OFFSET/LIMIT window run per batch, so the caller never holds more than one
 ///   batch and a windowed query stops reading when the window is full.
-/// - An aggregate fold is pulled the same way when no budget is set: the group
+/// - An aggregate fold reads the scan rather than a collected input: the group
 ///   table is a running hash table, so the answer is one batch but the input
-///   rows never are.
+///   rows never are. A budget does not change that: the batches are buffered up
+///   to the budget and partitioned into spill runs only past it.
 /// - A spilled ORDER BY is pulled from its run files: the merge hands rows back
 ///   in order, and a windowed query stops merging once its window is full.
 /// - A two-table INNER/LEFT/FULL join is pulled: the build side is read once
