@@ -185,4 +185,28 @@ grep -q "not one this version understands" "$work/i.err" \
   || fail "no warning about the unknown marker: $(cat "$work/i.err")"
 pass "an unknown marker is kept and reported"
 
+# 11. A GROUP BY that fails after it has spilled leaves no directory behind. The
+#     same rows without the bad one spill (ANALYZE shows partitions), so the
+#     failure comes after runs were written; the last row cannot be parsed as the
+#     column type the earlier rows established.
+python3 - "$work" <<'PY2'
+import sys
+d = sys.argv[1]
+rows = ''.join('%d,%d\n' % (i % 50, i) for i in range(300000))
+open(f'{d}/grp_ok.csv', 'w').write('k,v\n' + rows)
+open(f'{d}/grp_bad.csv', 'w').write('k,v\n' + rows + '1,oops\n')
+PY2
+dir=$work/j
+out=$($rel exec --csv "$work/grp_ok.csv" --memory 200K --spill-dir "$dir" --analyze \
+  "SELECT k, count(*) AS n, sum(v) AS s FROM grp_ok GROUP BY k")
+grep -q "spill partitions:" <<<"$out" || fail "the grouped query was expected to spill: $out"
+dir=$work/k
+if $rel exec --csv "$work/grp_bad.csv" --memory 200K --spill-dir "$dir" \
+  "SELECT k, count(*) AS n, sum(v) AS s FROM grp_bad GROUP BY k" >/dev/null 2>"$work/k.err"; then
+  fail "the query over a malformed last row was expected to fail"
+fi
+grep -q "cannot parse" "$work/k.err" || fail "unexpected error: $(cat "$work/k.err")"
+[ -e "$dir" ] && fail "spill dir survived a failed grouped query: $(ls -A "$dir" | wc -l) files"
+pass "a failed GROUP BY that spilled leaves no directory behind"
+
 echo "spill acceptance: all checks passed"

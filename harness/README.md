@@ -360,3 +360,15 @@ agreeing cell for cell (including DATE columns), visible query errors and no
 uncaught JS errors. The `playground` CI job runs this browser acceptance in
 addition to the `Playground wasm is host-free` import gate, which catches the
 class of failure that broke the 0.3.0 page. Playwright remains a dev-only tool.
+
+## Budgeted GROUP BY (`bench_agg_pull.py`)
+
+Resource and answer evidence for a `GROUP BY` under `--memory`: peak RSS, wall time and spill counters across group counts, a large per-group state (median, count(DISTINCT)), `string_agg` and a skewed key, with a candidate and an optional control binary interleaved round by round. Answers are compared with the control's and, with `--duckdb`, with DuckDB's. The script waits for a quiet host first (1-minute load average under `--quiet-load`) and prints the worst round-to-round spread; rerun rather than trust a case that moved more than 10%. `--scale-rows` grows one shape's input to show whether retained input still follows the row count (verification section 45).
+
+```bash
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_agg_pull.py \
+  --candidate <candidate main.exe> --control <control main.exe> --duckdb
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_agg_pull.py \
+  --candidate <candidate main.exe> --control <control main.exe> --duckdb \
+  --shapes '' --scale-rows 500000,1000000,2000000,4000000,8000000 --budgets 4M,16M
+```
