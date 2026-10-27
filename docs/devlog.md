@@ -2203,8 +2203,8 @@ publishing; the rest is authorization.
 The last unbounded operator before the release was the one the release notes had
 quietly described as bounded. A `GROUP BY` under `--memory` collected its input
 and then partitioned it, so the budget decided how the rows were spilled and not
-how many were held: 8,000,000 rows over 100 groups peaked at 195 MB whatever the
-budget was. E5 made the aggregate read the scan instead — the same batches a
+how many were held: 8,000,000 rows over 100 groups peaked at 195 MB at the 4M
+budget meant to bound it and 191 MB at 16M. E5 made the aggregate read the scan instead — the same batches a
 `count(*)` already consumed — buffering up to the budget and partitioning past
 it. The same query now peaks at 63 MB at a 4M budget, flat once the input exceeds
 it, and the cost is visible in wall time rather than memory (1.78 s against
