@@ -699,3 +699,49 @@ RSS is flat within 4 MB (`join/q3` 49.2 → 45.3, `scan/filtered_count_csv` 33.2
 
 The memory this release changes is not in this table: it is in the grouped sketch
 rows that `harness/bench_hll.py` measures, and §44 carries them.
+
+## A join feeding an aggregate, before composing it (2026-10-27)
+
+There is no change to compare here: the question is what the current shape costs,
+so the candidate and the control are the same source and the pair measures the
+harness as much as the engine. What the record establishes is that the rows a
+join hands to an aggregate are collected whole, that their cost follows the
+joined rows rather than the probe rows or the group count, and that a
+`--memory` budget on that query raises the peak instead of bounding it.
+
+- [`harness/baseline/2026-10-27-e6a-join-agg.json`](../harness/baseline/2026-10-27-e6a-join-agg.json)
+  — `57004ea`, quiet gate 1.5, entered at load 1.41, peak load 3.10 during the
+  run. Candidate `7e5815af…` from this tree and control `4d73a05f…` from a
+  detached worktree at `v0.5.1` (`f8e1204`); the two differ in documentation and
+  harness only.
+- The fixtures are `probe(id, k, v)` with `k = i % 100` and `v = (13 * i) % 1000`,
+  and `build(k, w)` with `fanout` rows per key; 1, 2 and 4 million probe rows at
+  fanout 1, and 1 million probe rows at fanout 2 and 4. Build side, group count
+  (100) and final result (100 rows) stay fixed. Three interleaved rounds, three
+  budgets, five queries.
+
+Peak RSS in MB, candidate; every grouped answer equals the control's and
+DuckDB's:
+
+| joined rows | no budget | 4M | 16M |
+|---|---|---|---|
+| 1,000,000 | 51 | 54 | 51 |
+| 2,000,000 | 97 | 118 | 99 |
+| 4,000,000 | 189 | 204 | 192 |
+| 2,000,000 (fanout 2, 1M probe rows) | 85 | 92 | 99 |
+| 4,000,000 (fanout 4, 1M probe rows) | 154 | 164 | 191 |
+
+The three controls are flat: at no budget the scan is 35 MB, the aggregate alone
+35 MB and the collected join on its own 39 MB at every point, because that query
+prints its rows instead of holding them. The delta over the scan is 16.7, 32.5
+and 40.4 bytes per joined row at 1, 2 and 4 million rows — not one coefficient,
+and the two routes to 4,000,000 joined rows differ by 35 MB, which was not
+isolated. What a budget does: at 4,000,000 joined rows the 4M setting peaks
+19 MB above no budget and takes 1.35 s against 0.36 s, writing 11.1 MB in 115
+files; the 16M setting peaks at 192 MB and takes 1.36 s.
+
+Wall times are direction only: the host was shared, the quiet gate was 1.5
+rather than §45's 0.9, the peak load during the run was 3.10, and the worst
+round-to-round spread was 32% on the short cases. Peak RSS is the evidence, and
+the same-code pair bounds it — a 0.1 MB median difference and a 19 MB worst case
+at the spilling 4,000,000-row points. §48 carries the full method and the limits.

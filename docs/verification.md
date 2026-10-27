@@ -3720,3 +3720,90 @@ the record at the end of `docs/bench-baseline.md` stand on the controls each of
 them was measured against, and nothing in this release changed the code they
 measure beyond a version string. `--memory` remains a budget for the operators
 that honour it, not a cap on process RSS.
+
+## 48. A join feeding an aggregate still collects it (2026-10-27): E6a
+
+The join streams its probe side and the aggregate folds a scan, but neither
+accepts the other, so a two-table keyed join with a `GROUP BY` above it is
+answered by collecting the joined rows first (`drain_join`) and aggregating that
+collection. This section measures what that costs before anything is composed.
+It is a baseline, not a change: candidate and control are the same source
+(0.5.1 plus documentation and harness commits), so every case also measures how
+repeatable the harness is. The record is
+[`harness/baseline/2026-10-27-e6a-join-agg.json`](../harness/baseline/2026-10-27-e6a-join-agg.json),
+written by [`harness/bench_join_agg.py`](../harness/bench_join_agg.py) at
+`57004ea`.
+
+**Method.** Two tables, `probe(id, k, v)` with `k = i % 100` and
+`v = (13 * i) % 1000`, and `build(k, w)` with `fanout` rows per key, so one probe
+row produces exactly `fanout` joined rows and the grouped answer is always 100
+rows. Five queries run over the same fixture set: `count(*)` (the scan), the
+`GROUP BY` over `probe` alone (the aggregate state), the joined rows collected
+(the intermediate result), the composed `GROUP BY` over an INNER join and the
+same over a LEFT join. Probe rows and build-side fanout are swept separately,
+because both multiply the joined rows while the build size, the group count and
+the final result stay fixed. Three interleaved rounds per case, candidate and
+control alternating order; answers are recomputed here from the fixture's key
+and value functions, and every grouped case is also answered by DuckDB.
+
+The host was not quiet by §45's standard: the quiet gate was set to 1.5 and
+passed at 1.41, and the load reached 3.10 during the run, so wall times spread
+up to 32% on the short cases and are quoted as direction only. Peak RSS is the
+evidence. The same-code candidate/control pair bounds the noise: the RSS
+difference is 0.1 MB at the median and 19 MB in the worst case, which is one of
+the two spilling 4,000,000-row points.
+
+**Peak RSS in MB** (`candidate`; the control agrees within the noise above):
+
+| joined rows | from | no budget | 4M | 16M |
+|---|---|---|---|---|
+| 1,000,000 | 1,000,000 rows x fanout 1 | 51 | 54 | 51 |
+| 2,000,000 | 2,000,000 rows x fanout 1 | 97 | 118 | 99 |
+| 4,000,000 | 4,000,000 rows x fanout 1 | 189 | 204 | 192 |
+| 2,000,000 | 1,000,000 rows x fanout 2 | 85 | 92 | 99 |
+| 4,000,000 | 1,000,000 rows x fanout 4 | 154 | 164 | 191 |
+
+**The controls say where the growth is.** At no budget the scan alone is 35 MB at
+every point (36 MB with a budget set), the aggregate alone is 35 MB (45 MB when
+it spills at 4M, 57 and 67 MB at 16M where it buffers more input), and the
+collected join on its own is 39 MB from 1,000,000 to 4,000,000 joined rows —
+because that query prints its rows rather than holding them. None of the three
+grows with the joined rows, so the 51 → 97 → 189 MB is the handoff: the joined
+rows are materialized as batches and the aggregate then works through the array.
+
+**Per joined row is not a constant.** The delta over the scan is 16.7, 32.5 and
+40.4 B at 1, 2 and 4 million joined rows, and the two ways of reaching 4,000,000
+joined rows disagree — 189 MB from 4,000,000 probe rows against 154 MB from
+1,000,000 probe rows and a four-row build. That difference was not isolated; one
+candidate is how the join slices its output into batches, which differs between
+the two sweeps. What the table supports is that the cost follows the joined rows,
+not the probe rows, the build or the group count.
+
+**The budget does not bound this path.** At 4,000,000 joined rows the 4M budget
+peaks higher than no budget at all (204 against 189 MB) and takes 1.35 s against
+0.36 s, spilling 46 partitions and 115 files for 11.1 MB written; the 16M budget
+peaks at 192 MB and takes 1.36 s for 12 partitions and 28 files. The aggregate
+partitions the input it is handed, and it is handed a complete collection, so
+what a budget adds here is a buffer plus partitioning work on top of the
+collection it cannot avoid.
+
+**Answers.** 75 of 75 case runs return the exact answer, all 75 agree with the
+control's (same source, so this is the harness checking itself), and the 45
+grouped runs also agree with DuckDB. The script's own oracle is covered by
+`harness/test_bench_join_agg.py`, whose fourteen cases include a lost group, an
+extra group, a wrong count, a duplicated key and a truncated join.
+
+**What this does not say.** It does not name the mechanism behind the 189 versus
+154 MB difference at equal joined rows, nor measure a growing build side or a
+growing group state — both were fixed by design here, and their cost is E6c's
+question. It measures the native CLI only: wasm-gc and js are not in this record,
+and no Parquet-input control was needed because the scan is flat at 35 MB from
+1,000,000 to 4,000,000 probe rows, so the CSV reader is not hiding retained input
+on this target. Longer join chains, RIGHT/SEMI/ANTI, a cross join, and ORDER BY or
+DISTINCT above the join keep the eager shape they had and were not measured.
+
+**Decision.** The intermediate collection dominates: peak RSS over the scan grows
+from +16 MB at 1,000,000 joined rows to +154 MB at 4,000,000, while the scan, the
+group state and the streaming join each stay flat. The roadmap's rule was to
+start E6b only if E6a demonstrated that cost, so E6b is the next task. No engine
+behaviour changed for this section and no version is reserved by it.

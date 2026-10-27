@@ -344,30 +344,33 @@ work to repeat solely because the plan changed.
 
 ## Next work after 0.5.1
 
-The next proposed investigation is **E6a: a join feeding aggregation**. The
-current source gives it a concrete boundary: `streaming_join_source` declines
-an aggregate above the join, and `streaming_agg_source` accepts only one table.
-A two-table keyed join and a single-table aggregate each consume batches today,
-but their combination still collects the intermediate result. This is a reason
-to measure that shape, not a measured performance result. No implementation or
-new release version is committed by this planning update.
+E6a measured the boundary the current source has: `streaming_join_source`
+declines an aggregate above the join, and `streaming_agg_source` accepts only one
+table, so a two-table keyed join with a `GROUP BY` above it still collects the
+joined rows. With the build side, the group count and the final result fixed,
+peak RSS over the scan grows from 16 MB at 1,000,000 joined rows to 154 MB at
+4,000,000, while the scan, the aggregate state and the streaming join each stay
+flat, and a budget set on that query raises the peak rather than bounding it
+(§48). The next task is therefore **E6b: compose one supported join/aggregate
+shape**. No implementation or new release version is committed by this planning
+update.
 
 | Order | Task | Delivery and exit |
 |---|---|---|
-| 1 | E6a: bottleneck and ownership record | Use the released 0.5.1 source as the control. Fix the build side, group count and final result size; grow probe rows and join fanout for a two-table keyed INNER/LEFT join followed by GROUP BY. Separate scan cost, resident build state, intermediate rows, aggregate state and final output. Record exact answers, wall time, peak RSS, scan/join row counts and spill counters at several budgets. Include scan-only, join-only and single-table aggregate controls. Specify deferred predicates, schema/column mapping, buffer accounting, exhaustion, early close and failure cleanup before implementation. If intermediate collection does not dominate, close the investigation and select the measured bottleneck instead |
-| 2 | E6b: compose one supported join/aggregate shape | Start only after E6a demonstrates the cost. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
+| 1 | E6a: bottleneck and ownership record | **Done** (2026-10-27), recorded in §48 and in `harness/baseline/2026-10-27-e6a-join-agg.json`. Use the released 0.5.1 source as the control. Fix the build side, group count and final result size; grow probe rows and join fanout for a two-table keyed INNER/LEFT join followed by GROUP BY. Separate scan cost, resident build state, intermediate rows, aggregate state and final output. Record exact answers, wall time, peak RSS, scan/join row counts and spill counters at several budgets. Include scan-only, join-only and single-table aggregate controls. Specify deferred predicates, schema/column mapping, buffer accounting, exhaustion, early close and failure cleanup before implementation. If intermediate collection does not dominate, close the investigation and select the measured bottleneck instead |
+| 2 | E6b: compose one supported join/aggregate shape | E6a demonstrated the cost (§48): the collection dominates, so start here, opening with the composition contract the measurement could not settle — deferred predicates above the join, schema/column mapping into the aggregate, buffer accounting against the existing partition pool, and exhaustion, early close and failure cleanup. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
 | 3 | E6c: prove answers, lifecycle and scaling | Compare with the released collected path and DuckDB, including NULL keys/values, duplicate keys and fanout, empty sides, LEFT unmatched rows, residual/deferred predicates, HAVING, DISTINCT aggregates, skew and state that exceeds a budget. Exercise source and spill failures, exhaustion and early close with no leaked runs. With fixed build/group/result size, retained intermediate rows must stop growing with probe rows or fanout. Report the growing build/group-state cases separately. Run target suites and goldens on native, wasm-gc and js, plus the affected correlation and spill gates; exercise portable composition and failure behavior on each target and extend the packaged consumer to the new composition. Record same-session interleaved control/candidate measurements with an answer oracle, medians and spread |
 
 Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`
 and `run_agg_pull`), `engine/exec_join.mbt`, `engine/exec_agg.mbt` and
 `engine/extagg.mbt`. Reuse the existing cursor, fold, resource rigs and corpus;
 no colenc API or format change is a prerequisite. The measurement matrix is
-`harness/bench_join_agg.py`, which carries its answer oracle as a unit test; it
-is committed ready, so E6a's open part is the campaign and its record, not the
-tooling. Use the Parquet-input control from `harness/bench_retained.py` when the
-CSV reader hides retained input, and report CSV behavior separately. Future
-acceptance must name its actual source; §46–47 remain evidence for the released
-tree.
+`harness/bench_join_agg.py`, which carries its answer oracle as a unit test, and
+its baseline is the record §48 cites; E6b can reproduce that baseline before and
+after its change with the same script and control. Use the Parquet-input control
+from `harness/bench_retained.py` when the CSV reader hides retained input, and
+report CSV behavior separately. Future acceptance must name its actual source;
+§46–47 remain evidence for the released tree.
 
 **Separate decisions.** Exact group state and the final grouped result still
 have no hard cap; neither E5 nor E6 may silently switch an exact aggregate to a

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `harness/bench_join_agg.py`: resource evidence for a two-table keyed join that
+  feeds a `GROUP BY`, against scan-only, aggregate-only and collected-join
+  controls over one fixture set, with the answer oracle recomputed from the
+  fixtures and checked by `harness/test_bench_join_agg.py`. The baseline it
+  produced is `harness/baseline/2026-10-27-e6a-join-agg.json`; the measurement
+  is verification §48. No engine behaviour changed.
+
 ## [0.5.1] - 2026-10-27
 
 Everything since 0.5.0 belongs to this version, and its
