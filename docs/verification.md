@@ -3628,3 +3628,58 @@ That growth is the CSV reader's, not a runtime baseline as an earlier draft of t
 Over the scan, the spilling query adds 14 to 17 MB on native, 173 to 188 on js and 65 to 76 on wasm-gc at every row count, while the retaining query grows to 188, 584 and 204 MB. The spilling path's excess over the scan therefore stays flat across an eightfold increase in rows on all three targets: 14.1 to 17.2 MB on native, 65.2 to 76.2 on wasm-gc and 173.3 to 188.1 on js, with no trend in any of them, and the engine's own `buffered bytes peak (estimated)` reads 4,195,840 bytes for a Parquet source (4,194,304 for a CSV one) at every row count on every target: the budget plus the batch that crossed it. The measurement is what shows that counter tracks what the process holds; the counter is what makes the bound precise.
 
 The CSV figures still stand for what they were run for: the shape tables above, and the candidate-against-control comparisons, all read CSV on both sides.
+
+## 46. 0.6.0 release preparation on the E5 candidate (2026-10-27): R3
+
+Everything below ran on `8297296f2742`, whose tracked tree was clean, with moon
+0.1.20261023 (moonc v0.10.17+d971670cd), Python 3.12.14, DuckDB 2.0.0 and
+PyArrow 26.0.0. The E5 work landed after the 0.6.0 scope was written, so R3 is
+the same list §40 ran, re-run on a candidate that carries it rather than
+inherited. The tag, the publication and the page deployment are separate
+release-authorization steps and none of them ran here; `moon publish --dry-run`
+was skipped for the same reason (it needs credentials).
+
+**Correctness.**
+
+| Gate | Result |
+|---|---|
+| `moon info`, `moon fmt --check`, `moon check --deny-warn` | clean, no interface change |
+| `moon test` (wasm-gc / native / js) | 355 / 368 / 355 passed, ten more than §40's 348 / 361 / 348 |
+| 33 goldens, `check_all.sh` on native, on wasm-gc and on js | pass on all three |
+| `check_correlation.py` | ok, including the cases both engines refuse |
+| `check_windows.py` | ok, including the cases both engines refuse |
+| `fuzz_pushdown.py 40 20261026` | 40 queries, 0 failures, 0 engine rejections |
+| `check_colenc_fixtures.py` | 8 embedded + 9 regenerable cases verified at page level |
+| `check_cli.sh` | pass, including partial output when a scan fails mid-result |
+| `spill_accept.sh` | pass: ownership, reclaim, shared directory, ANALYZE counters |
+| `check_writer_interop.py` | pass: raw and Snappy, DATE/NULL, EXPLAIN rows, DuckDB-written file read back |
+| `check_parquet_corpus.py` | 17 decoded by value / 51 refused by design / 0 failing |
+| `bench_release.py --check-oracles` | eleven timed cases agree with DuckDB |
+
+**The heavy gates.**
+
+- `check_large_write.py`: 2,465,688,897 bytes of CSV in, a 2,410,475,894-byte
+  Parquet out, 34,400,000 rows in 8,399 row groups, 1,820 of 16,798 column
+  chunks past 2^31, and pyarrow, DuckDB and this reader all return the same
+  answer from it — byte for byte the same file §40 recorded.
+- Playground: `moon build --target wasm-gc playground`, then the import audit —
+  `playground.wasm` imports only `wasm:js-string` and `_` (793 imports, none
+  else) — and `harness/playground_accept.cjs` driving real Chromium: 16/16,
+  with the page reporting 0.6.0.
+- `check_release.py --tag v0.6.0 --check-consumer`: the four version claims
+  agree, the archive holds 225 files with no forbidden path, the tree is clean,
+  and the unpacked archive passes on native, wasm-gc and js with a fresh
+  registry and dependency cache, including the four streamed shapes against
+  their collected answers. Archive SHA-256
+  `9521e20e11b41bc8ac51ed09d6b05e4e774f4f8fc82a951a6ee1b119cdbe4b21`, built
+  from `v0.5.0-78-g8297296`.
+
+**What this records, and what it does not.** The list above is the acceptance
+for 0.6.0's source; it says nothing about a published artifact, because there is
+none yet. The release pair for the performance record is §45's E5 tables plus
+the 0.1.2-versus-0.1.1 pair in §41, both against controls measured on the same
+host in interleaved rounds; no new timing was taken here, and the acceptance run
+touched no benchmark. The 225-file archive is twelve files larger than §40's 213:
+nine recorded baselines under `harness/baseline/` and the three benchmark
+scripts (`bench_agg_pull.py`, `bench_hll.py`, `bench_retained.py`) are tracked
+and ship, which is the same policy the earlier sections follow.
