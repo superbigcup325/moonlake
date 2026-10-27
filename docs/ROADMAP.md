@@ -361,10 +361,13 @@ new release version is committed by this planning update.
 Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`
 and `run_agg_pull`), `engine/exec_join.mbt`, `engine/exec_agg.mbt` and
 `engine/extagg.mbt`. Reuse the existing cursor, fold, resource rigs and corpus;
-no colenc API or format change is a prerequisite. Use the Parquet-input control
-from `harness/bench_retained.py` when the CSV reader hides retained input, and
-report CSV behavior separately. Future acceptance must name its actual source;
-§46–47 remain evidence for the released tree.
+no colenc API or format change is a prerequisite. The measurement matrix is
+`harness/bench_join_agg.py`, which carries its answer oracle as a unit test; it
+is committed ready, so E6a's open part is the campaign and its record, not the
+tooling. Use the Parquet-input control from `harness/bench_retained.py` when the
+CSV reader hides retained input, and report CSV behavior separately. Future
+acceptance must name its actual source; §46–47 remain evidence for the released
+tree.
 
 **Separate decisions.** Exact group state and the final grouped result still
 have no hard cap; neither E5 nor E6 may silently switch an exact aggregate to a
