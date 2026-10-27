@@ -48,12 +48,15 @@
 # query or a leftover spill directory, 2 a missing prerequisite.
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import statistics
+import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bench_agg_pull import (  # noqa: E402
@@ -248,6 +251,49 @@ def rows_line(report: dict) -> str:
     return out
 
 
+def sha256_of(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tool(*args: str) -> str:
+    """A provenance line from an external command, empty when it is absent:
+    the record has to say what produced it, and a reader may not have these."""
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return done.stdout.strip()
+
+
+def provenance(bins: dict, args, quiet_load: float) -> dict:
+    return {
+        "schema": 1,
+        "kind": "moonlake-join-agg-baseline",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "git": {
+            "commit": tool("git", "rev-parse", "HEAD"),
+            "branch": tool("git", "rev-parse", "--abbrev-ref", "HEAD"),
+            "subject": tool("git", "log", "-1", "--format=%s"),
+            "dirty": bool(tool("git", "status", "--porcelain")),
+        },
+        "machine": {
+            "cpu_count": os.cpu_count(),
+            "quiet_gate": args.quiet_load,
+            "quiet_load": round(quiet_load, 2),
+        },
+        "python": sys.version.split()[0],
+        "toolchain": tool("moon", "version", "--all").splitlines(),
+        "binaries": {name: {"path": str(path), "sha256": sha256_of(pathlib.Path(path))}
+                     for name, path in bins.items()},
+        "fixture": {"probe": "id,k,v with k = i % groups and v = (13 * i) % 1000",
+                    "build": "k,w with fanout rows per key"},
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--candidate", required=True)
@@ -297,6 +343,10 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     spill = work / "spill"
     spill.mkdir(exist_ok=True)
+
+    quiet_load = wait_quiet(args.quiet_load, args.quiet_samples, args.quiet_interval,
+                            args.quiet_timeout)
+    print(f"host quiet: load {quiet_load:.2f}; starting", flush=True)
 
     start_helper()
     bins = {"candidate": args.candidate}
@@ -419,10 +469,16 @@ def main() -> None:
             print(f"  rows {rows:>8} fanout {fanout} budget {budget or 'none':>4s}: "
                   + ", ".join(cells))
     if args.json_out:
-        pathlib.Path(args.json_out).write_text(json.dumps(
-            {"groups": args.groups, "rounds": args.rounds, "points": points,
-             "worst_spread": worst_spread, "worst_load": worst_load,
-             "cases": report_rows}, indent=1))
+        record = provenance(bins, args, quiet_load)
+        record.update({
+            "params": {"groups": args.groups, "rounds": args.rounds,
+                       "budgets": budgets, "cases": cases, "duckdb": bool(args.duckdb)},
+            "points": points,
+            "worst_spread": worst_spread,
+            "worst_load": worst_load,
+            "cases": report_rows,
+        })
+        pathlib.Path(args.json_out).write_text(json.dumps(record, indent=1))
     sys.exit(1 if failed else 0)
 
 
