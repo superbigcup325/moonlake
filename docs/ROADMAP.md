@@ -14,27 +14,26 @@ every round) and the grouped sketch's per-group state (0.1.3 hands the sparse
 registers to this tree, worth 393 MB on the worst shape). The short Parquet cases
 remain unresolved.
 
-Upstream checked on 2026-10-26 (Asia/Shanghai): `main` is `f4e9348`. `a0c7628`
-passed [CI](https://github.com/superbigcup325/moonlake/actions/runs/40330396420),
-and `9c677a8` passed CI, Pages and a dispatched nightly (verification §44).
-The upgrade pair at `4de8077` passed its
-[push CI](https://github.com/superbigcup325/moonlake/actions/runs/40328605964)
-and a [dispatched nightly](https://github.com/superbigcup325/moonlake/actions/runs/40329274231);
-its [pages workflow deployed](https://github.com/superbigcup325/moonlake/actions/runs/40328606222).
-The latest release remains
-[0.5.0](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.0).
-Tagging, registry publication and release dry runs require release authorization;
-a successful pages workflow does not substitute for hosted-page acceptance.
-Neither this repository nor colenc has an open issue or pull request at this
-snapshot.
+Upstream checked on 2026-10-27 (Asia/Shanghai): `main` is `020be75`, with
+[CI passing](https://github.com/superbigcup325/moonlake/actions/runs/40513060636).
+The release commit `f8e1204` passed
+[Pages](https://github.com/superbigcup325/moonlake/actions/runs/40512431550),
+and verification §47 records both the fresh-cache registry consumer on three
+targets and the deployed playground at exactly 0.5.1. `moon view` confirms
+0.5.1 and colenc 0.1.3 as the respective registry latest versions. colenc `main`
+is `d6a892e`, with
+[CI passing](https://github.com/superbigcup325/colenc/actions/runs/40347664183).
+Neither repository has an open issue or pull request at this snapshot. The
+latest nightly passed on `f4e9348`, before E5; it is not a nightly result for
+the released source. This status check did not repeat functional or performance
+acceptance.
 
-The [next delivery sequence](#next-delivery-after-colenc-013) starts with 0.5.1
-release preparation. The grouped-HLL refresh is done (H0, verification §43): at
-1,000 groups the sketch crosses the exact set near 200 distinct values, and many
-small groups are still the expensive shape, which promoted the sparse sketch state colenc 0.1.3 released and this tree
-consumes (C3, §44), with no source change here. Budgeted GROUP BY
-input consumption is the next proposed implementation. FSST reuse and Roaring
-index integration retain their workload triggers.
+The [delivery after colenc 0.1.3](#next-delivery-after-colenc-013) is complete:
+H0 measured the grouped-HLL cost, C3 consumed sparse state, E5 removed retained
+scan input before budgeted GROUP BY, and R3 released the scope as 0.5.1. The
+[next proposed work](#next-work-after-051) is to measure a join feeding an
+aggregate and decide whether to compose their batch paths. FSST reuse and
+Roaring index integration retain their workload triggers.
 
 ## Current implementation
 
@@ -60,18 +59,21 @@ hands the merge out as a cursor, owning the run files it writes (506.8 MB →
 178.8 MB, §33). A two-table `INNER`/`LEFT`/`FULL` join reads its build side once,
 probes a batch at a time and returns the joined rows in batches of at most
 4,096, so only the side that has to be resident is (270.8 MB → 35.3 MB, §34).
+A budgeted single-table GROUP BY also consumes the scan: bounded partition
+buffers replace the collected input (verification §45: 195 MB → 63 MB at
+8,000,000 rows, 100 groups and a 4M budget). Parquet-input controls show bounded
+retained input on native, wasm-gc and js. The CSV reader's own footprint grows
+on wasm-gc and js, and group state and the final grouped result remain unbounded.
 What still accumulates is listed per shape: a chain of three or more joins, a
-`RIGHT` or `SEMI`/`ANTI` join, a keyless cross join, a budgeted `GROUP BY`
-(whose grace path sizes its partitions from the input), and anything above those
-operators that needs every row first — `ORDER BY`, `GROUP BY`, `DISTINCT`, a
-window function, a derived table, a set operation. `--memory` budgets blocking
-operators and is not a process RSS cap.
+`RIGHT` or `SEMI`/`ANTI` join, a keyless cross join, and an `ORDER BY`, `GROUP BY`,
+`DISTINCT` or window above a join, plus derived tables and set operations.
+`--memory` budgets the operators that honour it and is not a process RSS cap.
 
 ## 0.5.1 delivery plan
 
-The order below is by dependency. R0 fixes the scope, S0 preserves correctness
-before another executor change, E3 adds result consumption, and E4 changes one
-blocking operator at a time. The existing early-stop measurements, batch
+This completed plan retains its original dependency order. R0 fixed the scope,
+S0 added regression evidence before executor changes, E3 added result consumption,
+and E4 changed one blocking operator at a time. The existing early-stop measurements, batch
 contract and single-table LIMIT implementation cover the earlier E0/E1/E2
 milestone; extend them rather than implementing that milestone again. Every task
 below, R1 included, is complete on `3ab2634` (verification §36). S0's gate is
@@ -87,14 +89,14 @@ measurement and a decision, and verification §35 records both.
 
 | Task | Delivery | Depends on | Acceptance |
 |---|---|---|---|
-| R0 | One unreleased 0.5.1 scope in the changelog, roadmap and handoff | Current-state check | Every pending changelog entry belongs to 0.5.1; implemented work and remaining work have distinct status; the latest published release stays identified as 0.5.0 |
+| R0 | One release scope in the changelog, roadmap and handoff | Current-state check | **Done.** The scope was planned as 0.6.0 and published as 0.5.1 by the owner decision recorded in verification §47; 0.5.0 is the preceding release |
 | S0 | Reproducible regression evidence for the latest SQL and CLI changes | R0 | Commit the correlation differential fixtures and runner, including duplicate outer rows, NULLs, empty inputs and deliberate refusals; normalize dates and non-finite values and compare unordered answers as row multisets; an oracle error, missing fixture, wrong answer or zero value cases fails; run fixed cases in CI and add seeded cases to nightly |
 | E3 | An additive result-consumption API and a CLI that consumes batches | S0 | **Done** (verification §31): a caller reads the schema and consumes a single-table scan/filter/projection/`OFFSET`-`LIMIT` query batch by batch without collecting it; `execute` / `execute_with` keep their signatures and run the same pull; `close` and a failed pull release the scan; text and JSON output are consumed per batch (a 16-column 2,000,000-row result: 1,090.6 MB → 35.2 MB of peak RSS for `--json`) |
 | E4a | Aggregation consumes batches | E3 | **Done** (verification §32): a single-table `GROUP BY` or global aggregate folds the scan's batches as they arrive and never holds its input array; NULL key groups, NULL aggregate inputs, empty inputs and DISTINCT aggregates match the collected answers and the goldens; the counters `--analyze` prints are identical on both paths; a budgeted `GROUP BY` still spills and still matches in-memory answers (16 columns, 2,000,000 rows: 109.7 MB → 35.3 MB of peak RSS) |
 | E4b | External sort consumes batches and feeds the result consumer | E3 | **Done** (verification §33): runs are built from the scan's batches, the final merge is a cursor and a sorted stream hands it out a batch at a time, so neither the input array nor the sorted answer is materialized (16 columns, 2,000,000 rows, `select * … order by id`: 506.8 MB → 178.8 MB of peak RSS); ties, NULL order, DISTINCT, OFFSET/LIMIT and the in-memory fallback match the collected answers at four budgets; the run files are removed on exhaustion, on early close and on error; `--analyze` counters and spill bytes are unchanged |
 | E4c | Join input and output use the batch contract | E3, established spill lifecycle | **Done** (verification §34): a two-table INNER/LEFT/FULL join streams — `JoinCursor` reads the build side once and probes a batch at a time, the output leaves in batches of at most 4096 rows, and `join_step` runs on the same cursor so the collected and streamed answers cannot diverge; duplicate keys on both sides, empty build and probe sides, LEFT/FULL unmatched rows, residual predicates, NULL keys and an early close are compared against `execute`; the shapes that stay collected are listed and each is pinned by a test (16 columns, 2,000,000 rows probed against a 1,000-row build: 270.8 MB → 35.3 MB of peak RSS, and under `--memory 8M` the grace path is not entered at all, 1.99 s → 0.41 s) |
 | W0 | A second dataset tests whether adaptive dictionaries are worth implementing | Fixed comparison inputs; independent of E3/E4 | **Done** (verification §35), and the answer is "not in this release": on a seeded 500,000-row access log a per-column dictionary is worth −14% of the file at our writer's 4,096-row groups and −28% at 65,536-row groups, a table-level dictionary is a net *loss* (+1.6%), and PyArrow's 65,536-row groups save 1.4% of the file while raising the reader's peak from 13 MB to 57 MB, so the layout decision comes before the encoding; `harness/dict_survey.py` reproduces the tables and `write --snappy` output is within ±1.4% of PyArrow's plain output on the same rows (the seed, both layouts, the per-column deltas, the write/read times and the memory numbers are recorded) |
-| R1 | Final 0.5.1 acceptance and release evidence | S0, E3, E4a, E4b, E4c, W0 | **Done** (verification §36): one candidate passes the whole list — check, format and interfaces clean, 340 native / 327 wasm-gc / 327 js tests, 75 Python self-tests, the 33 goldens on wasm-gc, native, js and through the release binary, the S0 differential plus window, pushdown, corpus, encoding, CLI, spill and writer gates, a 2,410,475,894-byte file round-tripping through three readers, and the packaged consumer pulling four shapes on three targets with fresh caches; the playground builds host-free and passes 16/16 in real Chromium; the performance pair is recorded beside a same-session 0.5.0 re-record; the eager shapes and platform limits are stated in `engine/stream.mbt`, §34 and the paragraph above. The later push and its CI/nightly are recorded below; tagging and publication remain release work |
+| R1 | Final 0.5.1 acceptance and release evidence | S0, E3, E4a, E4b, E4c, W0 | **Done** (verification §36): one candidate passes the whole list — check, format and interfaces clean, 340 native / 327 wasm-gc / 327 js tests, 75 Python self-tests, the 33 goldens on wasm-gc, native, js and through the release binary, the S0 differential plus window, pushdown, corpus, encoding, CLI, spill and writer gates, a 2,410,475,894-byte file round-tripping through three readers, and the packaged consumer pulling four shapes on three targets with fresh caches; the playground builds host-free and passes 16/16 in real Chromium; the performance pair is recorded beside a same-session 0.5.0 re-record; the eager shapes and platform limits are stated in `engine/stream.mbt`, §34 and the paragraph above. The later source acceptance is in §46 and the completed publication is in §47 |
 
 **E3 contract.** Extend the ownership and early-stop rules in
 `engine/stream.mbt` to the result boundary. `catalog.BatchStream` is an open
@@ -296,15 +298,15 @@ byte/statistical gates when evaluating a new implementation.
 
 ## Next delivery after colenc 0.1.3
 
-This is the work order. E5 was added to 0.5.1 after it was written, so R3 reruns
-the acceptance list on the candidate that carries it; no other new feature is
-committed and no new version is reserved. R3 closes the release; H0 measures the current
-state before another sketch decision; E5 addresses an existing exact-query
-memory limit independently of sketches.
+Every task in this table is complete and shipped in 0.5.1. E5 was added after
+the scope was first written, so R3 repeated acceptance on the source that
+carried it (verification §46), then recorded publication and registry/page
+acceptance (§47). The table preserves the delivery evidence; the
+[post-release proposal](#next-work-after-051) below is the next work order.
 
 | Order | Task and owner | Delivery and exit |
 |---|---|---|
-| 1 | R3, moonlake: release preparation | Reconcile current documentation and review the accepted 0.5.1 scope, now on the released colenc 0.1.3 (`344d739`, verification §44). Check version claims and the final package contents, run the archive consumer with fresh caches and no colenc workspace override, and record source/archive/toolchain identity. Run the release dry run, tag and publish only under release authorization. After publication run `harness/check_consumer.py --registry-version 0.5.1`; after the relevant deployment run playground acceptance with the exact expected 0.5.1 version. Any source change reopens its affected gates. **Source side done** (verification §46): `8297296` passes the whole list on all three targets — 355 wasm-gc / 368 native / 355 js tests, the 33 goldens on each target, the differentials, the corpus, the large 2 GiB write, the playground in real Chromium, and the archive consumer from a fresh cache at 225 files and archive SHA-256 `9521e20e…`; the version claims agree and the tree is clean. **Done** (verification §47): the dry run was accepted (202), `moon publish` answered 200 OK, the tag `v0.5.1` and the GitHub release are up, and the registry consumer check for 0.5.1 passes on native, wasm-gc and js from a fresh cache |
+| 1 | R3, moonlake: completed release | Reconcile current documentation and review the accepted 0.5.1 scope, now on the released colenc 0.1.3 (`344d739`, verification §44). Check version claims and the final package contents, run the archive consumer with fresh caches and no colenc workspace override, and record source/archive/toolchain identity. Run the release dry run, tag and publish only under release authorization. After publication run `harness/check_consumer.py --registry-version 0.5.1`; after the relevant deployment run playground acceptance with the exact expected 0.5.1 version. Any source change reopens its affected gates. **Source side done** (verification §46): `8297296` passes the whole list on all three targets — 355 wasm-gc / 368 native / 355 js tests, the 33 goldens on each target, the differentials, the corpus, the large 2 GiB write, the playground in real Chromium, and the archive consumer from a fresh cache at 225 files and archive SHA-256 `9521e20e…`; the version claims agree and the tree is clean. **Done** (verification §47): the dry run was accepted (202), `moon publish` answered 200 OK, the tag `v0.5.1` and the GitHub release are up, and the registry consumer check for 0.5.1 passes on native, wasm-gc and js from a fresh cache |
 | 2 | H0, moonlake: current grouped-HLL baseline | **Done** (verification §43, re-measured on the released artifact in §44). `harness/bench_hll.py` sweeps 18 shapes in isolated processes with decode-only and exact-count controls, duplicates and NULL variants; against colenc 0.1.2 a sketch cost about 20 KB per group, the crossover at 1,000 groups was near 200 distinct values, and 20,000 groups of one value held 408.0 MB against 17.2 MB for the exact set. That promoted sparse sketch state, which colenc released as 0.1.3: the same matrix through the registry artifact moves those rows to 15.4 MB, 392.6 MB less, answers identically and leaves the crossover where it was. The 0.1.1 and 0.1.2 tables stay as history |
 | 3 | E5a, moonlake: input-buffer and spill contract | State how to choose or grow partitions without knowing the total input size, share a budget across all partition buffers, and preserve group-key equality and exact aggregate semantics. Decide the over-budget policy for skew and for one exact distinct/median/string state before implementation. Specify ownership and cleanup on source/spill failure. Record the decision before changing behavior. **Recorded** in the "Budgeted GROUP BY input" paragraph under Semantic and memory decisions; E5b implements it and E5c measures it |
 | 4 | E5b, moonlake: consume batches before grace aggregation | Replace the collected scan input with bounded partition buffering for the existing single-table budgeted GROUP BY shape. Reuse the accumulator fold and spill format; retain explicit fallback behavior for other shapes. Exact queries stay exact. This task requires no new colenc API. **Done** (verification section 45) |
@@ -340,6 +342,39 @@ with a same-session control and answer oracle. The completed 0.1.3 acceptance
 list, its release pair and the H0 matrix are the starting baseline, not pending
 work to repeat solely because the plan changed.
 
+## Next work after 0.5.1
+
+The next proposed investigation is **E6a: a join feeding aggregation**. The
+current source gives it a concrete boundary: `streaming_join_source` declines
+an aggregate above the join, and `streaming_agg_source` accepts only one table.
+A two-table keyed join and a single-table aggregate each consume batches today,
+but their combination still collects the intermediate result. This is a reason
+to measure that shape, not a measured performance result. No implementation or
+new release version is committed by this planning update.
+
+| Order | Task | Delivery and exit |
+|---|---|---|
+| 1 | E6a: bottleneck and ownership record | Use the released 0.5.1 source as the control. Fix the build side, group count and final result size; grow probe rows and join fanout for a two-table keyed INNER/LEFT join followed by GROUP BY. Separate scan cost, resident build state, intermediate rows, aggregate state and final output. Record exact answers, wall time, peak RSS, scan/join row counts and spill counters at several budgets. Include scan-only, join-only and single-table aggregate controls. Specify deferred predicates, schema/column mapping, buffer accounting, exhaustion, early close and failure cleanup before implementation. If intermediate collection does not dominate, close the investigation and select the measured bottleneck instead |
+| 2 | E6b: compose one supported join/aggregate shape | Start only after E6a demonstrates the cost. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
+| 3 | E6c: prove answers, lifecycle and scaling | Compare with the released collected path and DuckDB, including NULL keys/values, duplicate keys and fanout, empty sides, LEFT unmatched rows, residual/deferred predicates, HAVING, DISTINCT aggregates, skew and state that exceeds a budget. Exercise source and spill failures, exhaustion and early close with no leaked runs. With fixed build/group/result size, retained intermediate rows must stop growing with probe rows or fanout. Report the growing build/group-state cases separately. Run target suites and goldens on native, wasm-gc and js, plus the affected correlation and spill gates; exercise portable composition and failure behavior on each target and extend the packaged consumer to the new composition. Record same-session interleaved control/candidate measurements with an answer oracle, medians and spread |
+
+Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`
+and `run_agg_pull`), `engine/exec_join.mbt`, `engine/exec_agg.mbt` and
+`engine/extagg.mbt`. Reuse the existing cursor, fold, resource rigs and corpus;
+no colenc API or format change is a prerequisite. Use the Parquet-input control
+from `harness/bench_retained.py` when the CSV reader hides retained input, and
+report CSV behavior separately. Future acceptance must name its actual source;
+§46–47 remain evidence for the released tree.
+
+**Separate decisions.** Exact group state and the final grouped result still
+have no hard cap; neither E5 nor E6 may silently switch an exact aggregate to a
+sketch. A workload that exceeds the budget in one DISTINCT/median/string state
+needs its own spill-or-refusal contract. The measured E5 `string_agg` cost (up
+to 18%) and file counts above a thousand remain follow-ups when a caller or
+profile shows them to matter. FSST reuse, I0, writer layout/dictionaries, wider
+SQL types and upstream ranged reads keep their existing entry conditions;
+release completion alone does not promote them.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
@@ -352,6 +387,7 @@ refused:
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
+| Exact group state and the final grouped result are unbounded | Many groups, or one large DISTINCT/median/string state, even under a small `--memory` value | E5 bounds scan-input buffers, not exact state or output (verification §45). A separate design must choose exact spilling or a clear refusal, account for skew and define output consumption; approximate substitution requires an explicit query choice. |
 | The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, and any of ORDER BY, GROUP BY, DISTINCT or a window above a join. SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes and §30 the gate that now preserves their answers; §34 lists the join shapes that stay eager, and a semi/anti join is one of them (it is decorrelated into a scan first). |
@@ -375,10 +411,11 @@ reader can tell the difference between "not yet" and "no".
 
 ## What 0.5.1 had to clear
 
-R1 started after the required implementation and investigation tasks above were
-complete, and every item below passed on `3ab2634`; `verification.md` §36 is the
-record, with the commands and the numbers. The list is kept in the past tense so
-a reader can see what acceptance meant for this release:
+R1 first ran after the required implementation and investigation tasks above
+were complete, on `3ab2634` (verification §36). The expanded scope passed again
+in §40 and, after E5, in §46; §47 records publication, registry-consumer
+acceptance and the deployed playground at 0.5.1. The checklist is the release
+contract, with each run's exact source and results retained in verification:
 
 - The manifest, library constant, generated interfaces, changelog and eventual
   tag agree on 0.5.1. Set the changelog's release date when the release happens.
@@ -402,12 +439,10 @@ a reader can see what acceptance meant for this release:
   browser. After deployment, require the exact 0.5.1 version; after publication,
   run the registry consumer for 0.5.1. These are separate from local acceptance.
 
-`moon publish --dry-run` uploads an archive, so it belongs to authorized release
-work along with push, tag and publication. Current assessment and local
-preparation do not perform those actions. [verification.md](verification.md)
-records completed checks and their limits; a check on an earlier SHA is history,
-not acceptance of the final candidate — which is why the whole list ran again on
-`bc1a8f5` (§40) rather than being inherited from `3ab2634`.
+The release dry run, tag and publication are complete in §47.
+[verification.md](verification.md) keeps source acceptance, registry acceptance
+and hosted-page acceptance distinct. Future source changes need their affected
+gates; this planning update did not repeat code acceptance or benchmarks.
 
 ## How to move something up this page
 
