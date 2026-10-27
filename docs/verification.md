@@ -3665,7 +3665,9 @@ was skipped for the same reason (it needs credentials).
 - Playground: `moon build --target wasm-gc playground`, then the import audit —
   `playground.wasm` imports only `wasm:js-string` and `_` (793 imports, none
   else) — and `harness/playground_accept.cjs` driving real Chromium: 16/16,
-  with the page reporting 0.6.0.
+  with the page reporting 0.6.0. The pages workflow ships that same build on
+  every push, and the deployed page at
+  <https://superbigcup325.github.io/moonlake/> passes the same 16/16.
 - `check_release.py --tag v0.6.0 --check-consumer`: the four version claims
   agree, the archive holds 225 files with no forbidden path, the tree is clean,
   and the unpacked archive passes on native, wasm-gc and js with a fresh
