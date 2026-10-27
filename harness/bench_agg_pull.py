@@ -164,12 +164,19 @@ def stop_helper() -> None:
         _helper = None
 
 
-def run_once(binary: str, csv: pathlib.Path, budget: str, sql: str, spill: pathlib.Path,
-             analyze: bool = False, kind: str = "csv"):
-    """One query in its own process: wall seconds, peak RSS in MB, exit code,
-    stdout text, stderr text. `kind` selects the reader, "csv" or "parquet"."""
-    cmd = [binary, "exec", f"--{kind}", str(csv), "--memory", budget,
-           "--spill-dir", str(spill)]
+def run_inputs(binary: str, inputs: list, budget: str, sql: str, spill: pathlib.Path,
+               analyze: bool = False):
+    """One query over one or more registered inputs, in its own process: wall
+    seconds, peak RSS in MB, exit code, stdout text, stderr text.
+
+    `inputs` is a list of `(kind, path)` pairs, one per `--<kind>` flag, and an
+    empty `budget` runs the query without `--memory` at all."""
+    cmd = [binary, "exec"]
+    for kind, path in inputs:
+        cmd += [f"--{kind}", str(path)]
+    if budget:
+        cmd += ["--memory", budget]
+    cmd += ["--spill-dir", str(spill)]
     if analyze:
         cmd.append("--analyze")
     cmd.append(sql)
@@ -180,6 +187,13 @@ def run_once(binary: str, csv: pathlib.Path, budget: str, sql: str, spill: pathl
     reply = json.loads(_helper.stdout.readline())
     return (reply["wall"], reply["rss"], reply["code"],
             out_p.read_text(errors="replace"), err_p.read_text(errors="replace"))
+
+
+def run_once(binary: str, csv: pathlib.Path, budget: str, sql: str, spill: pathlib.Path,
+             analyze: bool = False, kind: str = "csv"):
+    """One query in its own process: wall seconds, peak RSS in MB, exit code,
+    stdout text, stderr text. `kind` selects the reader, "csv" or "parquet"."""
+    return run_inputs(binary, [(kind, csv)], budget, sql, spill, analyze)
 
 
 def sort_key(line: str):
