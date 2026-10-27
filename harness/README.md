@@ -372,3 +372,19 @@ uv run --python 3.12 --with-requirements harness/requirements.txt python harness
   --candidate <candidate main.exe> --control <control main.exe> --duckdb \
   --shapes '' --scale-rows 500000,1000000,2000000,4000000,8000000 --budgets 4M,16M
 ```
+
+`bench_retained.py` answers a narrower question on one target: whether the
+partition buffer keeps retained input bounded. It runs the same binary three
+ways at each row count: `count(*)`, the grouped query under a budget the input
+exceeds (so it spills), and the same query under a budget large enough to keep
+every row. Comparing those three inside one target is what separates the buffer
+from the runtime's baseline and from the scan's own growth; the wasm-gc build
+and the js build run through a wrapper script, which is how they are measured.
+The engine's `buffered bytes peak (estimated)` is printed beside each run
+because on a target whose scan costs more than the input only that counter still
+shows the bound (verification section 45).
+
+```bash
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_retained.py \
+  --candidate <candidate main.exe> --rows 1000000,2000000,4000000,8000000 --budgets 4M,512M
+```

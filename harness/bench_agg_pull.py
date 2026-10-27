@@ -156,6 +156,14 @@ def start_helper() -> None:
                                stdout=subprocess.PIPE, text=True)
 
 
+def stop_helper() -> None:
+    global _helper
+    if _helper is not None:
+        _helper.stdin.close()
+        _helper.wait()
+        _helper = None
+
+
 def run_once(binary: str, csv: pathlib.Path, budget: str, sql: str, spill: pathlib.Path,
              analyze: bool = False):
     """One query in its own process: wall seconds, peak RSS in MB, exit code,
