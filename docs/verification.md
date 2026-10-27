@@ -3600,4 +3600,27 @@ The cap removes the 64-partition penalty the first table shows: under it, 16M an
 
 **wasm-gc and js.** `harness/bench_agg_pull.py` through wrapper scripts (`moonrun` on the wasm-gc build, `node` on the js build), 1,000,000 rows, 2M and 8M budgets, three interleaved rounds, control `f4e9348`, answers equal to the control and, except for `string_agg`, to DuckDB in every case. Both runs use the final partition rule. wasm-gc, wall seconds and peak RSS in MB, candidate / control, at 2M then 8M: 100 groups 6.42 / 6.32 (175 / 174 MB) and 5.38 / 5.38; 100,000 groups 7.94 / 7.85 and 7.21 / 7.23; median plus count(DISTINCT) 6.45 / 6.39 and 5.44 / 5.43; `string_agg` 11.70 / 10.89 and 12.07 / 12.88. The 8M budget fits the input in every shape except `string_agg`, so those cells are the unchanged path. js: 100 groups 1.39 / 1.38 and 0.63 / 0.63; 100,000 groups 1.35 / 1.33 and 0.94 / 0.91; median plus count(DISTINCT) 1.42 / 1.40 and 0.66 / 0.65; `string_agg` 2.04 / 2.09 and 2.19 / 2.08. Worst round-to-round spread was 10% on wasm-gc and 9% on js.
 
-What these runs support is correctness and the counters on both targets and no wall-time change outside `string_agg`, where wasm-gc is 7% slower at 2M and 6% faster at 8M, both inside that run's spread. They do not show that retained input is bounded. Peak RSS sits between 166 and 221 MB on wasm-gc and between 331 and 490 MB on node, whichever path ran, so the runtime baseline hides the buffer at this input size. Showing the bound there needs a larger input with a smaller budget, or the runtime's own heap figures. The earlier js slowdown at 100,000 groups under a 2M budget (1.53 s against 1.33 s) is what the floor experiment in the paragraph above explains; the final rule runs that cell at 1.35 s.
+What these runs support is correctness and the counters on both targets and no wall-time change outside `string_agg`, where wasm-gc is 7% slower at 2M and 6% faster at 8M, both inside that run's spread. The earlier js slowdown at 100,000 groups under a 2M budget (1.53 s against 1.33 s) is what the floor experiment in the paragraph above explains; the final rule runs that cell at 1.35 s.
+
+**Is retained input bounded on those targets?** Comparing the candidate with the pre-change control does not answer this, because both targets carry a baseline (about 175 MB for the wasm-gc runtime, 315 MB for node at 1M rows) and both read the scan, whose own peak grows with the rows. The comparison that does answer it is inside one target, with one binary, at one row count: `harness/bench_retained.py` runs `count(*)` (the scan, retaining nothing), the grouped query under a budget smaller than the input (4M, so it spills) and the same query under 512M, which is large enough for the engine to keep every row the way the collected path did. Peak RSS in MB, three repeats, the maximum of each. native and js:
+
+| Rows | native scan | native spill | native retain | js scan | js spill | js retain |
+|---|---|---|---|---|---|---|
+| 1,000,000 | 67.6 | 63.4 | 63.4 | 316.4 | 360.1 | 432.2 |
+| 2,000,000 | 67.4 | 63.3 | 75.4 | 451.7 | 549.8 | 481.6 |
+| 4,000,000 | 67.5 | 63.4 | 99.3 | 570.3 | 582.6 | 700.4 |
+| 8,000,000 | 67.5 | 63.3 | 163.0 | 536.1 | 606.5 | 1,043.4 |
+| 16,000,000 | 67.5 | 63.4 | 258.7 | 611.2 | 682.5 | 1,923.0 |
+
+wasm-gc:
+
+| Rows | scan | spill | retain |
+|---|---|---|---|
+| 1,000,000 | 176.3 | 178.8 | 166.2 |
+| 2,000,000 | 217.6 | 221.4 | 224.9 |
+| 4,000,000 | 311.6 | 312.4 | 310.5 |
+| 8,000,000 | 487.3 | 486.7 | 486.5 |
+
+On native the scan is flat at about 67.5 MB at every row count and the spilling query is flat at 63.3, while the retaining query climbs to 258.7 MB, which is 12.5 MB for every million rows added. On js the spilling query stays 12 to 98 MB above the scan at every row count and 71 MB above it at both 8,000,000 and 16,000,000 rows, while the retaining query rises from 432 to 1,923 MB. Both targets therefore show the bound by measurement: the same binary that needs 1,923 MB to hold 16,000,000 rows holds 4M's worth when it spills.
+
+wasm-gc shows nothing at any row count: from 2,000,000 rows up the three runs land within 1.1 MB of each other, and at 8,000,000 rows the scan alone peaks at 487 MB while those rows retain about 100 MB, so the heap the scan already grew absorbs them. Peak RSS on that target cannot resolve the difference on this data at any input size, because the scan's own growth (about 60 MB per million rows) is larger than what the input retains (12.5 MB per million). What it rests on there is the engine's own counter, `buffered bytes peak (estimated)`, which reads 4,197,376 bytes on every target at every row count: the 4,194,304-byte budget plus the 3,072-byte batch that crossed it. That counter is a size estimate, not a measurement, and on native and js the measurement above is what shows the estimate tracks what the process holds.

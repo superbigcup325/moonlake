@@ -384,7 +384,9 @@ The engine's `buffered bytes peak (estimated)` is printed beside each run
 because on a target whose scan costs more than the input only that counter still
 shows the bound (verification section 45).
 
+It needs no third-party package, so the system interpreter runs it:
+
 ```bash
-uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_retained.py \
+python3 harness/bench_retained.py \
   --candidate <candidate main.exe> --rows 1000000,2000000,4000000,8000000 --budgets 4M,512M
 ```
