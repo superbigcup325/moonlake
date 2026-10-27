@@ -2197,3 +2197,55 @@ decision for the release owner and not a footnote.
 Memory is flat across every case, expression-only start-up is unchanged, and the
 Parquet cases did not move. The CSV cost is the only open question before
 publishing; the rest is authorization.
+
+## 0.5.1 is published, and the join still collects (2026-10-27): E5, R3, E6a
+
+The last unbounded operator before the release was the one the release notes had
+quietly described as bounded. A `GROUP BY` under `--memory` collected its input
+and then partitioned it, so the budget decided how the rows were spilled and not
+how many were held: 8,000,000 rows over 100 groups peaked at 195 MB whatever the
+budget was. E5 made the aggregate read the scan instead — the same batches a
+`count(*)` already consumed — buffering up to the budget and partitioning past
+it. The same query now peaks at 63 MB at a 4M budget, flat once the input exceeds
+it, and the cost is visible in wall time rather than memory (1.78 s against
+2.00 s at 8,000,000 rows). What did not move is stated just as plainly in §45:
+group state and the finished result are still unbounded, a budget is not an RSS
+cap, and the aggregate `string_agg` got up to 18% slower where the new partition
+rule chose more partitions than the old path did.
+
+The partition count was the part that had to be measured rather than chosen. A
+floor alone made cheap aggregates slower by splitting every batch 64 ways, and
+the js target showed the other end — 2 partitions costing 1.54 s where 16 cost
+1.33 s. The final rule is a 32 KiB floor with a cap of 16, measured against the
+pre-change control on all three targets; it removed the 64-partition penalty and
+cut `string_agg`'s worst case from 40% to 18%, at the price of more files for the
+same bytes (269 where 78 were written, every count under a thousand).
+
+0.5.1 is that candidate: the owner renumbered the planned 0.6.0 scope to a patch,
+so the release commit `f8e1204` touches version strings and documentation and no
+behaviour, and the tree §46 accepted is the tree that was published. The tag is
+annotated, the registry returns `200 OK`, the page reports 0.5.1 and passes its
+16/16 acceptance, and the consumer suite passes from a fresh cache on native,
+wasm-gc and js. The archive is 225 files with no dot-prefixed path.
+
+One error survived the release into the documentation: the README still said a
+budgeted `GROUP BY` collects its input because it "would have nothing to spill",
+and the `ResultStream` doc comment said a pulled aggregate only happens without a
+budget. E5 had made both false, and every check that gate the release reads
+versions, archives and behaviour, not prose. They are fixed in two documentation
+commits, which is the honest shape of the mistake — the code was right and the
+description lagged it by a release.
+
+E6a then asked what the same question is worth one level up: a two-table keyed
+join with a `GROUP BY` above it, where neither the join stream nor the aggregate
+fold accepts the other, so `drain_join` collects the joined rows first. With the
+build side, the group count and the result fixed, the collection dominates —
+peak RSS over the scan goes from +16 MB at 1,000,000 joined rows to +154 MB at
+4,000,000, while the scan stays at 35 MB, the aggregate state at 35 MB and the
+streaming join at 39 MB, and a budget on that query raises the peak (204 MB at
+4M) and quadruples the wall time. §48 is the record. It is a baseline taken with
+the candidate and the control being the same source, so it also measured the
+harness: the quiet-host flags in the new script were parsed and never read, which
+is how a gate silently does nothing, and the JSON had no provenance header. Both
+are fixed before the record that is cited, and the roadmap's rule — compose the
+two paths only if the collection dominates — now has its answer.
