@@ -26,6 +26,13 @@
 # --candidate is anything executable that takes the CLI's arguments, which is how
 # the wasm-gc build runs under `moonrun` and the js build under `node`.
 #
+# --input parquet reads the same rows through the columnar reader instead of the
+# CSV reader. That is not a formality: the CSV reader is what grows the footprint
+# on the wasm-gc and js targets (verification section 45), so with CSV input the
+# scan's own peak can sit above what the input would retain and hide the
+# difference. Parquet decodes fixed-size column batches and stays flat, which is
+# where the three-way comparison separates on every target.
+#
 # Exit status: 0 all runs answered, 1 a query failed, 2 a missing prerequisite.
 
 import argparse
@@ -70,6 +77,7 @@ def main() -> None:
     ap.add_argument("--candidate", required=True)
     ap.add_argument("--rows", default="1000000,2000000,4000000,8000000")
     ap.add_argument("--budgets", default="4M,512M")
+    ap.add_argument("--input", choices=["csv", "parquet"], default="csv")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--work")
     ap.add_argument("--quiet-load", type=float, default=0.9)
@@ -98,6 +106,14 @@ def main() -> None:
         for n in rows:
             csv = work / f"groups-100-{n}" / "t.csv"
             make_csv(csv, n, keyfn)
+            if args.input == "parquet":
+                import duckdb  # imported late: only --input parquet needs it
+
+                out = csv.with_suffix(".parquet")
+                if not out.exists():
+                    duckdb.sql(f"COPY (SELECT k, v, s FROM read_csv_auto('{csv}')) "
+                               f"TO '{out}' (FORMAT parquet)")
+                csv = out
             line = {"rows": n, "scan": None, "spill": None, "retain": None}
             for tag, budget, sql in (("scan", None, SCAN),
                                      ("spill", small, GROUPED),
@@ -106,7 +122,8 @@ def main() -> None:
                 cnt = {}
                 for _ in range(args.repeats):
                     wall, peak, code, out, err = run_once(
-                        args.candidate, csv, budget or large, sql, spill, analyze=True)
+                        args.candidate, csv, budget or large, sql, spill,
+                        analyze=True, kind=args.input)
                     if code != 0:
                         print(f"FAIL {n} rows {tag}: {err.strip()[:200]}", flush=True)
                         failed = True

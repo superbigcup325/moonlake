@@ -165,10 +165,10 @@ def stop_helper() -> None:
 
 
 def run_once(binary: str, csv: pathlib.Path, budget: str, sql: str, spill: pathlib.Path,
-             analyze: bool = False):
+             analyze: bool = False, kind: str = "csv"):
     """One query in its own process: wall seconds, peak RSS in MB, exit code,
-    stdout text, stderr text."""
-    cmd = [binary, "exec", "--csv", str(csv), "--memory", budget,
+    stdout text, stderr text. `kind` selects the reader, "csv" or "parquet"."""
+    cmd = [binary, "exec", f"--{kind}", str(csv), "--memory", budget,
            "--spill-dir", str(spill)]
     if analyze:
         cmd.append("--analyze")

@@ -384,9 +384,17 @@ The engine's `buffered bytes peak (estimated)` is printed beside each run
 because on a target whose scan costs more than the input only that counter still
 shows the bound (verification section 45).
 
-It needs no third-party package, so the system interpreter runs it:
+`--input parquet` reads the same rows through the columnar reader instead. That
+matters on wasm-gc and js: the CSV reader's own footprint grows with the rows
+there (176 to 487 MB on wasm-gc, 316 to 611 on node at 1,000,000 to 8,000,000
+rows) and can sit above what the input would retain, so the comparison only
+separates with Parquet input, whose scan is flat on every target. The Parquet
+files are written from the same CSVs by DuckDB, which is why that mode needs
+`harness/requirements.txt`; the CSV mode needs no third-party package.
 
 ```bash
 python3 harness/bench_retained.py \
   --candidate <candidate main.exe> --rows 1000000,2000000,4000000,8000000 --budgets 4M,512M
+uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_retained.py \
+  --candidate <candidate main.exe> --input parquet --rows 1000000,2000000,4000000,8000000 --budgets 4M,512M
 ```
