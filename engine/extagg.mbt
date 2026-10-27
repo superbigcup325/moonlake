@@ -127,13 +127,22 @@ fn grace_finish(
 }
 
 ///|
-/// The smallest run worth writing when the input size is not known: the shared
-/// pool is split over at most `budget / 4 / AGG_MIN_RUN` partitions, so a small
-/// budget does not turn into many tiny files. Measured on 8M rows, 100 groups,
-/// at 16M and 32M budgets: 64 KiB gave 64 partitions and ran 20% slower than the
-/// collected path (every batch is split 64 ways), 256 KiB stayed within 6% of it
-/// at every budget tried, and 1 MiB within 7%.
-const AGG_MIN_RUN : Int32 = 262144
+/// Cap on the partitions a pulled aggregation creates. Every batch is split this
+/// many ways, so the count is a cost the cheap aggregates pay per batch, while
+/// fewer partitions make the expensive ones slower: on native at a 16M budget
+/// 64 partitions ran 20% slower than the collected path, at 4M `string_agg` at
+/// 2 partitions took 26.2 s against 18.0 s at 64, and on js 100,000 groups at
+/// 2M took 1.54 s at 2 partitions against 1.33 s at 16. 16 was within 3% of the
+/// collected path on every native shape tried and removed both slowdowns.
+const AGG_PULL_PARTITION_CAP : Int32 = 16
+
+///|
+/// The smallest run a pulled aggregation writes: the shared pool is split over
+/// at most `budget / 4 / AGG_MIN_RUN` partitions, so a small budget does not turn
+/// into many tiny files. The floor only decides counts below the cap (2M and up
+/// hits the cap); 32 KiB is what reached 16 partitions at a 2M budget, where
+/// 64 KiB still gave 8 and ran js 100,000 groups 8% slower.
+const AGG_MIN_RUN : Int32 = 32768
 
 ///|
 /// Partition count for a pulled aggregation: fixed by the budget alone, because
@@ -143,8 +152,8 @@ fn agg_pull_partitions(budget : Int32) -> Int32 {
   if p < 2 {
     p = 2
   }
-  if p > AGG_PARTITION_CAP {
-    p = AGG_PARTITION_CAP
+  if p > AGG_PULL_PARTITION_CAP {
+    p = AGG_PULL_PARTITION_CAP
   }
   p
 }
