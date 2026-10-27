@@ -173,7 +173,7 @@ baseline in §41 and the 0.1.3 upgrade in §44. The earlier scope and completed 
 through R1 are preserved. A0/A1's state-cost numbers below describe colenc 0.1.1;
 the current p14 register payload is 16 KiB, H0 refreshed the SQL crossover (§43)
 and the sparse state it promoted is released in the dependency this tree now
-consumes. E5 and I0 remain unimplemented. Adding another feature to 0.6.0 would require the final acceptance
+consumes. E5 is implemented (verification section 45) and I0 remains unimplemented. Adding another feature to 0.6.0 would require the final acceptance
 to run again, so the next sequence keeps implementation outside that candidate.
 
 | Task | Deliverable | Depends on | Exit |
@@ -184,7 +184,7 @@ to run again, so the next sequence keeps implementation outside that candidate.
 | A0 | Record SQL sketch semantics and aggregate-state costs | C0; before A1/A2 code | **Done** (verification §39): [docs/sketches.md](sketches.md) states input and output types, NULL and empty-input behavior, the value equivalence (type-tagged, `-0.0`/`0.0` one value, every NaN one value, strings as UTF-8 bytes, dates as epoch days), parameter validation, update/finalize, ownership and error translation, plus the measured state per group (HLL 65,536 B, t-digest 52–73 centroids) and the crossover against the exact set (about 750 distinct values per group). It reuses the one fold and states that no partial-state merge is used |
 | A1 | Explicit `approx_count_distinct(expr)` backed by HLL | A0 | **Done** (verification §39): a new `Acc` variant on the same fold, so the in-memory gather, the streaming pull and the grace partitions all reach it, and the window path too. Fixed precision 14, Int64 result rounded to nearest, empty/all-NULL input 0, NULL skipped; canonicalization matches `scalar_key` (type-tagged, both zeros one value, all NaN payloads one value). 1,000,000 distinct strings: 1,010,708 (+1.07%); peak RSS 56.6 MB against 144.7 MB for the exact count and 56.6 MB for a decode-only `count(s)`. Exact `COUNT(DISTINCT ...)` unchanged, no optimizer rewrite, no partition merge. Suites cover native/wasm-gc/js; the historical grouped shape shows a smaller memory benefit (1,000 groups × 1,000 distinct: 145.8 MB against 152.8 MB) |
 | A2 | Explicit `approx_quantile(expr, q)` backed by t-digest | A1, numeric and rank contract | **Done** (verification §39): compression 100, numeric input, a constant `q` in [0, 1] folded into `AggSpec.q` and validated at bind time (so an empty input or a LIMIT fails the same way), Float64 output and NULL for empty/all-NULL input. Non-finite input is a SQL error raised at the finish step, because the fold cannot raise; int64 beyond 2^53 is documented as a Double conversion rather than detected. q = 0.5 and 0.9 over 0..999,999 match the exact median and 90th percentile; peak RSS 33.9 MB against 44.4 MB for `median()`. Exact `median()` unchanged |
-| E5 | Budgeted GROUP BY consumes scan batches | R2; separate from approximate SQL | Replace input collection before grace partitioning with bounded input/run buffering, retaining exact grouped answers. Compare fixed group counts over increasing inputs and separately test many groups and skew. A hot group with exact distinct/median/string state needs an explicit over-budget policy; a sketch does not bound the number of groups. Verify spill ownership, cleanup, counters and existing goldens before broadening other eager shapes |
+| E5 | Budgeted GROUP BY consumes scan batches | R2; separate from approximate SQL | Replace input collection before grace partitioning with bounded input/run buffering, retaining exact grouped answers. Compare fixed group counts over increasing inputs and separately test many groups and skew. A hot group with exact distinct/median/string state needs an explicit over-budget policy; a sketch does not bound the number of groups. Verify spill ownership, cleanup, counters and existing goldens before broadening other eager shapes. **Implemented** (verification section 45): the pulled aggregation, its shared buffer pool and a 256 KiB partition floor; E5c is partly done |
 | I0 | One measured Roaring use case | C0, immutable row identity and scan-use contract | Prototype repeated predicate-set intersection on an immutable registered table and compare with an exact scan. Test selective and unselective predicates, NULLs, duplicate values, multi-batch/multi-file row identities and stale indexes. Count build/load time, query time, decoded bytes, peak RSS and index size, with build amortization. Complete the investigation even if the answer is to retain the scan |
 
 ### Semantic and memory decisions
@@ -228,6 +228,55 @@ table experiment; persistent sidecars, automatic index selection and broader
 predicate syntax wait for useful end-to-end evidence. Apply residual predicates
 and preserve SQL's NULL rules and duplicate rows.
 
+**Budgeted GROUP BY input (E5a, decided before E5b changes behavior).** Today
+`streaming_agg_source` refuses a GROUP BY under `--memory`, so the scan is
+collected whole and `grace_agg` sizes its partitions from `batches_bytes` of
+that array. The decision below replaces the collection and keeps every answer
+exact. It adds no colenc API.
+
+1. *Buffer first, partition on overflow.* Batches come from the same
+   `InputPull` the unbudgeted aggregate uses. Their estimated bytes are summed
+   in 64 bits (the current `Int32` total overflows past 2 GiB, which a stream can
+   reach). While the sum stays within the budget, the buffered batches go
+   through `aggregate_seq` exactly as the within-budget path does today, so
+   counters, results and the no-spill-store behavior of a query that fits do not
+   change. A spill store is first required at the first overflow, with the
+   existing "provide a spill store" error.
+2. *One shared buffer pool.* Partition writers no longer each hold their own
+   `budget / 4` (up to 64 of them, so up to 16 times the budget in total). They
+   share one pool of `budget / 4`; when it is full, the largest partition buffer
+   is flushed as a run. Retained input is at most the budget plus one scan batch
+   and does not depend on the total row count.
+3. *Partition count is fixed at the first overflow and derived from the budget,
+   not from the input.* `P = clamp((budget / 4) / MIN_RUN, 2, 64)` with `MIN_RUN`
+   256 KiB, so a small budget does not produce many tiny runs. 64 KiB was
+   measured first and gave 64 partitions at a 16M budget, 20% slower than the
+   collected path; 256 KiB stayed within 6% of it at the 4M, 16M and 32M budgets
+   tried (E5c records the table). Growing
+   `P` mid-stream (`hash mod 2P` refines `hash mod P`) is kept in reserve and is
+   only worth building if E5c shows the file count or small-run cost matters.
+4. *Skew and one oversized exact state stay exact.* A partition is aggregated
+   run by run through `aggregate_seq`, so it costs its group state plus one run,
+   and a hot key only unbalances I/O. The state of a single group under
+   `median`, `count(DISTINCT)` or `string_agg` grows with that group's rows; a
+   hard cap would turn queries that answer today into errors, so there is none.
+   `--analyze` reports the partition count and, on the existing `aggregate`
+   line, the group count; the largest partition's spill bytes are a counter E5c
+   adds. Combining partial states (which would let `count` or `sum` be
+   pre-aggregated) needs a combine phase and is outside E5.
+5. *Ownership.* The cleanup is registered before the first run is written and
+   each run id is recorded as soon as its write returns, so a source failure, a
+   spill failure or an aggregation failure all leave through one removal of
+   every run written so far. The collected `grace_agg` registers its cleanup the
+   same way now (it used to do so after partitioning, which leaked runs when
+   partitioning or a flush failed). A failing remove does not hide the original
+   error.
+6. *Shapes that keep the collected path:* joins, DISTINCT, ORDER BY, window
+   functions and tables that are not lazy.
+
+`--memory` is still not a process RSS cap: group state and the grouped result
+can grow, and are reported separately from retained input.
+
 **colenc follow-through.** Its ROADMAP/NEXT-STEPS now distinguish the published
 sketches from engine adoption and document the engine seam above. Retain zero
 runtime dependencies and zero FFI. Further kernel changes need a consumer measurement: sparse HLL
@@ -247,13 +296,13 @@ memory limit independently of sketches.
 |---|---|---|
 | 1 | R3, moonlake: release preparation | Reconcile current documentation and review the accepted 0.6.0 scope, now on the released colenc 0.1.3 (`344d739`, verification §44). Check version claims and the final package contents, run the archive consumer with fresh caches and no colenc workspace override, and record source/archive/toolchain identity. Run the release dry run, tag and publish only under release authorization. After publication run `harness/check_consumer.py --registry-version 0.6.0`; after the relevant deployment run playground acceptance with the exact expected 0.6.0 version. Any source change reopens its affected gates |
 | 2 | H0, moonlake: current grouped-HLL baseline | **Done** (verification §43, re-measured on the released artifact in §44). `harness/bench_hll.py` sweeps 18 shapes in isolated processes with decode-only and exact-count controls, duplicates and NULL variants; against colenc 0.1.2 a sketch cost about 20 KB per group, the crossover at 1,000 groups was near 200 distinct values, and 20,000 groups of one value held 408.0 MB against 17.2 MB for the exact set. That promoted sparse sketch state, which colenc released as 0.1.3: the same matrix through the registry artifact moves those rows to 15.4 MB, 392.6 MB less, answers identically and leaves the crossover where it was. The 0.1.1 and 0.1.2 tables stay as history |
-| 3 | E5a, moonlake: input-buffer and spill contract | State how to choose or grow partitions without knowing the total input size, share a budget across all partition buffers, and preserve group-key equality and exact aggregate semantics. Decide the over-budget policy for skew and for one exact distinct/median/string state before implementation. Specify ownership and cleanup on source/spill failure. Record the decision before changing behavior |
-| 4 | E5b, moonlake: consume batches before grace aggregation | Replace the collected scan input with bounded partition buffering for the existing single-table budgeted GROUP BY shape. Reuse the accumulator fold and spill format; retain explicit fallback behavior for other shapes. Exact queries stay exact. This task requires no new colenc API |
-| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation |
+| 3 | E5a, moonlake: input-buffer and spill contract | State how to choose or grow partitions without knowing the total input size, share a budget across all partition buffers, and preserve group-key equality and exact aggregate semantics. Decide the over-budget policy for skew and for one exact distinct/median/string state before implementation. Specify ownership and cleanup on source/spill failure. Record the decision before changing behavior. **Recorded** in the "Budgeted GROUP BY input" paragraph under Semantic and memory decisions; E5b implements it and E5c measures it |
+| 4 | E5b, moonlake: consume batches before grace aggregation | Replace the collected scan input with bounded partition buffering for the existing single-table budgeted GROUP BY shape. Reuse the accumulator fold and spill format; retain explicit fallback behavior for other shapes. Exact queries stay exact. This task requires no new colenc API. **Done** (verification section 45) |
+| 5 | E5c, moonlake: correctness and resource evidence | Compare answers with the existing exact path and DuckDB, including empty input, NULLs, duplicate keys, DISTINCT aggregates, skew, HAVING and failure cleanup. With a fixed group/result count, grow input rows and record scan batches/bytes, wall time, peak RSS, total buffered bytes and spill bytes at several budgets. Separately vary group count and large per-group state. Retained input must stop growing with total rows; group/result state is reported separately. Run the existing target suites and spill/golden gates after the implementation. **Partly done** (verification section 45, `harness/bench_agg_pull.py`): the rows-grow table, five other shapes, `string_agg`, the partition-size choice and DuckDB answers are recorded. Open: a buffered-bytes counter, wasm-gc and js measurements. `string_agg` time follows the partition count and not the path (verification section 45) |
 
-E5 starts at `engine/stream.mbt`'s `streaming_agg_source` (which currently
-excludes a budgeted GROUP BY) and `engine/extagg.mbt`'s
-`aggregate_within_budget` / `grace_agg` (which take a collected batch array).
+E5 started at `engine/stream.mbt`'s `streaming_agg_source` (which excluded a
+budgeted GROUP BY) and `engine/extagg.mbt`'s
+`aggregate_within_budget` / `grace_agg` (which took a collected batch array).
 The exit is removal of retained scan input for this shape. Group state and the
 final grouped result can still grow; `--memory` does not become a process RSS
 cap through this change.
@@ -293,7 +342,7 @@ refused:
 | Limit today | Who runs into it | What a fix involves |
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
-| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, a budgeted `GROUP BY` (which collects to size its grace partitions), and any of ORDER BY, GROUP BY, DISTINCT or a window above a join. SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
+| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, and any of ORDER BY, GROUP BY, DISTINCT or a window above a join. SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes and §30 the gate that now preserves their answers; §34 lists the join shapes that stay eager, and a semi/anti join is one of them (it is decorrelated into a scan first). |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |

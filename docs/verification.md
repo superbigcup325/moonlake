@@ -3545,3 +3545,53 @@ the tree that will be released depend on the released colenc. The sparse state i
 invisible through SQL except as cost — no syntax, no result change, no interface
 change — so the answer set is the one §40 and §41 accepted, with the gates above
 rerun rather than assumed.
+
+## 45. A budgeted GROUP BY reads the scan as it arrives (2026-10-27): E5a, E5b, E5c
+
+Until now a `GROUP BY` under `--memory` collected its whole input before the grace aggregation could size its partitions from it, so an 8,000,000-row input held every row however small the budget. The ROADMAP records the decision ('Budgeted GROUP BY input'); this section records what the implementation costs and what it leaves open.
+
+**The change.** `streaming_agg_source` no longer excludes a budgeted GROUP BY. `aggregate_pulled` (`engine/extagg.mbt`) buffers the scan's batches while their estimated bytes, summed in 64 bits, stay within the budget; a pull that ends there is aggregated exactly as before and needs no spill store. At the first overflow it requires the store (the same error as before), fixes the partition count from the budget alone, `clamp(budget / 4 / 256 KiB, 2, 64)`, and routes the buffer and the rest of the pull into hash partitions that share one `budget / 4` pool; when the pool is full the largest partition buffer is written as a run. Each partition is then folded run by run through `aggregate_seq`, the same fold and the same spill format as before. Cleanup is registered before the first run is written, and the collected `grace_agg` got the same ordering, which closes a leak when a failure came during partitioning or a flush. `--analyze` gains a `spill partitions` line when it spills.
+
+**Method.** `harness/bench_agg_pull.py`, native release binaries: candidate is `f4e9348` plus this change, control is `f4e9348` built in its own worktree. Each query runs in its own process, started from a small helper, because a parent that holds a DuckDB table lifts every child's `ru_maxrss` (the first version of the script printed the same growing RSS for both binaries). Candidate and control are interleaved, three rounds for the scaling table and four for the shape table, median wall time and maximum RSS. Both runs started after the 1-minute load average stayed under 0.9 (it read 0.18 and 0.45). Answers are compared with the control's and, except for `string_agg` (no defined order), with DuckDB 2.0.0 through `compare.py`. Worst round-to-round spread: 6% in the shape run, 12% on one 0.09 s case in the scaling run.
+
+**Rows grow, groups stay at 100** (peak RSS in MB, control -> candidate):
+
+| Rows | 4M budget | 16M budget |
+|---|---|---|
+| 500,000 | 60 -> 60 (fits) | 61 -> 61 (fits) |
+| 1,000,000 | 64 -> 63 | 63 -> 63 (fits) |
+| 2,000,000 | 75 -> 64 | 75 -> 75 (fits) |
+| 4,000,000 | 99 -> 64 | 103 -> 77 |
+| 8,000,000 | 194 -> 64 | 190 -> 77 |
+
+The candidate's RSS stays flat once the input exceeds the budget; the control grows with the rows. At 8,000,000 rows the candidate writes 16.5 MB in 4 partitions and 153 files at 4M, and 16.8 MB in 16 partitions and 141 files at 16M. Wall time is level: 1.78 s against 1.99 s at 4M and 1.72 s against 1.73 s at 16M (at 4,000,000 rows 0.89 against 0.87 and 0.86 against 0.84). 'Fits' means the candidate buffered everything, wrote nothing and took the path it took before.
+
+**Other shapes** (4,000,000 rows, RSS in MB and wall time in s, control -> candidate; the answers equal the control's and DuckDB's in every row):
+
+| Shape | 4M budget | 16M budget |
+|---|---|---|
+| 1,000 groups | 105 -> 67, 1.03 -> 1.00 | 111 -> 77, 0.99 -> 1.01 |
+| 100,000 groups | 107 -> 45, 1.25 -> 1.13 | 107 -> 67, 1.12 -> 1.10 |
+| 1,000,000 groups | 139 -> 148, 1.72 -> 1.74 | 168 -> 99, 1.65 -> 1.60 |
+| median + count(DISTINCT), 100 groups | 99 -> 63, 1.19 -> 1.20 | 105 -> 78, 1.16 -> 1.16 |
+| skew, 90% of rows on one key, median | 121 -> 109, 0.86 -> 0.84 | 123 -> 84, 0.83 -> 0.84 |
+
+At a 32M budget every shape except `string_agg` fits, so both paths behave alike (1,000,000 groups: 506 and 507 MB). Group state is not bounded by this change: with 1,000,000 groups at 4M the candidate is 9 MB above the control.
+
+**`string_agg`** (100 groups, 4,000,000 rows, answers equal the control's): 18.59 -> 25.81 s at 4M, 24.13 -> 21.85 s at 16M and 25.57 -> 18.83 s at 32M, with RSS 197 -> 67, 199 -> 99 and 223 -> 163 MB. The query takes tens of seconds on either path and its wall time does not move in one direction with the budget; at 4M the candidate is 39% slower. The wall time follows the partition count, not the path: the old path picks 39, 10 and 5 partitions at those three budgets and the new one 4, 16 and 32, and across both the time falls as partitions rise (2 partitions 26.2 s, 4: 25.8, 5: 25.6, 10: 24.1, 16: 21.9, 32: 18.8, 39: 18.6, 64: 18.0; the 2, 16 and 64 points are the 1 MiB and 64 KiB floors from the experiment below, each run twice, and every run returned the same answer). The 39% at the 4M budget is the old path choosing 39 partitions where the floor gives 4. The mechanism was not isolated; a guess is that fewer partitions keep more groups' growing strings live at once. The same 64 partitions cost the cheap aggregates about 20% (below), so the floor stays at 256 KiB.
+
+**Why 256 KiB.** The first value, 64 KiB, gave 64 partitions at 16M and 32M and ran about 20% slower than the collected path, plausibly because every batch is split 64 ways (not isolated). On 8,000,000 rows and 100 groups, medians of four interleaved rounds:
+
+| Budget | Control | 64 KiB | 256 KiB | 1 MiB |
+|---|---|---|---|---|
+| 4M | 2.00 s | 1.77 s (16 partitions) | 1.83 s (4) | 1.73 s (2) |
+| 16M | 1.75 s | 2.13 s (64) | 1.76 s (16) | 1.88 s (4) |
+| 32M | 1.74 s | 2.08 s (64) | 1.85 s (32) | 1.77 s (8) |
+
+No value is best everywhere (4 partitions is slower than 16 at 16M); 256 KiB has the smallest worst case, 6% at 32M. This is one data shape, narrow rows and few groups.
+
+**The floor belongs to the scan.** At a 4M budget the candidate's RSS is 63 MB on one 4,000,000-row CSV and 35 MB on another with the same rows plus a 20-character column. A global `count(*)`, a path this change does not touch, shows 49, 67, 27 and 67 MB on the four files tried. The figures above are therefore the buffer plus whatever the CSV reader holds, which depends on the file; what they support is that retained input stops growing with the rows, not that 64 MB is the cost of a 4M budget.
+
+**Tests.** `engine/agg_pull_wbtest.mbt` runs a lazy source under a 64-byte budget: a query with NULL keys, median and count(DISTINCT) equals the unbudgeted run, with the partition count asserted and no run left in the store; an overflow without a store is a clean error; a store that fails its second write leaves no run behind. Three more run the same lazy source under the 64-byte budget: an empty input answers no rows and writes nothing, HAVING keeps the one group whose rows arrive in all four batches, and a two-column key with duplicates across batches equals the unbudgeted answer. Check 11 of `spill_accept.sh` runs a 300,000-row GROUP BY whose last row cannot be parsed, after showing that the same data without that row spills, and requires a non-zero exit and no `--spill-dir` left behind; that directory is removed by the CLI scope itself, so the check covers the lifecycle and not the engine removing its own runs, which only the failing-store unit test covers. The suites pass on wasm-gc (354), native (367) and js (354), and `spill_accept.sh` and the 33 goldens pass on the native release binary. The existing grace-aggregation tests in `e2e_test.mbt` build in-memory tables, which are not lazy, so they still exercise the collected path and are not evidence for this one.
+
+**What this does not close.** Group state and the grouped result are still unbounded, so `--memory` is not an RSS cap. Only the 100-group shape was scaled by rows; the others ran at one input size. Nothing was measured on wasm-gc or js, and there is no counter for buffered bytes or for the largest partition's spill bytes. Growing the partition count mid-stream, the alternative the ROADMAP kept in reserve, was not needed for the shapes measured.
