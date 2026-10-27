@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - Unreleased
+## [0.5.1] - 2026-10-27
 
 Everything since 0.5.0 belongs to this version, and its
 [0.5.1 delivery plan](docs/ROADMAP.md#051-delivery-plan) is complete: one
@@ -14,8 +14,11 @@ fix has targeted evidence in §37, the colenc 0.1.1 upgrade in §38, the two
 approximate aggregates in §39, and the final candidate passed the same list again
 in §40. The entries below describe implemented changes; proposed index work stays
 in the roadmap. The source is pushed and the whole acceptance list passed again
-on the candidate that carries it (verification §46); the tag and the
-publication follow release authorization, and the release date is set then. The
+on the candidate that carries it (verification §46). It is published as
+`superbigcup325/moonlake@0.5.1`, with the tag `v0.5.1` on `f8e1204` and a
+[GitHub release](https://github.com/superbigcup325/moonlake/releases/tag/v0.5.1);
+the registry consumer check for 0.5.1 passes on all three targets (verification
+§47). The
 scope was planned as 0.6.0 until 2026-10-27, when the repository owner numbered
 the release 0.5.1; nothing in it changed but the number, and the documents, the
 delivery-plan heading and the recorded baseline filenames were renumbered with

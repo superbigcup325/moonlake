@@ -3685,3 +3685,38 @@ touched no benchmark. The 225-file archive is twelve files larger than §40's 21
 nine recorded baselines under `harness/baseline/` and the three benchmark
 scripts (`bench_agg_pull.py`, `bench_hll.py`, `bench_retained.py`) are tracked
 and ship, which is the same policy the earlier sections follow.
+
+## 47. 0.5.1 is published (2026-10-27): R3
+
+The scope that §36, §40 and §46 accepted as an unreleased candidate was
+published by the repository owner under the number 0.5.1. The number is the only
+change: until 2026-10-27 the scope was planned as 0.6.0, and the renumbering
+commit `f8e1204` touches `moon.mod`, the `VERSION` constant and its test, this
+document, the roadmap, the changelog, the README pointer and the recorded
+baselines, plus three baseline filenames that carried the old number — no
+behaviour. It is the release commit, so the tree it publishes is the tree §46
+accepted.
+
+| Step | Result |
+|---|---|
+| Version claims | `moon.mod`, `VERSION`, the `VERSION` assertions and the changelog heading agree on 0.5.1 |
+| `check_release.py --tag v0.5.1 --check-consumer` | 225 archive files, no forbidden path, clean tree at `f8e1204`, consumer passes on native, wasm-gc and js from a fresh registry and dependency cache |
+| `moon publish --dry-run` | `202 Accepted` for `superbigcup325/moonlake` 0.5.1 |
+| `moon publish` | `Server status: 200 OK` |
+| Registry | `superbigcup325/moonlake@0.5.1`, published 2026-10-27T13:29:24Z; `moon view` reports it |
+| Tag and release | annotated tag `v0.5.1` on `f8e1204`, pushed; <https://github.com/superbigcup325/moonlake/releases/tag/v0.5.1> |
+| `check_consumer.py --registry-version 0.5.1` | passes on native, wasm-gc and js from a fresh cache |
+| Deployed page | the pages job shipped `f8e1204`; <https://superbigcup325.github.io/moonlake/> reports 0.5.1 and passes the playground acceptance 16/16 |
+
+The archive SHA-256 recorded by the release check is
+`de0369219c19e3b4a661494f7a86738c2fa410ccec813bc5fd5fbee183158d00`, built from
+`v0.5.0-82-gf8e1204`. The publish ran with a writable `MOON_HOME` under a
+dot-directory, because the default one is read-only in this sandbox; the
+credentials were not copied into the tree.
+
+**What this section does not say.** No performance measurement was taken for
+the release: the numbers in §45 (pulled `GROUP BY`), §41 (dependency cost) and
+the record at the end of `docs/bench-baseline.md` stand on the controls each of
+them was measured against, and nothing in this release changed the code they
+measure beyond a version string. `--memory` remains a budget for the operators
+that honour it, not a cap on process RSS.
