@@ -158,6 +158,11 @@ priv struct PartitionPool {
   writers : Array[RunWriter]
   limit : Int32
   mut pooled : Int32
+  // the most the shared buffers held at once, before the flush that brought
+  // them back under `limit`
+  mut peak : Int32
+  // estimated in-memory bytes each partition has written out as runs
+  spilled : Array[Int64]
 }
 
 ///|
@@ -188,6 +193,9 @@ fn PartitionPool::add(
       self.pooled += bytes
     }
   }
+  if self.pooled > self.peak {
+    self.peak = self.pooled
+  }
   while self.pooled > self.limit {
     self.flush_largest()
   }
@@ -212,6 +220,19 @@ fn PartitionPool::flush_largest(
   }
   w.flush()
   self.pooled -= held
+  self.spilled[best] += held.to_int64()
+}
+
+///|
+/// What a pulled aggregation hands back besides its groups: how many partitions
+/// it spilled into (0 when it fit its budget), the most input bytes it held at
+/// once, and the most one partition wrote out. Both byte counts are the
+/// engine's size estimate (`estimate_batch_bytes`), not file sizes.
+priv struct PulledAgg {
+  batch : @types.DataBatch
+  partitions : Int32
+  peak_buffered : Int64
+  largest_spilled : Int64
 }
 
 ///|
@@ -223,15 +244,14 @@ fn PartitionPool::flush_largest(
 /// partitions that share one `budget / 4` pool, the rest of the pull follows, and
 /// each partition is aggregated run by run. Retained input is the budget plus one
 /// scan batch, whatever the total row count; group state and the grouped result
-/// are not bounded by this. Returns the grouped batch and the partition count
-/// (0 when nothing spilled).
+/// are not bounded by this. The result carries the counters `PulledAgg` names.
 fn aggregate_pulled(
   next : () -> @types.DataBatch? raise @types.SqlError,
   group_exprs : Array[PhysExpr],
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
   opts : ExecOptions,
-) -> (@types.DataBatch, Int32) raise @types.SqlError {
+) -> PulledAgg raise @types.SqlError {
   let limit = opts.budget.to_int64()
   let buffered : Array[@types.DataBatch] = []
   let mut bytes = 0L
@@ -246,7 +266,12 @@ fn aggregate_pulled(
     }
   }
   if exhausted {
-    return (aggregate(buffered, group_exprs, group_types, aggs), 0)
+    return {
+      batch: aggregate(buffered, group_exprs, group_types, aggs),
+      partitions: 0,
+      peak_buffered: bytes,
+      largest_spilled: 0L,
+    }
   }
   let store = match opts.spill {
     Some(store) => store
@@ -263,7 +288,17 @@ fn aggregate_pulled(
   // registered before the first run is written, so a failing source, a failing
   // store and a failing aggregation all leave through the same removal
   errdefer remove_writers(store, writers)
-  let pool : PartitionPool = { writers, limit: opts.budget / 4, pooled: 0, }
+  let spilled : Array[Int64] = []
+  for _ in 0..<p {
+    spilled.push(0L)
+  }
+  let pool : PartitionPool = {
+    writers,
+    limit: opts.budget / 4,
+    pooled: 0,
+    peak: 0,
+    spilled,
+  }
   // drain the buffer front to back while releasing it, so it shrinks as the
   // pool fills instead of both being resident
   buffered.rev_in_place()
@@ -273,8 +308,28 @@ fn aggregate_pulled(
   while next() is Some(batch) {
     pool.add(batch, group_exprs)
   }
-  for w in writers {
-    w.flush()
+  for k in 0..<p {
+    // what is still buffered is written now, so it counts toward its partition
+    pool.spilled[k] += writers[k].acc_bytes.to_int64()
+    writers[k].flush()
   }
-  (grace_finish(store, writers, group_exprs, group_types, aggs), p)
+  let mut largest = 0L
+  for s in pool.spilled {
+    if s > largest {
+      largest = s
+    }
+  }
+  let peak = pool.peak.to_int64()
+  {
+    batch: grace_finish(store, writers, group_exprs, group_types, aggs),
+    partitions: p,
+    // the buffer drains into the pool, so the most held at once is whichever
+    // of the two phases was larger
+    peak_buffered: if peak > bytes {
+      peak
+    } else {
+      bytes
+    },
+    largest_spilled: largest,
+  }
 }

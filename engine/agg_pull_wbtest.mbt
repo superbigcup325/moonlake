@@ -569,3 +569,29 @@ test "a budgeted GROUP BY keeps duplicate keys of a multi-column key together" {
   assert_eq(stats.filter(fn(p) { p.0 == "spill partitions" }).length(), 1)
   assert_eq(left, 0)
 }
+
+///|
+test "a spilled GROUP BY reports its buffered and spilled byte estimates" {
+  let (cat, _cells) = agg_catalog(agg_batches())
+  let (store, _files) = agg_mem_store()
+  let stats : Array[(String, Int64)] = []
+  let _ = run_parsed(
+    @sql.parse_select("select k, count(*) as n from t group by k"),
+    cat,
+    stats,
+    { budget: 64, spill: Some(store), },
+  ) catch {
+    e => abort("\{e}")
+  }
+  let peak = stats.filter(fn(p) { p.0 == "buffered bytes peak (estimated)" })
+  let largest = stats.filter(fn(p) {
+    p.0 == "largest partition spilled (estimated)"
+  })
+  assert_eq(peak.length(), 1)
+  assert_eq(largest.length(), 1)
+  // the pull overflowed, so more than the budget was held at once
+  assert_true(peak[0].1 > 64L)
+  assert_true(largest[0].1 > 0L)
+  // one partition cannot have written more than the whole input
+  assert_true(largest[0].1 <= batches_bytes(agg_batches()).to_int64())
+}

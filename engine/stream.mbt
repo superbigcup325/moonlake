@@ -282,18 +282,35 @@ fn run_agg_pull(
   let next = fn() -> @types.DataBatch? raise @types.SqlError { pull.next() }
   // a GROUP BY under a budget may have to spill; everything else folds the pull
   // directly, as before
-  let (grouped, partitions) = if opts.budget > 0 && bq.group_exprs.length() > 0 {
-    aggregate_pulled(next, bq.group_exprs, bq.group_types, bq.aggs, opts)
+  let mut partitions = 0
+  let mut peak_buffered = 0L
+  let mut largest_spilled = 0L
+  let grouped = if opts.budget > 0 && bq.group_exprs.length() > 0 {
+    let r = aggregate_pulled(
+      next,
+      bq.group_exprs,
+      bq.group_types,
+      bq.aggs,
+      opts,
+    )
+    partitions = r.partitions
+    peak_buffered = r.peak_buffered
+    largest_spilled = r.largest_spilled
+    r.batch
   } else {
-    (aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs), 0)
+    aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs)
   }
   let grouped = match bq.having {
     Some(h) => compact(grouped, eval_mask(h, grouped))
     None => grouped
   }
   stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
+  // only when it spilled, so a query that fits its budget reports what it did
+  // before
   if partitions > 0 {
     stats.push(("spill partitions", partitions.to_int64()))
+    stats.push(("buffered bytes peak (estimated)", peak_buffered))
+    stats.push(("largest partition spilled (estimated)", largest_spilled))
   }
   stats.push(("aggregate", grouped.row_count().to_int64()))
   let projected = project(grouped, bq.out_exprs, bq.out_types)
