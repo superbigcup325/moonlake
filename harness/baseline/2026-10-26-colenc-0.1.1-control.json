@@ -3,7 +3,7 @@
   "kind": "moonlake-release-baseline",
   "created_at": "2026-10-26T21:06:41+0800",
   "release": {
-    "version": "0.6.0",
+    "version": "0.5.1",
     "git_commit": "bc1a8f59c68f5203baf62ec8af4d7680573423ff",
     "git_branch": "HEAD",
     "git_subject": "feat(engine): add explicit approximate aggregates over HLL and t-digest",

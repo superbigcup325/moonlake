@@ -2,7 +2,7 @@
 
 > One record per release, native release build, TPC-H SF0.1, same script and
 > same machine. The newest is
-> [`harness/baseline/2026-10-26-0.6.0.json`](../harness/baseline/2026-10-26-0.6.0.json),
+> [`harness/baseline/2026-10-26-0.5.1.json`](../harness/baseline/2026-10-26-0.5.1.json),
 > taken beside a 0.5.0 re-record so the two can be compared (the last section).
 > The first was 0.3.1 at `3d766de`
 > ([`2026-10-20-0.3.1.json`](../harness/baseline/2026-10-20-0.3.1.json)); the
@@ -439,29 +439,29 @@ and 155.8 ms wall with 35.2 and 35.3 MB peak RSS; the committed record is the
 second, so the numbers a future comparison reads are the ones taken next to
 their 0.4.0 counterpart.
 
-## 0.6.0 record, beside a same-session 0.5.0 re-record (2026-10-26)
+## 0.5.1 record, beside a same-session 0.5.0 re-record (2026-10-26)
 
 The pair for this release, recorded minutes apart:
 
-- [`harness/baseline/2026-10-26-0.6.0.json`](../harness/baseline/2026-10-26-0.6.0.json)
+- [`harness/baseline/2026-10-26-0.5.1.json`](../harness/baseline/2026-10-26-0.5.1.json)
   — `3ab2634`, the release candidate, answer oracle green on all eleven cases.
 - [`harness/baseline/2026-10-26-0.5.0-rerecord.json`](../harness/baseline/2026-10-26-0.5.0-rerecord.json)
   — the published 0.5.0, rebuilt from tag `v0.5.0` in a worktree (`2da10d1`) and
   recorded with that tag's own script, so `--compare` has nothing to declare
   missing and no case differs in `sql` or in its stdout hash.
 
-0.6.0 changes how a result is delivered, not what a case computes. Every case's
+0.5.1 changes how a result is delivered, not what a case computes. Every case's
 `sql` and output hash are identical on both sides, so the comparison is timings
 and memory for the same work.
 
 The two files disagree about the clock, which is why the table below is the
 `--compare` run rather than a subtraction of two JSON files: 0.5.0 was recorded
-at 4373 MHz and 0.6.0 at 3406 MHz, so the record-to-record wall deltas are
-mostly the machine waking up. `--compare` re-measured 0.6.0 at 4199 MHz in the
+at 4373 MHz and 0.5.1 at 3406 MHz, so the record-to-record wall deltas are
+mostly the machine waking up. `--compare` re-measured 0.5.1 at 4199 MHz in the
 same session as the 0.5.0 re-record; its numbers are what follows, and the
 peak-RSS column is clock-independent either way.
 
-| case | wall 0.5.0 | wall 0.6.0 | delta | peak RSS 0.5.0 -> 0.6.0 |
+| case | wall 0.5.0 | wall 0.5.1 | delta | peak RSS 0.5.0 -> 0.5.1 |
 |---|---|---|---|---|
 | `scan/count_csv` | 150.9 ms | 161.2 ms | +6.8% | 35.1 -> 35.1 MB |
 | `scan/filtered_count_csv` | 164.6 | 179.7 | +9.2% | 35.2 -> 35.2 MB |
@@ -498,14 +498,14 @@ and the next section of work would be the one that lets a filter run across
 batch boundaries. Recorded here instead of averaged away, exactly as the 0.4.0
 section records what streamed merges cost.
 
-## 0.6.0 final record, beside the candidate it refines (2026-10-26)
+## 0.5.1 final record, beside the candidate it refines (2026-10-26)
 
 The final candidate adds the colenc 0.1.1 upgrade and the two approximate
 aggregates to the revision above, so it needed its own record:
 
-- [`harness/baseline/2026-10-26-0.6.0-final.json`](../harness/baseline/2026-10-26-0.6.0-final.json)
+- [`harness/baseline/2026-10-26-0.5.1-final.json`](../harness/baseline/2026-10-26-0.5.1-final.json)
   — `bc1a8f5`, the revision R2 accepted, oracle green on all eleven cases.
-- [`harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json`](../harness/baseline/2026-10-26-0.6.0-3ab2634-rerecord.json)
+- [`harness/baseline/2026-10-26-0.5.1-3ab2634-rerecord.json`](../harness/baseline/2026-10-26-0.5.1-3ab2634-rerecord.json)
   — `3ab2634`, the candidate accepted in §36, recorded minutes earlier in the
   same session with the same script. Both records were taken at 4200 MHz, and
   no case differs in `sql` or in its stdout hash.
@@ -579,7 +579,7 @@ That change exists now on colenc's unreleased `main` and was measured the same
 way: this tree built against it is 1,632,744 bytes, 8,248 fewer, and measures
 157.9 ms against the control's 163.0 for the scan and parity on the join, ten
 interleaved pairs a side. So the cost is removable rather than intrinsic. Until a
-colenc release carries it and this pair is recorded again, 0.6.0 ships about 10%
+colenc release carries it and this pair is recorded again, 0.5.1 ships about 10%
 slower wide-CSV scans (7–14% by run) than the candidate in §36, and that stays a
 decision for the release owner rather than something to average away. Recorded
 here, with the bisect and all three probes, because the next reader should not

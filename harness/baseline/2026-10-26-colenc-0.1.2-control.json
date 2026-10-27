@@ -3,7 +3,7 @@
   "kind": "moonlake-release-baseline",
   "created_at": "2026-10-26T23:28:12+0800",
   "release": {
-    "version": "0.6.0",
+    "version": "0.5.1",
     "git_commit": "344d739c9efdc07d4d72f26ce55e8b639d9a95ca",
     "git_branch": "HEAD",
     "git_subject": "build: consume colenc 0.1.3",

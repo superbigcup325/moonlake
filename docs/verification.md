@@ -1820,7 +1820,7 @@ early, so the remaining operators can move to this contract one at a time.
 
 ## 26. Pre-release user pass (2026-10-25): what an ordinary session found
 
-0.6.0 was checked the way a reader meets the project rather than the way the
+0.5.1 was checked the way a reader meets the project rather than the way the
 suite meets it: install the CLI, follow `README` and `docs/DEMO.md`, and use
 every documented feature until something looks wrong. Eleven defects came out
 of that, all of them in the CLI or in a corner of the expression layer rather
@@ -2035,7 +2035,7 @@ checks, `harness/check_cli.sh` on the debug and release binaries, `moon fmt
 --check` clean, and the only `.mbti` difference is the one that pre-dates this
 work (`round_half_away`).
 
-## 29. Current assessment and 0.6.0 scope (2026-10-25)
+## 29. Current assessment and 0.5.1 scope (2026-10-25)
 
 This assessment used source commit `eeab95e12507b4e234c8a4c0ca684ac6980899bf`
 and then changed documentation only. The working tree was clean at the start.
@@ -2046,12 +2046,12 @@ Live GitHub queries confirmed `main` at `750b98c250f77367e401e3afa4c74d7fc60c0c0
 The latest checked CI and Pages successes belonged to `750b98c`; neither
 validates the local candidate.
 
-All pending changes and the remaining execution plan now target **0.6.0**.
-The changelog has one `0.6.0 - Unreleased` section, with all its prior entries
+All pending changes and the remaining execution plan now target **0.5.1**.
+The changelog has one `0.5.1 - Unreleased` section, with all its prior entries
 preserved. Its entries describe implemented behavior. The roadmap separately
 marks the result API, batch-fed aggregation/sort/join, differential gate,
 dictionary investigation and final acceptance as open work for that same
-version. Version fields stay at 0.6.0; this is development scope, not a release.
+version. Version fields stay at 0.5.1; this is development scope, not a release.
 
 Checks actually run in this assessment:
 
@@ -2065,7 +2065,7 @@ Checks actually run in this assessment:
 | Python harness unit tests | 51 passed with Python 3.12.14 and the pinned DuckDB 2.0.0 / PyArrow 26.0.0 environment |
 | Native CLI build and `harness/check_cli.sh` | Pass; expression-only exec, unknown command and same-input output refusal |
 | `harness/check_all.sh` | 33 golden comparisons plus sort/join/aggregation spill equivalence passed; default wasm-gc target |
-| `harness/check_release.py` before documentation edits | Pass on the clean source baseline; version 0.6.0, archive 198 files, no forbidden paths |
+| `harness/check_release.py` before documentation edits | Pass on the clean source baseline; version 0.5.1, archive 198 files, no forbidden paths |
 | Version and archive checks after documentation edits | Pass; all version claims agree, archive still 198 files, no forbidden paths |
 | Documentation checks | All pending changelog entries preserved, task IDs and relative links checked, README symlink intact, `git diff --check` clean |
 
@@ -2087,7 +2087,7 @@ version fields are what `main` now carries. `harness/check_release.py` was run
 again on that clean tree and passed — the three version claims agree, the
 archive holds 198 files with no forbidden path — but it is a check of the
 current candidate, not of a release: `moon publish --dry-run`, the tag, the
-registry consumer and the remainder of the 0.6.0 delivery plan still belong to
+registry consumer and the remainder of the 0.5.1 delivery plan still belong to
 authorized release work on the final candidate.
 
 ## 30. The correlation differential becomes a committed gate (2026-10-25)
@@ -2411,7 +2411,7 @@ covers the store lifecycle, and the correlation differential is unchanged.
 reader-fixture checks, `harness/spill_accept.sh` all checks,
 `harness/check_cli.sh` all five sections, `harness/check_correlation.py` fixed
 cases and `--random 400 --seed 20261025` both ok, 66 Python harness unit tests,
-and `harness/check_release.py` ok at 0.6.0.
+and `harness/check_release.py` ok at 0.5.1.
 
 ## 33. ORDER BY sorts, feeds and hands over incrementally (2026-10-26)
 
@@ -2555,7 +2555,7 @@ differential is unchanged.
 `harness/check_all.sh` 33/33 golden comparisons plus the equivalence and reader
 checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
 sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
-Python harness unit tests, and `harness/check_release.py` ok at 0.6.0.
+Python harness unit tests, and `harness/check_release.py` ok at 0.5.1.
 
 ## 34. A join probes a batch at a time (2026-10-26)
 
@@ -2680,7 +2680,7 @@ clean, `.mbti` unchanged (everything new is private to the package),
 `harness/check_all.sh` 33/33 golden comparisons plus the equivalence and reader
 checks, `harness/spill_accept.sh` all checks, `harness/check_cli.sh` all five
 sections, `harness/check_correlation.py --random 400 --seed 20261025` ok, 66
-Python harness unit tests, and `harness/check_release.py` ok at 0.6.0 (206 files
+Python harness unit tests, and `harness/check_release.py` ok at 0.5.1 (206 files
 in the archive).
 
 ## 35. A second table prices the dictionary, and finds the row group bigger (2026-10-26)
@@ -2797,7 +2797,7 @@ implementing the encoding first would bank the smaller half and make the
 comparison afterwards harder to read. That is the same ordering argument the
 2026-10-24 entry used to postpone the dictionary behind the Snappy tag, applied
 to the same row. So the hold-list entry now starts from the row-group size, with
-this script as the fixture to tune against, and W1 stays out of 0.6.0. Nothing
+this script as the fixture to tune against, and W1 stays out of 0.5.1. Nothing
 in the writer changed for this section; the numbers labelled "moonlake" above
 are the current `write --snappy` output, and everything else is PyArrow encoding
 a hypothetical.
@@ -2809,11 +2809,11 @@ relative tolerance, since summation order differs between the two writers), and
 prints both tables. It is a measurement tool and not a gate: nothing here
 depends on the numbers, which is why the JSON record stays out of the repository.
 \n
-## 36. 0.6.0 acceptance on one candidate (2026-10-26)
+## 36. 0.5.1 acceptance on one candidate (2026-10-26)
 
-**The claim being tested.** The roadmap's "What 0.6.0 has to clear" is a list of
+**The claim being tested.** The roadmap's "What 0.5.1 has to clear" is a list of
 gates, and a gate list is only a claim until one tree passes all of it: the
-manifest, library constant, generated interfaces and changelog agree on 0.6.0;
+manifest, library constant, generated interfaces and changelog agree on 0.5.1;
 the linter, formatter, interface freshness, the native/wasm-gc/js suites and the
 Python gate self-tests pass; the goldens pass on all three targets and through
 the built binary; the differential, corpus, encoding, CLI, spill and writer
@@ -2826,7 +2826,7 @@ discovered.
 **The candidate.** `3ab2634`, the last commit that changes `harness/`, on top of
 `dcc6ae7` (the last library change); the commit carrying this section adds
 documentation and the two baseline records only. The working tree was clean when
-each gate below ran. Every version claim says 0.6.0; the released version is
+each gate below ran. Every version claim says 0.5.1; the released version is
 still 0.5.0 at tag `v0.5.0`, and nothing was pushed, tagged, published or
 deployed.
 
@@ -2857,8 +2857,8 @@ deployed.
 | `harness/check_consumer.py` (archive, fresh `MOON_HOME`) | native, wasm-gc and js: version, CSV, Parquet raw/Snappy, DATE/NULL, drop, and four streamed shapes agreeing with the collected answers |
 | `harness/check_release.py --check-consumer` | Version agreement, archive contents, consumer |
 | Playground: `moon build --target wasm-gc playground` + import audit | `playground.wasm` imports only `wasm:js-string` and `_` |
-| `harness/playground_accept.cjs http://127.0.0.1:8971/index.html` | 16/16 in real Chromium (page reports 0.6.0) |
-| Performance pair (this section's last part) | `--compare` 0.5.0 re-record -> 0.6.0: nothing outside run-to-run noise but the filtered count |
+| `harness/playground_accept.cjs http://127.0.0.1:8971/index.html` | 16/16 in real Chromium (page reports 0.5.1) |
+| Performance pair (this section's last part) | `--compare` 0.5.0 re-record -> 0.5.1: nothing outside run-to-run noise but the filtered count |
 
 **The three-target goldens are the reason the target switch was worth adding.**
 Before it, `check_all.sh` could only ever run `moon run cmd/main`, so the release
@@ -2872,7 +2872,7 @@ pass on one backend was never evidence for the others.
 
 **The consumer is the API, not the code.** `harness/consumer/main.mbt` is copied
 into a module that has no access to this checkout, built against the archive just
-packed, with a fresh `MOON_HOME` and freshly downloaded dependencies. 0.6.0's
+packed, with a fresh `MOON_HOME` and freshly downloaded dependencies. 0.5.1's
 addition is the result API, so the consumer now drains four shapes — a scan with
 a filter and a window, a two-table join, a folded aggregate and an unordered
 `ORDER BY` — and requires each pulled delivery to print exactly what
@@ -2885,15 +2885,15 @@ everything inside the module stayed green.
 that release authorization covers: the job exists (`.github/workflows/nightly.yml`,
 including the >2 GiB write) and last ran green at run `40077399241` on
 2026-10-24 against the then-`main`, which is history rather than acceptance. The
-same applies to the hosted playground deployment (require the exact 0.6.0 version
-after it), to `check_consumer.py --registry-version 0.6.0` (needs publication)
+same applies to the hosted playground deployment (require the exact 0.5.1 version
+after it), to `check_consumer.py --registry-version 0.5.1` (needs publication)
 and to `moon publish --dry-run`. Locally, everything above was run on this
 candidate. The eager shapes the release still has are recorded rather than
 removed: `engine/stream.mbt` and `verification` §34 list the shapes that
 accumulate, and the roadmap's "Current implementation" paragraph keeps the user
 facing version of the list.
 
-**Performance.** The pair is in `bench-baseline.md`'s last section: 0.6.0 at
+**Performance.** The pair is in `bench-baseline.md`'s last section: 0.5.1 at
 `3ab2634` beside a 0.5.0 re-recorded from tag `v0.5.0` in a worktree minutes
 apart, with one case (`scan/filtered_count_csv`) measured as a real ~4% cost by
 an interleaved A/B and ten cases inside their own spread. Peak RSS falls on
@@ -2930,7 +2930,7 @@ from that number and read it as one range, so the last page's 28 bytes sat
 outside the buffer the decoder owned, and the bounds check, written against
 `data.length()`, called a chunk-relative offset "past the end of the file".
 Before 0.5.0 the whole file was the buffer and the file decoded correctly. So
-0.5.0 and 0.6.0 both refused a file PyArrow and DuckDB read, and the local
+0.5.0 and 0.5.1 both refused a file PyArrow and DuckDB read, and the local
 commit that settled the fixture recorded the refusal as the expected class: a
 regression normalized as a decision, plus a message that named the wrong
 quantity.
@@ -2960,7 +2960,7 @@ compares classes and treats `why` as prose. Suites at 330 (wasm-gc), 343
 `.mbti` change: the whole edit is inside the package's private reader path.
 
 **What it does not close.** The nightly stays red until this is pushed, and
-0.6.0 is still unreleased. The other 51 refusals are the declared scope, not
+0.5.1 is still unreleased. The other 51 refusals are the declared scope, not
 defects; the one shape this file taught is that a footer number is evidence
 about the writer's bookkeeping, not about where the pages end.
 
@@ -3000,7 +3000,7 @@ available and unused; no SQL function, index or engine behavior changed here.
 
 **What it does not close.** The upgrade enables the colenc surface and proves
 nothing about using it: A0's semantics and state costs, A1, A2, E5 and I0 are
-still proposals. Acceptance of the final 0.6.0 candidate is R2, which reruns
+still proposals. Acceptance of the final 0.5.1 candidate is R2, which reruns
 §36's gates on one revision — including the >2 GiB file, the host-free wasm
 build and the browser playground — and the performance pair is re-recorded
 last. Push, tag, publication and deployment remain unauthorized.
@@ -3071,11 +3071,11 @@ partial-state merge: the grouped path keys partitions by group key, so a group's
 state is never split, and input-partitioned aggregation would need one. No
 persisted sketch state and no approximate type in a result. The statistics are
 the estimator's standard error and colenc's measured t-digest rank error, not a
-universal bound. The 0.6.0 candidate now carries both functions, so R2 must run
+universal bound. The 0.5.1 candidate now carries both functions, so R2 must run
 its acceptance on the revision that includes them, and the release pair at the
 end of `docs/bench-baseline.md` still belongs to the earlier revision.
 
-## 40. 0.6.0 accepted again on the final candidate (2026-10-26): R2
+## 40. 0.5.1 accepted again on the final candidate (2026-10-26): R2
 
 Everything below ran on `bc1a8f5`, whose tracked tree was clean; the worktrees
 used for the performance control and the bisect live outside the module. The
@@ -3109,7 +3109,7 @@ re-run on it rather than inherited.
 - Playground: `moon build --target wasm-gc playground`, then the import audit —
   `playground.wasm` imports only `wasm:js-string` and `_` — and
   `harness/playground_accept.cjs` driving real Chromium: 16/16, the page
-  reporting 0.6.0.
+  reporting 0.5.1.
 - `check_release.py --check-consumer`: 213 archive files, no forbidden path,
   version claims agree, and the unpacked archive passes on native, wasm-gc and
   js with fresh registry and dependency caches.
@@ -3138,7 +3138,7 @@ smaller), so what remains is a colenc release and a re-record.
 
 **What it does not close.** Remote CI and the nightly at this SHA need the push;
 `moon publish --dry-run` uploads an archive, and publication, tagging and
-deployment stay unauthorized. The registry consumer for 0.6.0 and the hosted
+deployment stay unauthorized. The registry consumer for 0.5.1 and the hosted
 playground's version check happen after those. Nothing here is a statement about
 the published 0.5.0, and the CSV cost above is the one open decision before
 publishing.
@@ -3212,7 +3212,7 @@ reasoning are in
 Peak RSS is flat within 1.7 MB everywhere.
 
 **What it does not close.** The published moonlake release is still 0.5.0:
-publication needs authorization and stays outside this section, and the 0.6.0
+publication needs authorization and stays outside this section, and the 0.5.1
 registry consumer, the hosted playground version check and the deployment happen
 after that. Remote CI and the nightly do certify these commits — `4de8077` on
 `main` passed the push CI and a dispatched nightly, and pages deployed from it.
@@ -3266,14 +3266,14 @@ The Python gates ran on 3.12.14 with `duckdb==2.0.0` and `pyarrow==26.0.0` from
 **What was deliberately not re-run.** The performance pair: the toolchain is
 part of `bench_release.py`'s fingerprint, so a record taken on 0.1.20261016 is
 refused as a comparison target instead of being mixed with new timings.
-Re-recording the 0.6.0 pair on this toolchain is a decision for the release
+Re-recording the 0.5.1 pair on this toolchain is a decision for the release
 owner, not a gate, and this section makes no timing claim. `--check-oracles`
 wants the SF0.1 data set, and `check_large_write.py` (34.4 M rows) exercises the
 writer's wide-offset path that a compiler bump does not reach; neither was run.
 
 **Two CLI surfaces still behave as the release gates expect.** `moon package
 --list` writes its file list to **stderr**, mixed with the `moon check` progress
-lines, and ends by packaging `_build/publish/superbigcup325-moonlake-0.6.0.zip`;
+lines, and ends by packaging `_build/publish/superbigcup325-moonlake-0.5.1.zip`;
 `moon publish --dry-run` answers `202 Accepted` and still exits 255, so the
 recorded rule — read the `Server status` line, not the exit code — holds. The
 dry run also still needs a writable `MOON_HOME`, because the default one is
@@ -3349,7 +3349,7 @@ group row reads 15.0 MB in the dense run and 17.3 MB in the sparse one, and that
 shape takes the same code path in both, since its single group promotes before
 the first million values are in — so read the per-group figure and the crossover,
 not a single row. Wall time is one host under load average 0.3–1.1 and is not
-comparable to the 0.6.0 performance pair, which was recorded on the same binary
+comparable to the 0.5.1 performance pair, which was recorded on the same binary
 family and a different rig.
 
 **What it triggered.** Many small groups dominating memory is exactly the
@@ -3392,9 +3392,9 @@ published version is still 0.1.2, the workspace override that measured it is not
 in the tree, and consuming it needs a colenc release plus a `moon.mod` bump — a
 release decision, not a source change in this repository. That decision was made
 on 2026-10-26 — colenc released the state as 0.1.3 — and §44 records this tree
-taking it and the same matrix on the shipped artifact. 0.6.0's accepted scope
+taking it and the same matrix on the shipped artifact. 0.5.1's accepted scope
 is therefore untouched by H0, and no timing in this section is comparable to the
-0.6.0 performance pair: these are new fixtures, a new rig and a single host
+0.5.1 performance pair: these are new fixtures, a new rig and a single host
 (load average 0.3–1.1), recorded for their memory deltas.
 
 Two records, both committed. `harness/baseline/2026-10-26-h0-hll.json` is the
@@ -3411,7 +3411,7 @@ it changed and what it cost.
 ## 44. colenc 0.1.3 ships the sparse state (2026-10-26): H0b, C3
 
 §43 ended with the sparse registers implemented in colenc's tree but unreleased,
-and the accepted 0.6.0 candidate built against 0.1.2. The release decision went
+and the accepted 0.5.1 candidate built against 0.1.2. The release decision went
 the other way from leaving it out: colenc cut 0.1.3 with that state, published and
 tagged on 2026-10-26. This section is the consumer half — take the published
 artifact, rerun the acceptance list rather than inheriting it, and record what the
@@ -3539,7 +3539,7 @@ peak RSS is flat within 4 MB (the widest is `join/q3` at 49.2 against 45.3 MB).
 The record and its framing are in
 [bench-baseline](bench-baseline.md#colenc-013-hands-the-sparse-state-to-the-release-candidate-2026-10-26).
 
-**What this does not close.** moonlake 0.6.0 is still unpublished: tag, artifact,
+**What this does not close.** moonlake 0.5.1 is still unpublished: tag, artifact,
 publication and deployment need release authorization, and this section only makes
 the tree that will be released depend on the released colenc. The sparse state is
 invisible through SQL except as cost — no syntax, no result change, no interface
@@ -3629,11 +3629,11 @@ Over the scan, the spilling query adds 14 to 17 MB on native, 173 to 188 on js a
 
 The CSV figures still stand for what they were run for: the shape tables above, and the candidate-against-control comparisons, all read CSV on both sides.
 
-## 46. 0.6.0 release preparation on the E5 candidate (2026-10-27): R3
+## 46. 0.5.1 release preparation on the E5 candidate (2026-10-27): R3
 
 Everything below ran on `8297296f2742`, whose tracked tree was clean, with moon
 0.1.20261023 (moonc v0.10.17+d971670cd), Python 3.12.14, DuckDB 2.0.0 and
-PyArrow 26.0.0. The E5 work landed after the 0.6.0 scope was written, so R3 is
+PyArrow 26.0.0. The E5 work landed after the 0.5.1 scope was written, so R3 is
 the same list §40 ran, re-run on a candidate that carries it rather than
 inherited. The tag, the publication and the page deployment are separate
 release-authorization steps and none of them ran here; `moon publish --dry-run`
@@ -3665,10 +3665,10 @@ was skipped for the same reason (it needs credentials).
 - Playground: `moon build --target wasm-gc playground`, then the import audit —
   `playground.wasm` imports only `wasm:js-string` and `_` (793 imports, none
   else) — and `harness/playground_accept.cjs` driving real Chromium: 16/16,
-  with the page reporting 0.6.0. The pages workflow ships that same build on
+  with the page reporting 0.5.1. The pages workflow ships that same build on
   every push, and the deployed page at
   <https://superbigcup325.github.io/moonlake/> passes the same 16/16.
-- `check_release.py --tag v0.6.0 --check-consumer`: the four version claims
+- `check_release.py --tag v0.5.1 --check-consumer`: the four version claims
   agree, the archive holds 225 files with no forbidden path, the tree is clean,
   and the unpacked archive passes on native, wasm-gc and js with a fresh
   registry and dependency cache, including the four streamed shapes against
@@ -3677,7 +3677,7 @@ was skipped for the same reason (it needs credentials).
   from `v0.5.0-78-g8297296`.
 
 **What this records, and what it does not.** The list above is the acceptance
-for 0.6.0's source; it says nothing about a published artifact, because there is
+for 0.5.1's source; it says nothing about a published artifact, because there is
 none yet. The release pair for the performance record is §45's E5 tables plus
 the 0.1.2-versus-0.1.1 pair in §41, both against controls measured on the same
 host in interleaved rounds; no new timing was taken here, and the acceptance run

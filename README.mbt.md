@@ -124,8 +124,8 @@ moon add superbigcup325/moonlake
 > latest published release from mooncakes (0.5.0), which includes the session
 > playground, the Parquet writer and the spill/JSON fixes recorded in
 > [CHANGELOG.md](CHANGELOG.md).
-> The next release is 0.6.0: every change since 0.5.0 and the whole
-> [delivery plan](docs/ROADMAP.md#060-delivery-plan) passed, and the final
+> The next release is 0.5.1: every change since 0.5.0 and the whole
+> [delivery plan](docs/ROADMAP.md#051-delivery-plan) passed, and the final
 > candidate — reader fix, the two approximate aggregates and the colenc 0.1.3
 > dependency — passed the same list again (`verification.md` §§36, 40 and 44). It
 > is unreleased, so `moon add` still gives you 0.5.0.

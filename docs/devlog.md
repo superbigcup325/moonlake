@@ -1511,12 +1511,12 @@ repeated-outer-row case that is the whole point of the dedup), three-valued
 280/280 wasm-gc, 293/293 native, 33/33 TPC-H goldens plus spill equivalence,
 writer interop, CLI checks on both binaries.
 
-## 0.6.0 scope (2026-10-25): pending changes and the remaining execution work
+## 0.5.1 scope (2026-10-25): pending changes and the remaining execution work
 
-The release target is 0.6.0 for both the implemented changes since 0.5.0 and
+The release target is 0.5.1 for both the implemented changes since 0.5.0 and
 the remaining work in `docs/ROADMAP.md`. The separate Unreleased changelog
-entries have been merged into 0.6.0 and its premature release date removed.
-The README identifies 0.5.0 as the published package and 0.6.0 as development
+entries have been merged into 0.5.1 and its premature release date removed.
+The README identifies 0.5.0 as the published package and 0.5.1 as development
 work. Existing local handoff files now point to that single public plan.
 
 The LIMIT milestone is already implemented. The remaining sequence preserves
@@ -1524,7 +1524,7 @@ the latest SQL fixes in a reproducible differential gate, adds batch result
 consumption without breaking the collector API, then feeds aggregation,
 external sort and joins in batches. A second dataset tests dictionary benefits;
 implementing dictionaries still needs that evidence. Final acceptance follows
-those tasks within 0.6.0, including a complete performance record and independent
+those tasks within 0.5.1, including a complete performance record and independent
 consumers. Planned behavior stays out of the changelog until implemented and
 verified. Verification section 29 records this assessment's checks and limits.
 
@@ -1602,7 +1602,7 @@ NEXT-STEPS still scheduled the now-implemented sketches. The follow-up plan in
 APIs and separates the kernel's state/byte contracts from SQL and scan behavior.
 
 The first work is C0, consuming the registry dependency without a sibling
-workspace override, followed by R2, refreshing the final 0.6.0 candidate.
+workspace override, followed by R2, refreshing the final 0.5.1 candidate.
 The full local acceptance belongs to `3ab2634`; `ae6a28c` adds the reader fix
 recorded in verification §37. Live remote main is still `750b98c`, and its latest
 nightly is red on that locally fixed corpus case. Neither earlier acceptance
@@ -1628,7 +1628,7 @@ after the last code and dependency changes.
 
 ### Goal
 
-The 0.6.0 plan's E3: an additive consumption API and a CLI that prints through
+The 0.5.1 plan's E3: an additive consumption API and a CLI that prints through
 it. The repository already had one early stop (§27, a single-table `LIMIT`), but
 it lived inside the executor: the result still left as one materialized batch,
 `select * from t` over a table bigger than memory printed only after holding
@@ -1716,7 +1716,7 @@ and green.
 
 ### Goal
 
-The 0.6.0 plan's E4a: an aggregate should update its state as input arrives
+The 0.5.1 plan's E4a: an aggregate should update its state as input arrives
 instead of being handed the input. E3 removed the result array; this removes the
 input array behind the same operator, and it is the first E4 step because it is
 the one where the fold already existed.
@@ -1785,7 +1785,7 @@ unchanged and green.
 
 ### Goal
 
-The 0.6.0 plan's E4b: the external sort should build its runs from the scan and
+The 0.5.1 plan's E4b: the external sort should build its runs from the scan and
 feed its consumer incrementally. §31 gave the scan a pull interface and E4a let
 an aggregate fold it; a budgeted `ORDER BY` was the remaining blocking operator
 whose input still had to be an array, so "streamed with `--memory`" meant the
@@ -1934,7 +1934,7 @@ collected path still reports the same counters.
 `docs/verification.md` §34. Gates: 340/340 native, 327/327 wasm-gc, 327/327 js,
 `moon check --deny-warn` and `moon fmt` clean, `.mbti` unchanged, 33/33 goldens,
 spill acceptance, all five CLI sections, the correlation differential at 400
-random cases, 66 Python harness tests, and the release check at 0.6.0 with 206
+random cases, 66 Python harness tests, and the release check at 0.5.1 with 206
 files in the archive.
 
 ## A second table prices the dictionary (2026-10-26): W0
@@ -1943,7 +1943,7 @@ files in the archive.
 
 W0 is the roadmap's committed investigation, not an implementation: a second
 dataset decides whether adaptive dictionary write encodings (W1) are worth
-building into 0.6.0, and it has to be a table the writer does not already know —
+building into 0.5.1, and it has to be a table the writer does not already know —
 the writing row was derived from `lineitem` alone.
 
 ### What landed
@@ -1984,7 +1984,7 @@ closed the 16% gap on lineitem.
 
 ### The decision
 
-W1 stays out of 0.6.0, and the reason is in the numbers rather than in the
+W1 stays out of 0.5.1, and the reason is in the numbers rather than in the
 schedule: the encoding is worth a sixth of the file at the layout we write
 today, and twice that at a layout we do not. Implementing it first would bank
 the smaller half and make the next comparison harder to read — the same ordering
@@ -2038,7 +2038,7 @@ why the browser acceptance could be run locally instead of trusted to CI.
 
 ### The number
 
-The performance pair is in `bench-baseline.md`: 0.6.0 at `3ab2634` beside the
+The performance pair is in `bench-baseline.md`: 0.5.1 at `3ab2634` beside the
 published 0.5.0 rebuilt from tag `v0.5.0` in a worktree and recorded with that
 tag's own script, minutes apart. No case changed its `sql` or its stdout hash,
 and peak RSS falls wherever the answer used to be collected — the two-table join
@@ -2155,7 +2155,7 @@ optimizer rewrite and no default: the feature is explicit because the engine
 cannot know which side of that line a query is on.
 
 Suites are at 348 wasm-gc / 361 native / 348 js, 18 of them new. What is left
-for 0.6.0 is R2, the acceptance rerun on this revision.
+for 0.5.1 is R2, the acceptance rerun on this revision.
 
 ## Accepted again, and the 10% that came with the dependency (2026-10-26): R2
 

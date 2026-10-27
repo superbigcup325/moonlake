@@ -4,19 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - Unreleased
+## [0.5.1] - Unreleased
 
 Everything since 0.5.0 belongs to this version, and its
-[0.6.0 delivery plan](docs/ROADMAP.md#060-delivery-plan) is complete: one
+[0.5.1 delivery plan](docs/ROADMAP.md#051-delivery-plan) is complete: one
 candidate passed the whole acceptance list, recorded in `verification.md` §36 and
 in the performance pair at the end of `docs/bench-baseline.md`. The later Parquet
 fix has targeted evidence in §37, the colenc 0.1.1 upgrade in §38, the two
 approximate aggregates in §39, and the final candidate passed the same list again
 in §40. The entries below describe implemented changes; proposed index work stays
 in the roadmap. The source is pushed and the whole acceptance list passed again
-on the candidate that carries it (verification §46); the tag, the publication
-and the page deployment follow release authorization, and the release date is
-set then. The dependency upgrade's cost is closed rather
+on the candidate that carries it (verification §46); the tag and the
+publication follow release authorization, and the release date is set then. The
+scope was planned as 0.6.0 until 2026-10-27, when the repository owner numbered
+the release 0.5.1; nothing in it changed but the number, and the documents, the
+delivery-plan heading and the recorded baseline filenames were renumbered with
+it. The dependency upgrade's cost is closed rather
 than accepted: colenc 0.1.1 was about 10% slower on wide CSV scans because its
 generic dispatch kept the bitmap reachable from this tree, colenc 0.1.2 publishes
 the split that removes it, and the re-record puts those cases 6-11% below the
@@ -305,7 +308,7 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   for a 2017-byte page chain, so its last data page ends 15 bytes past the
   declared extent while the bytes are inside the file (footer at 2608, page
   payload 2580–2608). Since 0.5.0's ranged reads the chunk was sized from that
-  number and the page was refused as "past the end of the file"; 0.5.0 and 0.6.0
+  number and the page was refused as "past the end of the file"; 0.5.0 and 0.5.1
   both refused it, the whole-file reads before 0.5.0 decoded it, and PyArrow and
   DuckDB read it (25 rows × 4 columns, cell for cell). The reader now follows
   the page headers as they do: a page that overruns the declared extent is read

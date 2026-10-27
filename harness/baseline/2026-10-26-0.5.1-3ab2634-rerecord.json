@@ -3,7 +3,7 @@
   "kind": "moonlake-release-baseline",
   "created_at": "2026-10-26T12:31:42+0800",
   "release": {
-    "version": "0.6.0",
+    "version": "0.5.1",
     "git_commit": "3ab26349630de8e8b7fd4d2f6f5798a3644e152c",
     "git_branch": "HEAD",
     "git_subject": "test(harness): run the goldens per target, and pull results in the consumer",
