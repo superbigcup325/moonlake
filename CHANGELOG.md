@@ -13,8 +13,10 @@ in the performance pair at the end of `docs/bench-baseline.md`. The later Parque
 fix has targeted evidence in §37, the colenc 0.1.1 upgrade in §38, the two
 approximate aggregates in §39, and the final candidate passed the same list again
 in §40. The entries below describe implemented changes; proposed index work stays
-in the roadmap. Push, tag, publication and deployment follow authorization, and
-the release date is set then. The dependency upgrade's cost is closed rather
+in the roadmap. The source is pushed and the whole acceptance list passed again
+on the candidate that carries it (verification §46); the tag, the publication
+and the page deployment follow release authorization, and the release date is
+set then. The dependency upgrade's cost is closed rather
 than accepted: colenc 0.1.1 was about 10% slower on wide CSV scans because its
 generic dispatch kept the bitmap reachable from this tree, colenc 0.1.2 publishes
 the split that removes it, and the re-record puts those cases 6-11% below the
