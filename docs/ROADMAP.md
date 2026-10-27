@@ -9,8 +9,9 @@ every round) and the grouped sketch's per-group state (0.1.3 hands the sparse
 registers to this tree, worth 393 MB on the worst shape). The short Parquet cases
 remain unresolved.
 
-Upstream checked on 2026-10-26 (Asia/Shanghai): `main` is `a0c7628`, with
-[CI passing](https://github.com/superbigcup325/moonlake/actions/runs/40330396420).
+Upstream checked on 2026-10-26 (Asia/Shanghai): `main` is `f4e9348`. `a0c7628`
+passed [CI](https://github.com/superbigcup325/moonlake/actions/runs/40330396420),
+and `9c677a8` passed CI, Pages and a dispatched nightly (verification §44).
 The upgrade pair at `4de8077` passed its
 [push CI](https://github.com/superbigcup325/moonlake/actions/runs/40328605964)
 and a [dispatched nightly](https://github.com/superbigcup325/moonlake/actions/runs/40329274231);
@@ -22,11 +23,11 @@ a successful pages workflow does not substitute for hosted-page acceptance.
 Neither this repository nor colenc has an open issue or pull request at this
 snapshot.
 
-The [next delivery sequence](#next-delivery-after-colenc-012) starts with 0.6.0
+The [next delivery sequence](#next-delivery-after-colenc-013) starts with 0.6.0
 release preparation. The grouped-HLL refresh is done (H0, verification §43): at
 1,000 groups the sketch crosses the exact set near 200 distinct values, and many
-small groups are still the expensive shape, which promoted sparse sketch state in
-colenc's tree — unreleased, and therefore not part of 0.6.0. Budgeted GROUP BY
+small groups are still the expensive shape, which promoted the sparse sketch state colenc 0.1.3 released and this tree
+consumes (C3, §44), with no source change here. Budgeted GROUP BY
 input consumption is the next proposed implementation. FSST reuse and Roaring
 index integration retain their workload triggers.
 
@@ -146,7 +147,7 @@ optimizers, adapters and platform work still follow the triggers below.
 
 ## Follow-up after colenc 0.1.1
 
-This follow-up began with 0.1.1; the status below was refreshed after 0.1.2 on
+This follow-up began with 0.1.1; the status below was refreshed after 0.1.3 on
 2026-10-26 (Asia/Shanghai), using source inspection and live release/CI queries.
 Completed tasks retain their original revisions and measurements. The new
 sequence below adds no implemented SQL or index API.
@@ -259,11 +260,11 @@ cap through this change.
 
 H0 promoted sparse HLL state: many small groups did dominate memory, and the
 measured trade pays — 393 MB off the worst shape, with 13–95% less wall time on
-the many-small-group shapes and 2–27% more on the 1,000-group crossover sweep. colenc's
-tree carries it with the hash, rank, estimator, merge law and v1 bytes unchanged,
+the many-small-group shapes and 2–27% more on the 1,000-group crossover sweep. colenc
+released it as 0.1.3 with the hash, rank, estimator, merge law and v1 bytes unchanged,
 and its own record states the promotion rule, the merge combinations and the cost
-matrix. Consuming it is a release decision in that project plus a `moon.mod` bump
-here, not a change to 0.6.0's accepted scope. An exact-small-set estimator
+matrix. C3 consumed it with a `moon.mod` bump
+and no source change. An exact-small-set estimator
 remains a separate decision.
 
 FSST model reuse waits for repeated small string batches whose training cost is

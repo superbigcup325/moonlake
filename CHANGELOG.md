@@ -27,8 +27,9 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   standard error), returning int64. It hashes the same value equivalence the
   exact path keeps — type-tagged, so int32 1 and int64 1 differ; both zeros are
   one value and every NaN is one value, matching what their text form does —
-  and it skips NULL, so an empty or all-NULL input answers 0. The current colenc
-  0.1.2 sketch has 16 KiB of register payload plus object overhead.
+  and it skips NULL, so an empty or all-NULL input answers 0. The dense colenc
+  sketch state has 16 KiB of register payload plus object overhead; colenc 0.1.3
+  keeps a small group's registers sparse until it outgrows them.
   `COUNT(DISTINCT ...)` stays exact and no optimizer rewrites one into the other.
   The original measurement with colenc 0.1.1, on a 1,000,000-row string column
   where every value is distinct, reports 1,010,708 against the exact 1,000,000,
