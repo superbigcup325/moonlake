@@ -2249,3 +2249,15 @@ harness: the quiet-host flags in the new script were parsed and never read, whic
 is how a gate silently does nothing, and the JSON had no provenance header. Both
 are fixed before the record that is cited, and the roadmap's rule — compose the
 two paths only if the collection dominates — now has its answer.
+
+Writing the composition contract E6b opens with turned out to be two decisions
+and one rule. The column-mapping question answers itself: the join cursor's
+output is already the layout the fold's expressions are bound to, because the
+collected path hands `aggregate_within_budget` exactly that, so nothing is
+projected between them and a second join stays out. The budget question needed a
+gate rather than an answer, because a two-table join keeps its build side whole:
+the shape is accepted only when that side fits the budget, and an oversized one
+keeps the eager path, where the join can be partitioned. The rule is the one E5
+already recorded, that a budget bounds the fold's input buffer and never the
+group state or the grouped result, and the row counters keep their names while
+the spill lines start describing a different plan.

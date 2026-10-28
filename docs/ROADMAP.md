@@ -358,7 +358,7 @@ update.
 | Order | Task | Delivery and exit |
 |---|---|---|
 | 1 | E6a: bottleneck and ownership record | **Done** (2026-10-27), recorded in §48 and in `harness/baseline/2026-10-27-e6a-join-agg.json`. Use the released 0.5.1 source as the control. Fix the build side, group count and final result size; grow probe rows and join fanout for a two-table keyed INNER/LEFT join followed by GROUP BY. Separate scan cost, resident build state, intermediate rows, aggregate state and final output. Record exact answers, wall time, peak RSS, scan/join row counts and spill counters at several budgets. Include scan-only, join-only and single-table aggregate controls. Specify deferred predicates, schema/column mapping, buffer accounting, exhaustion, early close and failure cleanup before implementation. If intermediate collection does not dominate, close the investigation and select the measured bottleneck instead |
-| 2 | E6b: compose one supported join/aggregate shape | E6a demonstrated the cost (§48): the collection dominates, so start here, opening with the composition contract the measurement could not settle — deferred predicates above the join, schema/column mapping into the aggregate, buffer accounting against the existing partition pool, and exhaustion, early close and failure cleanup. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
+| 2 | E6b: compose one supported join/aggregate shape | E6a demonstrated the cost (§48): the collection dominates, so start here, with the composition contract the measurement could not settle now [written below](#the-e6b-composition-contract): deferred predicates above the join, schema/column mapping into the aggregate, buffer accounting against the existing partition pool, and exhaustion, early close and failure cleanup. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
 | 3 | E6c: prove answers, lifecycle and scaling | Compare with the released collected path and DuckDB, including NULL keys/values, duplicate keys and fanout, empty sides, LEFT unmatched rows, residual/deferred predicates, HAVING, DISTINCT aggregates, skew and state that exceeds a budget. Exercise source and spill failures, exhaustion and early close with no leaked runs. With fixed build/group/result size, retained intermediate rows must stop growing with probe rows or fanout. Report the growing build/group-state cases separately. Run target suites and goldens on native, wasm-gc and js, plus the affected correlation and spill gates; exercise portable composition and failure behavior on each target and extend the packaged consumer to the new composition. Record same-session interleaved control/candidate measurements with an answer oracle, medians and spread |
 
 Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`
@@ -371,6 +371,100 @@ after its change with the same script and control. Use the Parquet-input control
 from `harness/bench_retained.py` when the CSV reader hides retained input, and
 report CSV behavior separately. Future acceptance must name its actual source;
 §46–47 remain evidence for the released tree.
+
+### The E6b composition contract
+
+Written 2026-10-27, before any code change, because these answers decide the
+implementation's signature, its counters and its failure behavior.
+
+**The shape.** The composition applies when the query is an aggregate with no
+ORDER BY, no window function and no DISTINCT, when there are exactly two join
+steps whose probe is table 0 and whose join is table 1, when both key lists are
+non-empty, when the kind is INNER, LEFT or FULL, and when both FROM items are
+lazy base tables. That is `streaming_join_source`'s predicate with the aggregate
+allowed instead of refused: one step, a kind whose output row is decidable from
+the probe row and the build table, and nothing above the join that needs every
+row first. The shape does not depend on a budget; the only decision this
+contract takes from a budget is the build side's size, under buffer accounting
+below. Every other query keeps the eager path and its memory behavior, including
+a longer chain, RIGHT, SEMI/ANTI, a keyless cross join, ORDER BY, DISTINCT and a
+window.
+
+**What feeds the fold.** The probe side is `table_input_pull` with the step's
+probe filter, the same pull the join stream opens. The build side is
+`materialize_scan` with the step's scan pushdown, concatenated into the combined
+layout with `tail_dtypes(step.out_dtypes, step.right_width)`. `JoinCursor::open`
+then hands out batches of at most `JOIN_OUT_BATCH` rows in `step.out_dtypes`. A
+batch reaches the fold after `bq.deferred` has been applied to it and only if
+rows remain, because a zero-row batch is not a batch and a fold of nothing adds
+nothing.
+
+**No column mapping.** The cursor's output layout is the layout the fold's
+expressions are bound to: the collected path hands `aggregate_within_budget` the
+join's combined layout together with the same `bq.group_exprs` and `bq.aggs`, so
+nothing is projected between the join and the fold. That equality is also what
+rules out a second join, whose output would be a different layout.
+
+**The tail.** After the fold the order is the one `run_agg_pull` already runs:
+HAVING on the finished groups, projection, then OFFSET/LIMIT. A LIMIT never
+reaches the join. A grouped result is final only after the last row is folded, so
+the composed pull reads the probe side to exhaustion whenever it runs.
+
+**Buffer accounting.** A grouped query with a budget hands the pull to
+`aggregate_pulled`: batches are buffered while their estimated bytes stay within
+the budget, and the first overflow routes the buffer into the fixed partition
+count from `agg_pull_partitions` (two to sixteen, set by the budget with a 32 KiB
+floor) whose writers share one `budget / 4` pool. A grouped query without a
+budget and a global aggregate fold through `aggregate_seq` and retain nothing.
+
+The build side stays whole, as it is for every two-table join, and it is checked
+against the budget before the shape is accepted: when `batches_bytes` of the
+materialized build side exceeds the budget, the query keeps the eager path,
+where `join_or_spill` can partition the join instead of holding it. Accepted,
+the shape holds the build side and the fold's buffer, each at most the budget,
+plus the batches in flight; E6c measures that peak rather than assuming it. Group
+state and the grouped result stay unbounded, and no budget means there is nothing
+to check: the shape always composes.
+
+**Counters.** `--analyze` must read the same row counts as the collected path for
+the same query: `scan <probe table>` rows the probe pull was handed, `scan <build
+table>` rows the build scan kept, `joins` rows the deferred filter passed to the
+fold, then `aggregate` and `result`. Those five cannot differ. The spill lines
+describe the plan instead, and this shape stops running `join_or_spill` for these
+queries: a query that used to spill the join and then the aggregate can report
+one phase afterwards, with fewer files. That is a plan change, not an answer
+change.
+
+**Exhaustion.** The cursor returns `None` once, after the probe side ends and
+after FULL has emitted its unmatched build rows. The fold then produces its final
+batch and the pull is not called again.
+
+**Early close.** `execute` has no close, and the answer is one batch, so
+`ResultStream` keeps handing this shape back materialized and E6b adds no stream
+variant. A stream over grouped rows would still have to read to exhaustion, so a
+failure is the only early stop.
+
+**Failure cleanup.** The build scan runs before any run file is written, so a
+failing build scan fails before the fold owns anything. Past that,
+`aggregate_pulled` registers `remove_writers` before its first run and drops the
+runs on success, on a failing pull and on a failing fold. With no store it raises
+its own over-budget error, so a query that `join_or_spill` used to refuse reports
+the aggregate's message instead.
+
+**Where it goes.** `run_pipeline` tries the shape next to `streaming_agg_source`,
+and the fold tail of `run_agg_pull` is factored out so both paths share it.
+`streaming_join_source` and `streaming_agg_source` keep their current predicates:
+the join stream still refuses an aggregate above it, and the aggregate stream
+still accepts one table.
+
+**What E6b must show.** Answers equal to the collected path and DuckDB for INNER,
+LEFT and FULL over the composed shape, including NULL keys, duplicate keys,
+fanout, an empty side, unmatched LEFT rows, a HAVING clause, and grouping by a
+build-side column, where an unmatched LEFT row has to land in the NULL group. The
+five row counters equal to the collected path's on the same query. The recorded
+baseline's `join-agg` peak minus `scan` no longer growing with joined rows under
+`harness/bench_join_agg.py`, and every fallback above still answering through the
+eager path.
 
 **Separate decisions.** Exact group state and the final grouped result still
 have no hard cap; neither E5 nor E6 may silently switch an exact aggregate to a
