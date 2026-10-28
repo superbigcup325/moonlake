@@ -403,7 +403,7 @@ uv run --python 3.12 --with-requirements harness/requirements.txt python harness
 
 What a two-table join costs when an aggregate sits above it. Since E6b one shape
 is folded from the join's own batches (INNER, LEFT or FULL over two lazy tables,
-with no `ORDER BY`, window or `DISTINCT` above it); every other shape still
+with no window or `DISTINCT` above it); every other shape still
 collects the joined rows, so the matrix is run against a binary from before the
 composition as well as the one being measured. Every point runs five cases over
 the same fixtures: `count(*)` (the scan), a `GROUP BY` over the probe alone (the
@@ -421,4 +421,22 @@ python3 harness/bench_join_agg.py --candidate <candidate main.exe> --control <re
 uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench_join_agg.py \
   --candidate <candidate main.exe> --control <released main.exe> --duckdb \
   --rows-scale 1000000,2000000,4000000 --fanout 1,2,4 --budgets 4M,16M
+```
+
+## An ordered aggregate (`bench_ordered_agg.py`)
+
+What it costs to sort a grouped result after the fold instead of collecting the
+input first. The cases are the TPC-H queries the golden corpus already runs,
+read from a `--data` directory, so the evidence is over the shapes the gate
+covers: q1 (one table) and q12 (one join step) are the ordered shapes the pull
+now takes, and q3 and q10 (two join steps) are in the matrix as invariants,
+because a shape the composition does not claim must not move. Each case runs
+candidate and control alternately and reports the median peak RSS and wall time
+plus the worst round-to-round spread, waits for a quiet host, and compares the
+two binaries' output byte for byte. The measurement is verification section 50.
+
+```bash
+python3 harness/bench_ordered_agg.py --candidate <candidate main.exe> --control <control main.exe>
+python3 harness/bench_ordered_agg.py --candidate <candidate main.exe> \
+  --control <control main.exe> --data harness/data/sf1 --budgets none,16M
 ```

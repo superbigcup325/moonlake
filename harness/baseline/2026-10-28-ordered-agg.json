@@ -1,0 +1,108 @@
+{
+ "schema": 1,
+ "kind": "moonlake-ordered-agg-baseline",
+ "created_at": "2026-10-28T19:54:25+0800",
+ "git": {
+  "commit": "c2bc3fa8b9ea2c87d1df410ebd67037abaf90509",
+  "branch": "main",
+  "subject": "test(harness): measure ordered aggregates before and after the pull",
+  "dirty": false
+ },
+ "machine": {
+  "cpu_count": 16,
+  "quiet_gate": 1.5,
+  "quiet_load": 0.27
+ },
+ "python": "3.12.14",
+ "toolchain": [
+  "moon 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moon",
+  "moonc v0.10.17+d971670cd (2026-10-23) ~/.moon/bin/moonc",
+  "moonrun 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moonrun",
+  "",
+  "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+ ],
+ "binaries": {
+  "candidate": {
+   "path": "_build/native/release/build/cmd/main/main.exe",
+   "sha256": "f83c20f92f43c14042994ae0a7d3016e31b198c4aab3bf10210bfafbc27735a9"
+  },
+  "control": {
+   "path": ".internal/wt-e6b/_build/native/release/build/cmd/main/main.exe",
+   "sha256": "f3b2ddac3706b5739f3a3e46d13478cff7fcac39381e87666f45180fe06c9cb8"
+  }
+ },
+ "fixtures": "TPC-H CSVs in harness/data/sf1",
+ "params": {
+  "rounds": 3,
+  "budgets": [
+   "none",
+   "16M"
+  ],
+  "cases": [
+   "q1",
+   "q10",
+   "q12",
+   "q3"
+  ]
+ },
+ "answer_mismatches": 0,
+ "worst_spread": 0.01,
+ "cases": {
+  "q1/16M": {
+   "candidate_mb": 75.3,
+   "candidate_s": 5.02,
+   "control_mb": 558.7,
+   "control_s": 5.14,
+   "same_answer": true
+  },
+  "q12/16M": {
+   "candidate_mb": 35.4,
+   "candidate_s": 2.59,
+   "control_mb": 115.3,
+   "control_s": 3.16,
+   "same_answer": true
+  },
+  "q3/16M": {
+   "candidate_mb": 262.6,
+   "candidate_s": 3.25,
+   "control_mb": 261.2,
+   "control_s": 3.21,
+   "same_answer": true
+  },
+  "q10/16M": {
+   "candidate_mb": 245.5,
+   "candidate_s": 3.95,
+   "control_mb": 245.3,
+   "control_s": 3.94,
+   "same_answer": true
+  },
+  "q1/no budget": {
+   "candidate_mb": 35.3,
+   "candidate_s": 2.7,
+   "control_mb": 543.3,
+   "control_s": 2.8,
+   "same_answer": true
+  },
+  "q12/no budget": {
+   "candidate_mb": 35.3,
+   "candidate_s": 2.6,
+   "control_mb": 112.7,
+   "control_s": 2.64,
+   "same_answer": true
+  },
+  "q3/no budget": {
+   "candidate_mb": 357.3,
+   "candidate_s": 2.41,
+   "control_mb": 357.1,
+   "control_s": 2.41,
+   "same_answer": true
+  },
+  "q10/no budget": {
+   "candidate_mb": 283.1,
+   "candidate_s": 2.52,
+   "control_mb": 283.1,
+   "control_s": 2.52,
+   "same_answer": true
+  }
+ }
+}

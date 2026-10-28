@@ -590,7 +590,6 @@ the playground
   the spilling paths under a tiny budget and therefore round-trip MLSPILL3
   under load.
 
-
 ## Parquet writes take NULLs (2026-10-19): OPTIONAL columns and definition
 ## levels
 
@@ -615,7 +614,6 @@ the playground
   reported nullable — an empty string stays distinct from NULL in both.
 - **Still out of scope:** encodings other than PLAIN, compression, v2 pages,
   nested fields, INT96 — the writer's scope stays the reader's.
-
 
 ## Lazy scans (2026-10-20): the catalog stops holding tables
 
@@ -663,7 +661,6 @@ the playground
   16 columns (152→142 ms, +3 MB); CSV has no statistics to skip with; a
   file-backed table is read twice per query because the fs API has no range
   reads.
-
 
 ## Release acceptance for 0.3.0 (2026-10-20): the package, the page, the
 ## baseline
@@ -2325,3 +2322,44 @@ which E6c measures, and the next widening is ORDER BY above the aggregate: the
 grouped result is already one batch and the eager tail already sorts it, so the
 exclusion is narrower than the contract makes it sound, but the decision about an
 over-budget sort of that batch belongs to its own contract.
+
+## The sort comes after the fold (2026-10-28): E6b, widened
+
+The contract closed on "what composing leaves open", and the first item on that
+list was the cheapest to settle: an `ORDER BY` above the composed aggregate.
+The reasoning against it was that a sort needs every row before it can emit
+one, which is true of the fold's input and false of its output. The grouped
+result is one batch, both pull tails already applied the `OFFSET`/`LIMIT`
+window to it once the last input row had been folded, and the eager aggregate
+path sorts that same batch in memory under a budget without ever sending it to
+runs.
+
+So this was not a new operator. `finish_agg_pull` grew a branch that resolves
+the `ORDER BY` keys the way the eager path does (an output-column key sorts by
+its projection expression, an expression key by its bound form), sorts the
+grouped batch, projects, and applies the window; the two shape predicates
+stopped refusing an `ORDER BY`. Because the branch sits in the shared tail, it
+lifted the exclusion for the single-table aggregate and the composed join at
+once.
+
+The decision the contract had left open, whether an over-budget sort of the
+grouped batch spills through the run-file pool, went the other way, and §45 had
+already decided it: a budget bounds input buffers, and a grouped result is not
+input. A spilled sort of a grouped result would have to divide the same budget
+the fold is spending and would move where the `LIMIT` stops, so the tail sorts
+in memory and a grouped result stays unbounded, which is the limit the roadmap
+keeps.
+
+The numbers are the point. TPC-H q1 held its 6,000,000-row input (543 MB) and
+now holds the 4-row group table and one batch (35 MB); under a 16 MB budget
+both paths spill the aggregate input, and the difference is what is held while
+they do (75 against 558 MB). q12 is the only ordered one-join query in the
+corpus and drops from 113 to 35 MB. q3 and q10 keep a second join step, were in
+the matrix as invariants, and did not move. Answers are byte-identical, the 33
+goldens and the 249 unit tests pass, and the record is
+`harness/baseline/2026-10-28-ordered-agg.json` (verification §50).
+
+What is left is the shape list that has shrunk one item at a time: a second
+join step (q3, q5, q7, q8, q10, q11, q18, q21), DISTINCT, a window, a chain,
+RIGHT, SEMI/ANTI and a keyless cross join. The second join step is now the
+widest.

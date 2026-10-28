@@ -37,7 +37,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
 - Scalar functions: `coalesce` / `nullif` / `greatest` / `least`, `date_trunc(unit, date)`, `date_diff(unit, start, end)`; `SELECT` works without FROM and a bare `NULL` select item reads as INTEGER
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
-- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking operators. `ORDER BY` becomes sorted runs whose final merge streams into projection/DISTINCT/OFFSET/LIMIT (a LIMIT query holds only its output window); a hash join partitions both sides and splits an over-budget partition again, and a `GROUP BY` partitions its input and aggregates each partition one spill file at a time — so a hot group key is fine while a single join key holding most of a side is refused with that reason, unless the query is a shape the fold accepts and the join is never collected (verification §49). `--analyze` under a budget reports `spill runs` / `spill files` / `spill bytes written` / `spill bytes read`, and the CLI removes its temp directory on both exit paths. A query spills into its own `moonlake-spill-<n>` subdirectory of `--spill-dir` (or `TMPDIR`), so two processes may share one `--spill-dir` without touching each other's runs, and a caller's own files there are never read or deleted. A subdirectory is claimed with an `owner` marker naming the pid, the boot id and the pid's start time, so a run killed outright no longer leaks: the next query removes that subdirectory when the marker proves its owner is gone (another boot, a pid that no longer exists, a pid whose start time changed), and keeps — and reports — any directory it cannot judge, such as one with no marker (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
+- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking operators. `ORDER BY` becomes sorted runs whose final merge streams into projection/DISTINCT/OFFSET/LIMIT (a LIMIT query holds only its output window); a hash join partitions both sides and splits an over-budget partition again, and a `GROUP BY` partitions its input and aggregates each partition one spill file at a time, while an `ORDER BY` over a `GROUP BY` sorts that grouped result in memory once the fold ends, since a grouped result is not input and the budget does not bound it (verification §45, §50) — so a hot group key is fine while a single join key holding most of a side is refused with that reason, unless the query is a shape the fold accepts and the join is never collected (verification §49). `--analyze` under a budget reports `spill runs` / `spill files` / `spill bytes written` / `spill bytes read`, and the CLI removes its temp directory on both exit paths. A query spills into its own `moonlake-spill-<n>` subdirectory of `--spill-dir` (or `TMPDIR`), so two processes may share one `--spill-dir` without touching each other's runs, and a caller's own files there are never read or deleted. A subdirectory is claimed with an `owner` marker naming the pid, the boot id and the pid's start time, so a run killed outright no longer leaks: the next query removes that subdirectory when the marker proves its owner is gone (another boot, a pid that no longer exists, a pid whose start time changed), and keeps — and reports — any directory it cannot judge, such as one with no marker (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
 
 Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, explicit window frame clauses (the default frame is supported), cost-based optimization, multi-statement scripts.
 
@@ -186,8 +186,10 @@ rather than collected — the ones whose input can be consumed as it arrives:
   budget: 195 MB → 63 MB) while the group state and the finished result stay
   unbounded. It is also fed a two-table keyed INNER/LEFT/FULL join's batches
   directly, without collecting the joined rows first (4,000,000 joined rows:
-  39 MB against 191 MB, verification §49), and it is still delivered as one
-  finished batch;
+  39 MB against 191 MB, verification §49), and an `ORDER BY` above either shape
+  is sorted after the fold, so the ordered shapes stay pulled too (TPC-H q1:
+  543 MB → 35 MB, q12: 113 MB → 35 MB, verification §50), and it is still
+  delivered as one finished batch;
 - an `ORDER BY` under a memory budget, which builds its sorted runs from the
   scan and hands out the merge a batch at a time (506.8 MB → 178.8 MB for
   `select * … order by id`, and it stops merging once a window is full);
@@ -198,8 +200,9 @@ rather than collected — the ones whose input can be consumed as it arrives:
 
 Everything else is computed first and handed back as one batch, because its
 answer does not exist until every row has been seen: a chain of joins, a RIGHT
-or SEMI/ANTI join, a cross join, and anything with ORDER BY, GROUP BY, DISTINCT
-or a window above a join. Both deliveries run the same plan, so a pulled row and
+or SEMI/ANTI join, a cross join, and DISTINCT or a window above a join. An
+aggregate is the case the distinction is about: its answer is one finished batch
+even when its input is pulled, with or without an `ORDER BY` above it. Both deliveries run the same plan, so a pulled row and
 a collected row are the same row. `close()` stops the pull before the end, dropping
 the stream releases the scan cursor, and a pull that raises ends the stream
 rather than leaving it resumable. The spilled sort is the one stream that owns

@@ -781,3 +781,24 @@ is the joined rows. Wall times are direction only on this host: equal at no
 budget, faster for the composed path where the fold partitions early, slower
 where it buffers up to the budget before partitioning, while using 63 MB instead
 of 193 MB at that point.
+
+## An ordered aggregate on the pull path (2026-10-28)
+
+`harness/bench_ordered_agg.py` at SF1, the tree of `c2bc3fa` against the E6b
+binary `eabf3e3`, three rounds interleaved, quiet load 0.27, worst
+round-to-round spread 1% (`harness/baseline/2026-10-28-ordered-agg.json`). Peak
+RSS in MB, control against candidate, with wall seconds beside it:
+
+| query | shape | no budget | 16 MB | wall s, no budget / 16 MB |
+| --- | --- | --- | --- | --- |
+| q1 | one table, ordered | 543.3 → 35.3 | 558.7 → 75.3 | 2.80 → 2.70 / 5.14 → 5.02 |
+| q12 | one join step, ordered | 112.7 → 35.3 | 115.3 → 35.4 | 2.64 → 2.60 / 3.16 → 2.59 |
+| q3 | two join steps, invariant | 357.1 → 357.3 | 261.2 → 262.6 | 2.41 → 2.41 / 3.21 → 3.25 |
+| q10 | two join steps, invariant | 283.1 → 283.1 | 245.3 → 245.5 | 2.52 → 2.52 / 3.94 → 3.95 |
+
+Every answer is byte-identical between the two binaries. The 35 MB floor is the
+one a scan alone reaches on this data set (§45), so an ordered single-table
+aggregate now costs what an unordered one costs; the collected 543 MB is the
+input. Under a 16 MB budget the candidate's peak is the budget plus the fold's
+buffer while the collected path still holds the input it read (558.7 MB). q3
+and q10 move inside the recorded spread, which is what an invariant should do.

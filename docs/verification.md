@@ -3921,3 +3921,88 @@ are not in this record. It reports CSV input only, as §48 did, because the scan
 flat there and the reader is not hiding retained input on this target. The
 deployed page, the packaged consumer and the three-target answer parity for the
 new path are E6c's, and §46-48 remain the evidence for the released tree.
+
+## 50. An ordered aggregate sorts its grouped result after the fold (2026-10-28): E6b, widened
+
+The E6b contract kept `ORDER BY` above the composed aggregate on the eager
+path, and the single-table pull had excluded it since E5, because a sort needs
+every row before it can emit one. That reasoning is about the fold's input, not
+its output. Both pull paths already applied the `OFFSET`/`LIMIT` window to the
+grouped batch once the last input row had been folded, and the eager aggregate
+path sorts that same batch in memory under a budget without ever sending it to
+runs. So the sort moved into the tail the two pull paths share, with the eager
+path's key resolution — an output-column key sorts by its projection
+expression, which holds the values the projected column will carry, and an
+expression key by its bound form — and the two shape predicates stopped
+refusing an `ORDER BY`.
+
+### The decision this needed
+
+The open question in the contract was whether an over-budget sort of the
+grouped batch spills through the existing run-file pool inside a folded query.
+It does not, and the reason is the one §45 states: a budget bounds input
+buffers, and a grouped result is not input. Ordering a grouped result through
+sorted runs is a separate, larger design — it would have to size itself against
+the budget the fold is already spending, and it would move where the `LIMIT`
+can stop. The tail therefore sorts in memory, exactly as the eager aggregate
+path does, and a grouped result stays unbounded (the limit the roadmap still
+carries). What changes is only which queries reach that sort with a pulled
+input.
+
+### What is measured
+
+`harness/bench_ordered_agg.py` runs the TPC-H queries that carry an `ORDER BY`
+over an aggregate at SF1, candidate against the E6b binary `eabf3e3`, three
+rounds interleaved, recorded in `harness/baseline/2026-10-28-ordered-agg.json`
+(candidate tree `c2bc3fa`, clean, quiet load 0.27, worst round-to-round spread
+1%). Each query's output is compared byte for byte between the two binaries and
+no case disagreed. q3 and q10 are in the matrix as invariants: they carry two
+join steps, so the composition does not claim them, and their peak must not
+move.
+
+Peak RSS in MB, control against candidate, with the wall time beside it:
+
+| query | shape | no budget | 16 MB budget | wall s, no budget / 16 MB |
+| --- | --- | --- | --- | --- |
+| q1 | one table, ordered groups | 543.3 → 35.3 | 558.7 → 75.3 | 2.80 → 2.70 / 5.14 → 5.02 |
+| q12 | one join step, ordered | 112.7 → 35.3 | 115.3 → 35.4 | 2.64 → 2.60 / 3.16 → 2.59 |
+| q3 | two join steps (invariant) | 357.1 → 357.3 | 261.2 → 262.6 | 2.41 → 2.41 / 3.21 → 3.25 |
+| q10 | two join steps (invariant) | 283.1 → 283.1 | 245.3 → 245.5 | 2.52 → 2.52 / 3.94 → 3.95 |
+
+**The ordered single-table aggregate stops holding its input.** q1's 543.3 MB
+is the collected `lineitem`, and the pull path replaces it with the 4-row group
+table plus one batch: 35.3 MB, the same floor a `count(*)` over the same file
+reaches (§45). That is the widest drop this arc has recorded on a golden query,
+and it is what makes the `ORDER BY` exclusion worth lifting. Under a 16 MB
+budget both paths partition the aggregate input and spill it (the candidate
+wrote 198.5 MB across 153 run files for q1); the difference is again what is
+held while they do it, 75.3 MB against 558.7 MB. The wall time moves by the
+same margin as any of these comparisons (2.80 against 2.70 s without a budget,
+5.14 against 5.02 s with one): the scan dominates, and the budget's own work is
+the same on both paths.
+
+**An ordered join composition keeps the joined rows out of memory.** q12's
+112.7 MB was the collected `orders × lineitem`; the composed path holds the
+build side, the fold's state and one batch, 35.3 MB. It fits a 16 MB budget
+without spilling at all, because the joined batches are folded as they arrive
+(30,988 joined rows, two groups), so the budget only has to hold the fold's
+buffer. It is also the only ordered one-join query in the corpus: q14 and q19
+were §49's two `ORDER BY`-free shapes, and every other TPC-H query with an
+`ORDER BY` over an aggregate keeps a second join step (q3, q10, q5, q7, q8,
+q18, q21) or a derived table (q15).
+
+**The invariants hold.** q3 and q10 move by 0 to 1.4 MB, which is inside the
+recorded spread, and the two binaries take the same path for them by
+construction: their answers are identical. That is what "the composition does
+not claim this shape" has to look like, and it is why the matrix keeps them.
+
+### What this does not say
+
+It does not order a grouped result through sorted runs, so a query whose
+grouped answer itself outgrows memory is still unbounded (§45, and the
+roadmap's limits row). It does not add a second join step: q3 and q10 are
+unchanged, and that is now the widest remaining shape in the corpus. DISTINCT,
+a window function, a chain, RIGHT, SEMI/ANTI and a keyless cross join still
+keep the eager path. The record is the native CLI over CSV input at SF1, as §49
+was; wasm-gc, js and the packaged consumer are unchanged by this and still ride
+§46–48.

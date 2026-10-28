@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   is verification §48. No engine behaviour changed.
 - `harness/baseline/2026-10-28-e6b-join-agg.json`: the same matrix after the
   composition below, candidate against the released 0.5.1 control.
+- `harness/bench_ordered_agg.py` and its baseline
+  `harness/baseline/2026-10-28-ordered-agg.json`: peak RSS and wall time for
+  the TPC-H queries that carry an `ORDER BY` over an aggregate, the ordered
+  one-table and one-join shapes against a control binary, with the two-join
+  shapes kept in the matrix as invariants. The measurement is verification §50.
 
 ### Changed
 
@@ -32,9 +37,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   eager path, which can partition the join instead, and reuses the scan it
   already has. A query that used to refuse under a budget because its join skewed
   answers when it has this shape, since the fold needs no joined row set.
-  Measurement: verification §49. Every shape the contract excludes (a longer
-  chain, RIGHT, SEMI/ANTI, a keyless cross join, `ORDER BY`, `DISTINCT`, a
-  window) still runs the eager path.
+  Measurement: verification §49. Every other shape (a longer chain, RIGHT,
+  SEMI/ANTI, a keyless cross join, `DISTINCT`, a window) still runs the eager
+  path; the `ORDER BY` exclusion this composition drew was lifted afterwards, as
+  the next entry says.
+- A query with `ORDER BY` above a `GROUP BY` is now fed from the scan or from
+  the join instead of collecting its input, for both the single-table and the
+  one-join shape: the sort runs on the grouped batch once the fold ends, and it
+  is the same in-memory sort the eager aggregate path applies to that batch, so
+  a budget still bounds input buffers and a grouped result stays unbounded.
+  TPC-H q1 drops from 543 to 35 MB of peak RSS (558 to 75 MB under a 16 MB
+  budget) and q12 from 113 to 35 MB, with answers byte-identical to the previous
+  binary; q3 and q10 keep a second join step and are unchanged. Measurement:
+  verification §50.
 
 ## [0.5.1] - 2026-10-27
 
