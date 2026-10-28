@@ -80,9 +80,10 @@ fn streaming_source(
 
 ///|
 /// The single-table shape an aggregate can be fed from the scan, if this query
-/// is one: one lazy table, an aggregate, and nothing above it that needs the row
-/// order or the whole row set first. GROUP BY is fine — the group state is built
-/// per batch — and so is HAVING, which runs on the finished groups.
+/// is one: one lazy table, an aggregate, and nothing above it that needs the
+/// whole row set first. GROUP BY is fine — the group state is built per batch —
+/// and so are HAVING, which runs on the finished groups, and ORDER BY, which
+/// sorts those groups once the last input row has been folded.
 ///
 /// A memory budget does not change the shape: a budgeted GROUP BY is also pulled,
 /// and `run_agg_pull` buffers the batches up to the budget and partitions them
@@ -91,10 +92,7 @@ fn streaming_agg_source(
   bq : BoundQuery,
   sources : Array[@catalog.TableEntry?],
 ) -> @catalog.TableEntry? {
-  if !bq.aggregate ||
-    bq.order_by.length() > 0 ||
-    bq.windows.length() > 0 ||
-    bq.distinct {
+  if !bq.aggregate || bq.windows.length() > 0 || bq.distinct {
     return None
   }
   if bq.steps.length() != 1 || bq.steps[0].table != 0 {
@@ -109,7 +107,7 @@ fn streaming_agg_source(
 ///|
 /// The two-table shape an aggregate can be fed from a join, if this query is
 /// one: one join step over two lazy tables and an aggregate above it, with
-/// nothing on top that needs the row order or the whole row set first.
+/// nothing on top that needs the whole row set first.
 ///
 /// It is `streaming_join_source`'s predicate with the aggregate allowed instead
 /// of refused: the same kinds, the same two lazy tables, the same one step. The
@@ -122,10 +120,7 @@ fn streaming_join_agg_source(
   bq : BoundQuery,
   sources : Array[@catalog.TableEntry?],
 ) -> JoinSource? {
-  if !bq.aggregate ||
-    bq.order_by.length() > 0 ||
-    bq.windows.length() > 0 ||
-    bq.distinct {
+  if !bq.aggregate || bq.windows.length() > 0 || bq.distinct {
     return None
   }
   if bq.steps.length() != 2 {
@@ -337,9 +332,15 @@ fn fold_pulled(
 
 ///|
 /// The stages every pulled aggregate runs after its fold: HAVING on the finished
-/// groups, the projection, the OFFSET/LIMIT window, and the counters that
-/// describe them. A grouped result is final only once the last input row has
-/// been folded, so the window is applied here, not to the input.
+/// groups, the ORDER BY over them, the projection, the OFFSET/LIMIT window, and
+/// the counters that describe them. A grouped result is final only once the last
+/// input row has been folded, so the sort and the window are applied here, not to
+/// the input.
+///
+/// The sort is the in-memory one the eager aggregate path runs, and for the same
+/// reason: what it orders is the grouped result, not the fold's input, and a
+/// budget bounds the input buffers (verification §45). Ordering a grouped result
+/// through sorted runs would be a different, larger decision.
 fn finish_agg_pull(
   folded : PulledAgg,
   launch : Launch,
@@ -360,8 +361,25 @@ fn finish_agg_pull(
     )
   }
   stats.push(("aggregate", grouped.row_count().to_int64()))
-  let projected = project(grouped, bq.out_exprs, bq.out_types)
-  let batch = order_limit(projected, [], bq.limit, bq.offset)
+  let batch = if bq.order_by.length() > 0 {
+    // the same key resolution the eager path uses: an output-column key sorts by
+    // the projection expression, which holds the values the projected column
+    // will carry, and an expression key by its bound form
+    let keys : Array[(PhysExpr, Bool, Bool?)] = []
+    for spec in bq.order_by {
+      let ke : PhysExpr = match spec.out_col {
+        Some(i) => bq.out_exprs[i]
+        None => spec.expr
+      }
+      keys.push((ke, spec.desc, spec.nulls_first))
+    }
+    let sorted = sort_exprs(grouped, keys, None, None)
+    let projected = project(sorted, bq.out_exprs, bq.out_types)
+    sort_exprs(projected, [], bq.offset, bq.limit)
+  } else {
+    let projected = project(grouped, bq.out_exprs, bq.out_types)
+    order_limit(projected, [], bq.limit, bq.offset)
+  }
   stats.push(("result", batch.row_count().to_int64()))
   { names: bq.names, types: bq.out_types, batch, }
 }
@@ -369,7 +387,7 @@ fn finish_agg_pull(
 ///|
 /// Run an aggregate from the scan instead of from a collected input: the same
 /// fold (`aggregate_seq`) over a sequence that opens the table once, then the
-/// same HAVING, projection and window the collected tail applies to an
+/// same HAVING, ordering, projection and window the collected tail applies to an
 /// aggregate's one output batch.
 fn run_agg_pull(
   entry : @catalog.TableEntry,

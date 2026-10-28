@@ -300,9 +300,9 @@ fn run_pipeline(
   // A single-table aggregate is fed from the scan instead of a collected
   // input: the group state is built as batches arrive, so the operator holds
   // its state and one batch rather than its input. A budgeted GROUP BY buffers
-  // up to the budget and spills only past it. Shapes that need the row order or
-  // the whole row set first (ORDER BY, DISTINCT, a window function) stay on the
-  // eager path below.
+  // up to the budget and spills only past it, and an ORDER BY sorts the finished
+  // groups once the fold ends. Shapes that need the whole row set first (DISTINCT,
+  // a window function) stay on the eager path below.
   match streaming_agg_source(bq, sources) {
     Some(entry) => return run_agg_pull(entry, launch, opts, stats)
     None => ()

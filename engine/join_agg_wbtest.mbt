@@ -434,16 +434,49 @@ test "the composed shape is not one of the stream's shapes" {
 }
 
 ///|
-test "the shapes the contract excludes do not compose" {
+test "an ORDER BY over the composed join sorts the finished groups" {
+  // The sort runs on the grouped batch once the fold ends, so the ordered shape
+  // composes and the answer is what the eager path's sort produces.
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let sql = JA_INNER + " order by n desc, k"
+  let launch = ja_launch(sql, cat)
+  assert_true(streaming_join_agg_source(launch.bq, launch.sources) is Some(_))
+  let run = fn(
+    sql2 : String,
+    opts : ExecOptions,
+  ) -> Array[Array[@types.Scalar]] {
+    let result = ja_run(sql2, cat, opts, []) catch { e => abort("\{e}") }
+    scalars_of([result.batch()])
+  }
+  // k=1 matches six joined rows and k=2 two, so the count orders them and the
+  // written second key only breaks ties
+  let desc = run(sql, ExecOptions::in_memory())
+  assert_eq(desc[0][0].to_string(), "1")
+  assert_eq(desc[0][1].to_string(), "6")
+  assert_eq(desc[1][0].to_string(), "2")
+  assert_eq(desc[1][1].to_string(), "2")
+  // the key order decides, not the order the fold finished its groups in
+  let by_key = run(JA_INNER + " order by k desc", ExecOptions::in_memory())
+  assert_eq(by_key[0][0].to_string(), "2")
+  assert_eq(by_key[1][0].to_string(), "1")
+  // a budget spills the fold's input without changing what is ordered
+  let (store, files) = ja_mem_store()
+  let budgeted = run(sql, { budget: 64, spill: Some(store), })
+  assert_eq(budgeted[0][1].to_string(), "6")
+  assert_eq(budgeted[1][1].to_string(), "2")
+  assert_eq(files.length(), 0)
+}
+
+///|
+test "the shapes outside the composition do not compose" {
   let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
   let shapes = [
     // a third table makes a chain of two steps above the first join
     "select count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k",
     // a RIGHT join is a swapped LEFT
      "select count(*) as n from probe p right join build b on p.k = b.k",
-    // ORDER BY and DISTINCT both need every row first
-     "select b.k as k, count(*) as n from probe p join build b on p.k = b.k group by b.k order by k",
-    "select distinct b.k as k from probe p join build b on p.k = b.k",
+    // DISTINCT and a window both need every row before they emit one
+     "select distinct b.k as k from probe p join build b on p.k = b.k", "select b.k as k, row_number() over (order by b.k) as r from probe p join build b on p.k = b.k",
     // a derived table is not a lazy base table
      "select count(*) as n from (select k, v from probe) p join build b on p.k = b.k",
     // and one table is the single-table shape

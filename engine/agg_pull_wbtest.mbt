@@ -595,3 +595,31 @@ test "a spilled GROUP BY reports its buffered and spilled byte estimates" {
   // one partition cannot have written more than the whole input
   assert_true(largest[0].1 <= batches_bytes(agg_batches()).to_int64())
 }
+
+///|
+test "an ORDER BY over a pulled aggregate sorts the finished groups" {
+  // E6b's follow-up widened this predicate: an ordered aggregate is fed from the
+  // scan the same way, and the sort runs once the fold ends. The fixture's four
+  // groups sum to 190, 180, 160 and 50, so descending order is unambiguous.
+  let (cat, _cells) = agg_catalog(agg_batches())
+  let sql = "select k, sum(v) as s from t group by k order by s desc"
+  let launch = agg_launch(sql, cat)
+  assert_true(streaming_agg_source(launch.bq, launch.sources) is Some(_))
+  let rows = agg_rows(agg_select(sql, cat).batch())
+  assert_eq(rows[0][0].to_string(), "a")
+  assert_eq(rows[0][1].to_string(), "190")
+  assert_eq(rows[1][1].to_string(), "180")
+  assert_eq(rows[2][1].to_string(), "160")
+  assert_eq(rows[3][1].to_string(), "50")
+  // the group with the NULL key is the last one, in whatever position its NULL
+  // comparison puts it, and the row count is the group count
+  assert_eq(rows[3][0].to_string(), "null")
+  // DISTINCT still keeps the shape on the eager path: the dedupe needs every
+  // projected row before it can emit one
+  let ordered = "select distinct k from t group by k"
+  let launch = agg_launch(ordered, cat)
+  match streaming_agg_source(launch.bq, launch.sources) {
+    Some(_) => abort("DISTINCT must stay on the eager path")
+    None => ()
+  }
+}
