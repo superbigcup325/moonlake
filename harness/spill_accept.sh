@@ -26,7 +26,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 
 # Two small tables: t1 has a single hot join key, so grace hashing runs
-# out of partitions and has to refuse; t2 is the probe side.
+# out of partitions and has to refuse; t2 is the probe side. The query below
+# joins them with a RIGHT join, which stays on the eager path: an INNER join
+# under a global aggregate is folded from the join's batches and cannot hit
+# this, because it never partitions the join.
 python3 - "$work" <<'PY'
 import sys
 d = sys.argv[1]
@@ -51,7 +54,7 @@ pass "a spilled sort leaves no directory behind"
 # 2. A failed query purges its directory too.
 dir=$work/b
 if $bin exec --csv "$work/hot.csv" --csv "$work/small.csv" --memory 8K --spill-dir "$dir" \
-  "SELECT count(*) FROM hot JOIN small ON hot.k = small.k" >/dev/null 2>"$work/err"; then
+  "SELECT count(*) FROM hot RIGHT JOIN small ON hot.k = small.k" >/dev/null 2>"$work/err"; then
   fail "the skewed join was expected to fail"
 fi
 grep -q "exceeds the memory budget" "$work/err" || fail "skew error message changed: $(cat "$work/err")"

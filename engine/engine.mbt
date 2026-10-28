@@ -315,6 +315,23 @@ fn run_pipeline(
     Some(entry) => return run_sort_pull(entry, launch, opts, stats)
     None => ()
   }
+  // A join feeding an aggregate is folded from the join's own batches: the build
+  // side is read here because it has to be, the probe side arrives a batch at a
+  // time, and each joined batch is folded before the next one exists. The build
+  // side is held whole, so a budget too small for it keeps the eager path below,
+  // which can partition the join instead; the batches this read already holds are
+  // handed to that path, so the table is not read twice.
+  let mut prebuilt : Array[@types.DataBatch]? = None
+  match streaming_join_agg_source(bq, sources) {
+    Some(src) => {
+      let (batches, build) = join_agg_build(src, launch)
+      if join_agg_fits(batches, opts) {
+        return run_join_agg_pull(src, batches, build, launch, opts, stats)
+      }
+      prebuilt = Some(batches)
+    }
+    None => ()
+  }
   // Materialize each FROM item with only the columns the query reads. A base
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
@@ -322,6 +339,22 @@ fn run_pipeline(
   let narrowed : Array[Array[@types.DataBatch]] = []
   let prescanned : Array[Bool] = []
   for k in 0..<tables.length() {
+    match prebuilt {
+      Some(batches) =>
+        if k == 1 {
+          // the build side a rejected composition already read, filtered and
+          // projected exactly as this loop would have
+          narrowed.push(batches)
+          prescanned.push(true)
+          let mut rows = 0
+          for bt in batches {
+            rows += bt.row_count()
+          }
+          stats.push(("scan \{schemas[k].table}", rows.to_int64()))
+          continue
+        }
+      None => ()
+    }
     let cols = plan.table_cols[k]
     let request = scan_request_of(bq, cols, k)
     let batches = match sources[k] {

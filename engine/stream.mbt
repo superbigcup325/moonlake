@@ -107,6 +107,53 @@ fn streaming_agg_source(
 }
 
 ///|
+/// The two-table shape an aggregate can be fed from a join, if this query is
+/// one: one join step over two lazy tables and an aggregate above it, with
+/// nothing on top that needs the row order or the whole row set first.
+///
+/// It is `streaming_join_source`'s predicate with the aggregate allowed instead
+/// of refused: the same kinds, the same two lazy tables, the same one step. The
+/// cursor's output is already the layout the fold's expressions are bound to, so
+/// no column mapping sits between them; a second step would change that layout,
+/// which is why a chain stays out. A budget is not part of the shape: the build
+/// side is measured against it where the query is routed, because a two-table
+/// join holds that side whole.
+fn streaming_join_agg_source(
+  bq : BoundQuery,
+  sources : Array[@catalog.TableEntry?],
+) -> JoinSource? {
+  if !bq.aggregate ||
+    bq.order_by.length() > 0 ||
+    bq.windows.length() > 0 ||
+    bq.distinct {
+    return None
+  }
+  if bq.steps.length() != 2 {
+    return None
+  }
+  let step = bq.steps[1]
+  match step.kind {
+    Inner | Left | Full => ()
+    _ => return None
+  }
+  if bq.steps[0].table != 0 || step.table != 1 {
+    return None
+  }
+  if step.keys_l.length() == 0 || step.keys_r.length() == 0 {
+    return None
+  }
+  match (sources[0], sources[1]) {
+    (Some(probe), Some(build)) =>
+      if probe.is_lazy() && build.is_lazy() {
+        Some({ probe, build, })
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
 /// The single-table shape an `ORDER BY` can be handed from the scan, if this
 /// query is one: one lazy table, a sort, and a memory budget to spill runs
 /// against. DISTINCT is fine — it is applied while the merge hands rows back —
@@ -267,6 +314,59 @@ fn InputPull::next(self : InputPull) -> @types.DataBatch? raise @types.SqlError 
 }
 
 ///|
+/// The fold a pulled aggregate runs: the budgeted partition path for a grouped
+/// query under a budget, the unbounded fold otherwise. Both callers (a single
+/// table and a join) differ only in what feeds `next`.
+fn fold_pulled(
+  next : () -> @types.DataBatch? raise @types.SqlError,
+  launch : Launch,
+  opts : ExecOptions,
+) -> PulledAgg raise @types.SqlError {
+  let bq = launch.bq
+  if opts.budget > 0 && bq.group_exprs.length() > 0 {
+    aggregate_pulled(next, bq.group_exprs, bq.group_types, bq.aggs, opts)
+  } else {
+    {
+      batch: aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs),
+      partitions: 0,
+      peak_buffered: 0L,
+      largest_spilled: 0L,
+    }
+  }
+}
+
+///|
+/// The stages every pulled aggregate runs after its fold: HAVING on the finished
+/// groups, the projection, the OFFSET/LIMIT window, and the counters that
+/// describe them. A grouped result is final only once the last input row has
+/// been folded, so the window is applied here, not to the input.
+fn finish_agg_pull(
+  folded : PulledAgg,
+  launch : Launch,
+  stats : Array[(String, Int64)],
+) -> SelectResult raise @types.SqlError {
+  let bq = launch.bq
+  let grouped = match bq.having {
+    Some(h) => compact(folded.batch, eval_mask(h, folded.batch))
+    None => folded.batch
+  }
+  // only when it spilled, so a query that fits its budget reports what it did
+  // before
+  if folded.partitions > 0 {
+    stats.push(("spill partitions", folded.partitions.to_int64()))
+    stats.push(("buffered bytes peak (estimated)", folded.peak_buffered))
+    stats.push(
+      ("largest partition spilled (estimated)", folded.largest_spilled),
+    )
+  }
+  stats.push(("aggregate", grouped.row_count().to_int64()))
+  let projected = project(grouped, bq.out_exprs, bq.out_types)
+  let batch = order_limit(projected, [], bq.limit, bq.offset)
+  stats.push(("result", batch.row_count().to_int64()))
+  { names: bq.names, types: bq.out_types, batch, }
+}
+
+///|
 /// Run an aggregate from the scan instead of from a collected input: the same
 /// fold (`aggregate_seq`) over a sequence that opens the table once, then the
 /// same HAVING, projection and window the collected tail applies to an
@@ -280,43 +380,112 @@ fn run_agg_pull(
   let bq = launch.bq
   let pull = input_pull(bq, launch.plan, entry)
   let next = fn() -> @types.DataBatch? raise @types.SqlError { pull.next() }
-  // a GROUP BY under a budget may have to spill; everything else folds the pull
-  // directly, as before
-  let mut partitions = 0
-  let mut peak_buffered = 0L
-  let mut largest_spilled = 0L
-  let grouped = if opts.budget > 0 && bq.group_exprs.length() > 0 {
-    let r = aggregate_pulled(
-      next,
-      bq.group_exprs,
-      bq.group_types,
-      bq.aggs,
-      opts,
-    )
-    partitions = r.partitions
-    peak_buffered = r.peak_buffered
-    largest_spilled = r.largest_spilled
-    r.batch
-  } else {
-    aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs)
-  }
-  let grouped = match bq.having {
-    Some(h) => compact(grouped, eval_mask(h, grouped))
-    None => grouped
-  }
+  let folded = fold_pulled(next, launch, opts)
   stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
-  // only when it spilled, so a query that fits its budget reports what it did
-  // before
-  if partitions > 0 {
-    stats.push(("spill partitions", partitions.to_int64()))
-    stats.push(("buffered bytes peak (estimated)", peak_buffered))
-    stats.push(("largest partition spilled (estimated)", largest_spilled))
+  finish_agg_pull(folded, launch, stats)
+}
+
+///|
+/// A pull over a join's output for a fold above it: the cursor hands out joined
+/// batches in the step's combined layout, the deferred WHERE trims each one, and
+/// the rows that survive are folded. This is the one place the joined rows exist,
+/// so a fold fed from here never holds the joined set.
+priv struct JoinFoldPull {
+  cursor : JoinCursor
+  deferred : PhysExpr?
+  mut joined : Int64
+}
+
+///|
+fn JoinFoldPull::next(
+  self : JoinFoldPull,
+) -> @types.DataBatch? raise @types.SqlError {
+  while self.cursor.next() is Some(batch) {
+    let rows = filter_batches([batch], self.deferred)
+    // the batch contract forbids handing out a zero-row batch, and a fold of
+    // nothing adds nothing
+    if rows.length() == 0 || rows[0].row_count() == 0 {
+      continue
+    }
+    self.joined += rows[0].row_count().to_int64()
+    return Some(rows[0])
   }
-  stats.push(("aggregate", grouped.row_count().to_int64()))
-  let projected = project(grouped, bq.out_exprs, bq.out_types)
-  let batch = order_limit(projected, [], bq.limit, bq.offset)
-  stats.push(("result", batch.row_count().to_int64()))
-  { names: bq.names, types: bq.out_types, batch, }
+  None
+}
+
+///|
+/// Whether a query may compose a join into an aggregate: the build side has to
+/// stay whole for the join, so a budget smaller than it keeps the eager path,
+/// which can partition the join instead. No budget means no bound at all, and
+/// the fold above the join is bounded separately by the same budget.
+fn join_agg_fits(
+  build_batches : Array[@types.DataBatch],
+  opts : ExecOptions,
+) -> Bool {
+  opts.budget <= 0 || batches_bytes(build_batches) <= opts.budget
+}
+
+///|
+/// The build side a composed join/aggregate holds: the joining table scanned
+/// once, projected and filtered the way the collected path does it, in the
+/// combined layout the fold's expressions expect. Returned in both forms because
+/// the scan it cost is also the row count `--analyze` reports, and because a
+/// budget too small to hold it sends those batches to the eager path rather than
+/// reading the table a second time.
+fn join_agg_build(
+  src : JoinSource,
+  launch : Launch,
+) -> (Array[@types.DataBatch], @types.DataBatch) raise @types.SqlError {
+  let bq = launch.bq
+  let step = bq.steps[1]
+  let batches = materialize_scan(
+    src.build,
+    scan_request_of(bq, launch.plan.table_cols[1], 1),
+    scan_filter_of(bq, 1),
+  )
+  let build = concat_batches(
+    batches,
+    tail_dtypes(step.out_dtypes, step.right_width),
+  )
+  (batches, build)
+}
+
+///|
+/// Run an aggregate from a joined pull instead of from the collected joined
+/// rows: the build side is already resident (it has to be), the probe side opens
+/// once and arrives a batch at a time, and each joined batch is folded before the
+/// next one exists. The budget bounds the fold's input buffer, as it does for a
+/// single table; the build side is bounded by the routing decision that accepted
+/// the shape.
+fn run_join_agg_pull(
+  src : JoinSource,
+  build_batches : Array[@types.DataBatch],
+  build : @types.DataBatch,
+  launch : Launch,
+  opts : ExecOptions,
+  stats : Array[(String, Int64)],
+) -> SelectResult raise @types.SqlError {
+  let bq = launch.bq
+  let step = bq.steps[1]
+  let probe = table_input_pull(bq, launch.plan, src.probe, 0, step.probe_filter)
+  let next_left : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
+    probe.next()
+  }
+  let join : JoinFoldPull = {
+    cursor: JoinCursor::open(step, build, next_left),
+    deferred: bq.deferred,
+    joined: 0L,
+  }
+  let next = fn() -> @types.DataBatch? raise @types.SqlError { join.next() }
+  let folded = fold_pulled(next, launch, opts)
+  let mut build_rows = 0L
+  for b in build_batches {
+    build_rows += b.row_count().to_int64()
+  }
+  stats.push(("scan \{launch.schemas[0].table}", probe.scanned))
+  stats.push(("scan \{launch.schemas[1].table}", build_rows))
+  stats.push(("joins", join.joined))
+  finish_agg_pull(folded, launch, stats)
 }
 
 ///|

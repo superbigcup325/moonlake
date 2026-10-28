@@ -3034,7 +3034,10 @@ test "a spilled sort removes every run file it wrote" {
 
 ///|
 /// The error path must be just as clean: a skewed join that refuses to
-/// run has already written every partition file by then.
+/// run has already written every partition file by then. The shape is a RIGHT
+/// join, which stays on the eager path: an INNER join under this aggregate is
+/// folded from the join's batches instead and no longer has to refuse, which the
+/// next test pins.
 test "a failed spilled query removes every run file it wrote" {
   let sb = StringBuilder()
   sb.write_string("id,k,pad\n")
@@ -3061,7 +3064,7 @@ test "a failed spilled query removes every run file it wrote" {
   )
   let (store, box) = mem_store_boxed()
   let _ = @engine.run_select_opts(
-    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    "SELECT count(*) AS c FROM t1 RIGHT JOIN t2 ON t1.k = t2.k",
     cat,
     { budget: 8192, spill: Some(store), },
   ) catch {
@@ -3072,6 +3075,44 @@ test "a failed spilled query removes every run file it wrote" {
     }
   }
   abort("expected a hash-skew error")
+}
+
+///|
+/// The same skew folded instead of collected. A global aggregate over a join is
+/// one accumulator fed by the join's batches, so the query that used to refuse
+/// above now answers: no joined row set, no partition, no run file.
+test "a skewed join under a global aggregate folds instead of refusing" {
+  let sb = StringBuilder()
+  sb.write_string("id,k,pad\n")
+  for i in 0..<5000 {
+    sb.write_string(
+      "\{i},1,padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad\n",
+    )
+  }
+  let sb2 = StringBuilder()
+  sb2.write_string("id,k\n")
+  for i in 0..<10 {
+    sb2.write_string("\{i},1\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t1") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(sb2.to_string(), "t2") catch {
+      e => abort("\{e}")
+    },
+  )
+  let (store, box) = mem_store_boxed()
+  let result = run_opts(
+    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    cat,
+    { budget: 8192, spill: Some(store), },
+  )
+  assert_eq(result.get(0, 0), @types.Int64(50000))
+  assert_eq(box.files.length(), 0)
 }
 
 ///|
@@ -3277,7 +3318,9 @@ test "grace join errors: cross join cannot spill" {
 test "grace join errors: a skewed key that outgrows every partition is an error" {
   // one key holds the whole 5000-row side: after the 64-partition cap
   // each partition still exceeds the budget, and grace hashing has no
-  // further recourse
+  // further recourse. The shape is a RIGHT join so the query stays on the
+  // eager path: an INNER join under a global aggregate is folded from the
+  // join's batches and does not partition the join at all.
   let sb = StringBuilder()
   sb.write_string("id,k,pad\n")
   for i in 0..<5000 {
@@ -3301,7 +3344,7 @@ test "grace join errors: a skewed key that outgrows every partition is an error"
     },
   )
   let _ = @engine.run_select_opts(
-    "SELECT count(*) AS c FROM t1 JOIN t2 ON t1.k = t2.k",
+    "SELECT count(*) AS c FROM t1 RIGHT JOIN t2 ON t1.k = t2.k",
     cat,
     { budget: 8192, spill: Some(mem_store()), },
   ) catch {
