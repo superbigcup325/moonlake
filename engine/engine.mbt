@@ -316,19 +316,27 @@ fn run_pipeline(
     None => ()
   }
   // A join feeding an aggregate is folded from the join's own batches: the build
-  // side is read here because it has to be, the probe side arrives a batch at a
-  // time, and each joined batch is folded before the next one exists. The build
-  // side is held whole, so a budget too small for it keeps the eager path below,
-  // which can partition the join instead; the batches this read already holds are
-  // handed to that path, so the table is not read twice.
-  let mut prebuilt : Array[@types.DataBatch]? = None
+  // side of every step is read here because it has to be, the probe side arrives
+  // a batch at a time, and each joined batch is folded before the next one
+  // exists. The build sides are held whole, so a budget too small for them keeps
+  // the eager path below, which can partition each join instead; the scans this
+  // read already holds are handed to that path, so no table is read twice.
+  let mut prebuilt : Array[Array[@types.DataBatch]]? = None
   match streaming_join_agg_source(bq, sources) {
     Some(src) => {
-      let (batches, build) = join_agg_build(src, launch)
-      if join_agg_fits(batches, opts) {
-        return run_join_agg_pull(src, batches, build, launch, opts, stats)
+      let scans = join_agg_scans(src, launch)
+      let sides = join_agg_sides_bytes(scans)
+      if join_agg_composes(bq.steps.length(), sides, opts) {
+        return run_join_agg_pull(
+          src,
+          scans,
+          join_agg_sides(scans, bq.steps),
+          launch,
+          opts,
+          stats,
+        )
       }
-      prebuilt = Some(batches)
+      prebuilt = Some(scans)
     }
     None => ()
   }
@@ -339,20 +347,28 @@ fn run_pipeline(
   let narrowed : Array[Array[@types.DataBatch]] = []
   let prescanned : Array[Bool] = []
   for k in 0..<tables.length() {
-    match prebuilt {
-      Some(batches) =>
-        if k == 1 {
-          // the build side a rejected composition already read, filtered and
-          // projected exactly as this loop would have
-          narrowed.push(batches)
-          prescanned.push(true)
-          let mut rows = 0
-          for bt in batches {
-            rows += bt.row_count()
-          }
-          stats.push(("scan \{schemas[k].table}", rows.to_int64()))
-          continue
+    // a build side a rejected composition already read is filtered and projected
+    // exactly as this loop would have, so the table is not read twice
+    let handed : Array[@types.DataBatch]? = match prebuilt {
+      Some(scans) =>
+        if k >= 1 && k - 1 < scans.length() {
+          Some(scans[k - 1])
+        } else {
+          None
         }
+      None => None
+    }
+    match handed {
+      Some(batches) => {
+        narrowed.push(batches)
+        prescanned.push(true)
+        let mut rows = 0
+        for bt in batches {
+          rows += bt.row_count()
+        }
+        stats.push(("scan \{schemas[k].table}", rows.to_int64()))
+        continue
+      }
       None => ()
     }
     let cols = plan.table_cols[k]

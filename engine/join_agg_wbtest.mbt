@@ -371,18 +371,52 @@ test "the build side, not the whole join, decides whether a shape composes" {
     None =>
       abort("the shape must be accepted before its build side is measured")
   }
-  let (build_batches, _build) = join_agg_build(src, launch) catch {
-    e => abort("\{e}")
+  let scans = join_agg_scans(src, launch) catch { e => abort("\{e}") }
+  let build_batches = join_agg_sides(scans, launch.bq.steps)
+  // the scan handed to the eager path is the same rows, before the step's
+  // layout concat
+  let mut scan_rows = 0
+  for side in scans {
+    for batch in side {
+      scan_rows += batch.row_count()
+    }
   }
-  let bytes = batches_bytes(build_batches)
-  assert_true(bytes > 1)
-  assert_false(
-    join_agg_fits(build_batches, { budget: bytes - 1, spill: None, }),
-  )
-  assert_true(join_agg_fits(build_batches, { budget: bytes, spill: None, }))
+  let mut build_rows = 0
+  for batch in build_batches {
+    build_rows += batch.row_count()
+  }
+  assert_eq(scan_rows, build_rows)
+  // the check runs on the charge its own function makes, before the copies
+  // exist, so a query that keeps the eager path never pays for them
+  let bytes = join_agg_sides_bytes(scans)
+  assert_true(bytes >= batches_bytes(scans[0]))
+  assert_false(join_agg_fits(bytes, { budget: bytes - 1, spill: None, }))
+  assert_true(join_agg_fits(bytes, { budget: bytes, spill: None, }))
   // unbounded is the same answer as "fits": nothing is refused for lack of a
   // budget, and the fold above it stays unbounded too
-  assert_true(join_agg_fits(build_batches, ExecOptions::in_memory()))
+  assert_true(join_agg_fits(bytes, ExecOptions::in_memory()))
+}
+
+///|
+test "a chain's fit check sums every build side" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let launch = ja_launch(JA_CHAIN, cat)
+  let src = match streaming_join_agg_source(launch.bq, launch.sources) {
+    Some(src) => src
+    None => abort("the chain must be accepted before its sides are measured")
+  }
+  let scans = join_agg_scans(src, launch) catch { e => abort("\{e}") }
+  assert_eq(scans.length(), 2)
+  let bytes = join_agg_sides_bytes(scans)
+  assert_true(bytes > batches_bytes(scans[0]))
+  assert_true(join_agg_sides(scans, launch.bq.steps).length() == 2)
+  // a budget one byte under the sum keeps the eager path
+  assert_false(join_agg_composes(3, bytes, { budget: bytes - 1, spill: None, }))
+  assert_true(join_agg_composes(3, bytes, { budget: bytes, spill: None, }))
+  // a chain without a budget never composes, whatever its sides weigh
+  assert_false(join_agg_composes(3, bytes, ExecOptions::in_memory()))
+  // one step still does
+  assert_true(join_agg_composes(2, bytes, ExecOptions::in_memory()))
 }
 
 ///|
@@ -471,8 +505,10 @@ test "an ORDER BY over the composed join sorts the finished groups" {
 test "the shapes outside the composition do not compose" {
   let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
   let shapes = [
-    // a third table makes a chain of two steps above the first join
-    "select count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k",
+    // a RIGHT step anywhere in a chain is a swapped LEFT, which drops a side
+    "select count(*) as n from probe p join build b on p.k = b.k right join extra e on b.k = e.k",
+    // a second step over a derived table is not a chain of lazy tables
+     "select count(*) as n from probe p join build b on p.k = b.k join (select k, w from extra) e on b.k = e.k",
     // a RIGHT join is a swapped LEFT
      "select count(*) as n from probe p right join build b on p.k = b.k",
     // DISTINCT and a window both need every row before they emit one
@@ -486,6 +522,117 @@ test "the shapes outside the composition do not compose" {
     let launch = ja_launch(sql, cat)
     assert_true(streaming_join_agg_source(launch.bq, launch.sources) is None)
   }
+}
+
+///|
+/// A chain of two steps: `probe ⋈ build` (the same eight rows `JA_INNER` folds)
+/// flows into a second hash join against `extra`, so the aggregate sees the
+/// second step's output and neither joined row set is ever an array.
+const JA_CHAIN : String = "select e.w as w, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k group by e.w"
+
+///|
+test "a chain of joins folds its own batches" {
+  // step 1 makes 8 rows (keys 1 and 2), step 2 multiplies them by the matching
+  // `extra` rows: key 1 has two (w 100, 200) and key 2 one (w 300)
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  assert_eq(ja_show_sql(JA_CHAIN, cat, ExecOptions::in_memory()), [
+    "100|6", "200|6", "300|2",
+  ])
+}
+
+///|
+/// The eager control for a chain query: `DISTINCT` over a plan that groups by
+/// the same key changes no answer and keeps the eager path, so the counters a
+/// test reads from it describe the collected chain.
+const JA_CHAIN_EAGER : String = "select distinct e.w as w, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k group by e.w"
+
+///|
+test "the composed chain reports the counters the collected chain reported" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let composed : Array[(String, Int64)] = []
+  ignore(ja_run(JA_CHAIN, cat, ExecOptions::in_memory(), composed))
+  // one scan line per table, in FROM order, then the rows the fold received
+  assert_eq(composed, [
+    ("scan probe", 7L),
+    ("scan build", 4L),
+    ("scan extra", 4L),
+    ("joins", 14L),
+    ("aggregate", 3L),
+    ("result", 3L),
+  ])
+  // the eager path reports the same six lines in the same order
+  let eager : Array[(String, Int64)] = []
+  ignore(ja_run(JA_CHAIN_EAGER, cat, ExecOptions::in_memory(), eager))
+  assert_eq(eager, composed)
+}
+
+///|
+test "a chain answers what the collected chain answered, budgets included" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let composed = ja_show_sql(JA_CHAIN, cat, ExecOptions::in_memory())
+  // the eager control collects every joined row and still answers this
+  assert_eq(
+    ja_show_sql(JA_CHAIN_EAGER, cat, ExecOptions::in_memory()),
+    composed,
+  )
+  // a budget the build sides fit keeps the composed plan and writes nothing
+  let (store, files) = ja_mem_store()
+  let stats : Array[(String, Int64)] = []
+  let result = ja_run(
+    JA_CHAIN,
+    cat,
+    { budget: 64 * 1024, spill: Some(store), },
+    stats,
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_eq(ja_show(scalars_of([result.batch()])), composed)
+  assert_eq(files.length(), 0)
+  assert_eq(ja_index(stats, "spill partitions"), -1)
+}
+
+///|
+test "a second step's probe filter trims the first step's output" {
+  // `b.w = 300` is the step-2 probe filter over the joined rows: only the key-2
+  // rows survive it, so the fold sees 2 rows instead of 8
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let sql = "select e.w as w, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k and b.w = 300 group by e.w"
+  let stats : Array[(String, Int64)] = []
+  assert_eq(ja_show_sql(sql, cat, ExecOptions::in_memory()), ["300|2"])
+  ignore(ja_run(sql, cat, ExecOptions::in_memory(), stats))
+  assert_eq(ja_stat(stats, "joins"), 2L)
+}
+
+///|
+test "a FULL step mid-chain still emits its unmatched build rows" {
+  // `extra`'s NULL-keyed row (w 400) matches nothing, is emitted once by the
+  // second step, and then matches nothing in the third because its key is NULL
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let sql = "select e.w as w, count(*) as n from probe p join build b on p.k = b.k full join extra e on b.k = e.k group by e.w"
+  let eager_sql = "select distinct e.w as w, count(*) as n from probe p join build b on p.k = b.k full join extra e on b.k = e.k group by e.w"
+  let composed = ja_show_sql(sql, cat, ExecOptions::in_memory())
+  assert_eq(composed, ja_show_sql(eager_sql, cat, ExecOptions::in_memory()))
+  // the unmatched `extra` row is emitted once, with its own w = 400
+  assert_eq(composed, ["100|6", "200|6", "300|2", "400|1"])
+}
+
+///|
+test "an ORDER BY over a chain sorts the finished groups" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let rows = ja_run(
+    JA_CHAIN + " order by n desc, w",
+    cat,
+    ExecOptions::in_memory(),
+    [],
+  ) catch {
+    e => abort("\{e}")
+  }
+  let shown = scalars_of([rows.batch()])
+  assert_eq(shown[0][1].to_string(), "6")
+  assert_eq(shown[1][1].to_string(), "6")
+  assert_eq(shown[2][1].to_string(), "2")
+  // the ordered chain still folds rather than collects
+  assert_eq(shown.length(), 3)
 }
 
 ///|

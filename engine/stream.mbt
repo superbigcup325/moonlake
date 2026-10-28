@@ -105,17 +105,18 @@ fn streaming_agg_source(
 }
 
 ///|
-/// The two-table shape an aggregate can be fed from a join, if this query is
-/// one: one join step over two lazy tables and an aggregate above it, with
-/// nothing on top that needs the whole row set first.
+/// The shape an aggregate can be fed from a join, if this query is one: one or
+/// more join steps over lazy base tables and an aggregate above it, with nothing
+/// on top that needs the whole row set first.
 ///
 /// It is `streaming_join_source`'s predicate with the aggregate allowed instead
-/// of refused: the same kinds, the same two lazy tables, the same one step. The
-/// cursor's output is already the layout the fold's expressions are bound to, so
-/// no column mapping sits between them; a second step would change that layout,
-/// which is why a chain stays out. A budget is not part of the shape: the build
-/// side is measured against it where the query is routed, because a two-table
-/// join holds that side whole.
+/// of refused and the chain allowed instead of refused: every step is INNER,
+/// LEFT or FULL with a key list on both sides, every `FROM` item is a lazy base
+/// table, and the steps join the tables in `FROM` order. A step's probe layout
+/// is the previous step's output layout, so the cursor's output is still the
+/// layout the fold's expressions are bound to, one step or five. A budget is not
+/// part of the shape: the build sides are summed against it where the query is
+/// routed, because every step holds its side whole.
 fn streaming_join_agg_source(
   bq : BoundQuery,
   sources : Array[@catalog.TableEntry?],
@@ -123,28 +124,45 @@ fn streaming_join_agg_source(
   if !bq.aggregate || bq.windows.length() > 0 || bq.distinct {
     return None
   }
-  if bq.steps.length() != 2 {
+  let steps = bq.steps
+  if steps.length() < 2 || steps.length() > sources.length() {
     return None
   }
-  let step = bq.steps[1]
-  match step.kind {
-    Inner | Left | Full => ()
-    _ => return None
+  for i in 1..<steps.length() {
+    let step = steps[i]
+    match step.kind {
+      Inner | Left | Full => ()
+      _ => return None
+    }
+    // a keyless join is a cross join: the collected path refuses one that
+    // overflows a budget instead of partitioning it, and this path keeps that
+    // answer rather than disagreeing with it
+    if step.keys_l.length() == 0 || step.keys_r.length() == 0 {
+      return None
+    }
   }
-  if bq.steps[0].table != 0 || step.table != 1 {
-    return None
+  let builds : Array[@catalog.TableEntry] = []
+  for i in 0..<steps.length() {
+    // the chain is the FROM order, so step i joins FROM item i
+    if steps[i].table != i {
+      return None
+    }
+    if i == 0 {
+      continue
+    }
+    match sources[i] {
+      Some(entry) =>
+        if entry.is_lazy() {
+          builds.push(entry)
+        } else {
+          return None
+        }
+      None => return None
+    }
   }
-  if step.keys_l.length() == 0 || step.keys_r.length() == 0 {
-    return None
-  }
-  match (sources[0], sources[1]) {
-    (Some(probe), Some(build)) =>
-      if probe.is_lazy() && build.is_lazy() {
-        Some({ probe, build, })
-      } else {
-        None
-      }
-    _ => None
+  match sources[0] {
+    Some(probe) => if probe.is_lazy() { Some({ probe, builds, }) } else { None }
+    None => None
   }
 }
 
@@ -404,12 +422,13 @@ fn run_agg_pull(
 }
 
 ///|
-/// A pull over a join's output for a fold above it: the cursor hands out joined
-/// batches in the step's combined layout, the deferred WHERE trims each one, and
-/// the rows that survive are folded. This is the one place the joined rows exist,
-/// so a fold fed from here never holds the joined set.
+/// A pull over a join's output for a fold above it: the chain hands out joined
+/// batches in the last step's combined layout, the deferred WHERE trims each one,
+/// and the rows that survive are folded. This is the one place a step's joined
+/// rows exist, so a fold fed from here never holds them, whatever the chain
+/// length.
 priv struct JoinFoldPull {
-  cursor : JoinCursor
+  next_joined : () -> @types.DataBatch? raise @types.SqlError
   deferred : PhysExpr?
   mut joined : Int64
 }
@@ -418,7 +437,7 @@ priv struct JoinFoldPull {
 fn JoinFoldPull::next(
   self : JoinFoldPull,
 ) -> @types.DataBatch? raise @types.SqlError {
-  while self.cursor.next() is Some(batch) {
+  while (self.next_joined)() is Some(batch) {
     let rows = filter_batches([batch], self.deferred)
     // the batch contract forbids handing out a zero-row batch, and a fold of
     // nothing adds nothing
@@ -436,36 +455,131 @@ fn JoinFoldPull::next(
 /// stay whole for the join, so a budget smaller than it keeps the eager path,
 /// which can partition the join instead. No budget means no bound at all, and
 /// the fold above the join is bounded separately by the same budget.
-fn join_agg_fits(
-  build_batches : Array[@types.DataBatch],
-  opts : ExecOptions,
-) -> Bool {
-  opts.budget <= 0 || batches_bytes(build_batches) <= opts.budget
+fn join_agg_fits(sides_bytes : Int32, opts : ExecOptions) -> Bool {
+  opts.budget <= 0 || sides_bytes <= opts.budget
 }
 
 ///|
-/// The build side a composed join/aggregate holds: the joining table scanned
-/// once, projected and filtered the way the collected path does it, in the
-/// combined layout the fold's expressions expect. Returned in both forms because
-/// the scan it cost is also the row count `--analyze` reports, and because a
-/// budget too small to hold it sends those batches to the eager path rather than
-/// reading the table a second time.
-fn join_agg_build(
+/// Whether the query takes the composed path. A single step composes with or
+/// without a budget; a chain composes only under a budget its sides fit, because
+/// every step's build side and the index over it stay resident at once and,
+/// without a budget to bound them, that can cost more than collecting the joined
+/// rows (verification §51 measures both sides of that trade).
+fn join_agg_composes(
+  steps : Int32,
+  sides_bytes : Int32,
+  opts : ExecOptions,
+) -> Bool {
+  if steps > 2 && opts.budget <= 0 {
+    return false
+  }
+  join_agg_fits(sides_bytes, opts)
+}
+
+///|
+/// The build side of every step, scanned once, projected and filtered the way the
+/// collected path does it. The scans are also the row counts `--analyze` reports,
+/// and because a budget too small to hold the sides sends them to the eager path,
+/// no table is read twice. The padded copies the cursors read are separate
+/// (`join_agg_sides`), so a query that keeps the eager path never pays for them.
+fn join_agg_scans(
   src : JoinSource,
   launch : Launch,
-) -> (Array[@types.DataBatch], @types.DataBatch) raise @types.SqlError {
+) -> Array[Array[@types.DataBatch]] raise @types.SqlError {
   let bq = launch.bq
-  let step = bq.steps[1]
-  let batches = materialize_scan(
-    src.build,
-    scan_request_of(bq, launch.plan.table_cols[1], 1),
-    scan_filter_of(bq, 1),
-  )
-  let build = concat_batches(
-    batches,
-    tail_dtypes(step.out_dtypes, step.right_width),
-  )
-  (batches, build)
+  let steps = bq.steps
+  let scans : Array[Array[@types.DataBatch]] = []
+  for i in 1..<steps.length() {
+    scans.push(
+      materialize_scan(
+        src.builds[i - 1],
+        scan_request_of(bq, launch.plan.table_cols[i], i),
+        scan_filter_of(bq, i),
+      ),
+    )
+  }
+  scans
+}
+
+///|
+/// The bytes a chain's resident sides will take. A side is its scan's batches
+/// concatenated into one batch (a single batch is kept as it is), so the scan's
+/// own bytes bound it, and the check runs before the copy exists: a query that
+/// keeps the eager path never pays for one.
+fn join_agg_sides_bytes(scans : Array[Array[@types.DataBatch]]) -> Int32 {
+  let mut total = 0
+  for side in scans {
+    total += batches_bytes(side)
+  }
+  total
+}
+
+///|
+/// The resident side of every step in the layout its cursor reads: the scan's
+/// rows followed by the columns the step's output carries beside them.
+fn join_agg_sides(
+  scans : Array[Array[@types.DataBatch]],
+  steps : Array[JoinStep],
+) -> Array[@types.DataBatch] {
+  let sides : Array[@types.DataBatch] = []
+  let count = scans.length()
+  for i in 1..<(count + 1) {
+    let step = steps[i]
+    sides.push(
+      concat_batches(
+        scans[i - 1],
+        tail_dtypes(step.out_dtypes, step.right_width),
+      ),
+    )
+  }
+  sides
+}
+
+///|
+/// A pull over the output of a chain of steps. Each step's cursor is fed by the
+/// one below it, so the joined rows of step `i` are the probe batches of step
+/// `i+1` and only one batch of them exists at a time. The per-step order is the
+/// collected path's: step `i`'s probe filter trims the previous output, and the
+/// last step's output is what the fold receives.
+fn chain_pull(
+  steps : Array[JoinStep],
+  builds : Array[@types.DataBatch],
+  at : Int32,
+  next_left : () -> @types.DataBatch? raise @types.SqlError,
+) -> (() -> @types.DataBatch? raise @types.SqlError) raise @types.SqlError {
+  if at >= steps.length() {
+    return next_left
+  }
+  // step 1's probe filter is already applied by the probe pull; every later one
+  // trims what the step below handed over
+  let input = if at == 1 {
+    next_left
+  } else {
+    filtered_pull(next_left, steps[at].probe_filter)
+  }
+  let cursor = JoinCursor::open(steps[at], builds[at - 1], input)
+  let out : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
+    cursor.next()
+  }
+  chain_pull(steps, builds, at + 1, out)
+}
+
+///|
+/// A pull that keeps the rows a predicate accepts and skips the batches it
+/// empties: one step's probe filter over the output of the step below.
+fn filtered_pull(
+  next : () -> @types.DataBatch? raise @types.SqlError,
+  pred : PhysExpr?,
+) -> () -> @types.DataBatch? raise @types.SqlError {
+  fn() -> @types.DataBatch? raise @types.SqlError {
+    while next() is Some(batch) {
+      let rows = filter_batches([batch], pred)
+      if rows.length() > 0 && rows[0].row_count() > 0 {
+        return Some(rows[0])
+      }
+    }
+    None
+  }
 }
 
 ///|
@@ -477,31 +591,40 @@ fn join_agg_build(
 /// the shape.
 fn run_join_agg_pull(
   src : JoinSource,
-  build_batches : Array[@types.DataBatch],
-  build : @types.DataBatch,
+  scans : Array[Array[@types.DataBatch]],
+  builds : Array[@types.DataBatch],
   launch : Launch,
   opts : ExecOptions,
   stats : Array[(String, Int64)],
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
-  let step = bq.steps[1]
-  let probe = table_input_pull(bq, launch.plan, src.probe, 0, step.probe_filter)
-  let next_left : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
+  let steps = bq.steps
+  let probe = table_input_pull(
+    bq,
+    launch.plan,
+    src.probe,
+    0,
+    steps[1].probe_filter,
+  )
+  let probe_next : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
     probe.next()
   }
+  let chain = chain_pull(steps, builds, 1, probe_next)
   let join : JoinFoldPull = {
-    cursor: JoinCursor::open(step, build, next_left),
+    next_joined: chain,
     deferred: bq.deferred,
     joined: 0L,
   }
   let next = fn() -> @types.DataBatch? raise @types.SqlError { join.next() }
   let folded = fold_pulled(next, launch, opts)
-  let mut build_rows = 0L
-  for b in build_batches {
-    build_rows += b.row_count().to_int64()
-  }
   stats.push(("scan \{launch.schemas[0].table}", probe.scanned))
-  stats.push(("scan \{launch.schemas[1].table}", build_rows))
+  for i in 1..<(scans.length() + 1) {
+    let mut rows = 0L
+    for b in scans[i - 1] {
+      rows += b.row_count().to_int64()
+    }
+    stats.push(("scan \{launch.schemas[i].table}", rows))
+  }
   stats.push(("joins", join.joined))
   finish_agg_pull(folded, launch, stats)
 }
@@ -519,12 +642,13 @@ fn sort_pre_types(launch : Launch) -> Array[@types.DataType] {
 }
 
 ///|
-/// The two tables a join can be pulled from: the probe side, whose rows arrive
-/// a batch at a time, and the build side, which has to be resident because a
-/// probe row has to find its matches.
+/// The tables a join can be pulled from: the probe side, whose rows arrive a
+/// batch at a time, and the build side of every step, in step order. Both have
+/// to be lazy base tables, and each build side is resident because a probe row
+/// has to find its matches in it.
 priv struct JoinSource {
   probe : @catalog.TableEntry
-  build : @catalog.TableEntry
+  builds : Array[@catalog.TableEntry]
 }
 
 ///|
@@ -567,7 +691,7 @@ fn streaming_join_source(
   match (sources[0], sources[1]) {
     (Some(probe), Some(build)) =>
       if probe.is_lazy() && build.is_lazy() {
-        Some({ probe, build, })
+        Some({ probe, builds: [build], })
       } else {
         None
       }
@@ -969,7 +1093,7 @@ fn ResultStream::joined(
   let bq = launch.bq
   let step = bq.steps[1]
   let build_rows = materialize_scan(
-    src.build,
+    src.builds[0],
     scan_request_of(bq, launch.plan.table_cols[1], 1),
     scan_filter_of(bq, 1),
   )
