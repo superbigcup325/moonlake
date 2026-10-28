@@ -440,3 +440,23 @@ python3 harness/bench_ordered_agg.py --candidate <candidate main.exe> --control 
 python3 harness/bench_ordered_agg.py --candidate <candidate main.exe> \
   --control <control main.exe> --data harness/data/sf1 --budgets none,16M
 ```
+
+## A chain of joins (`bench_join_chain.py`)
+
+What it costs to fold the joined rows of a chain of join steps instead of
+collecting them. The cases are again the TPC-H texts from a `--data` directory:
+q3, q5, q7, q8, q9, q10, q11, q18, q20 and q21 carry an aggregate over two or
+more steps, and q1 and q12 are in the matrix as invariants, because they compose
+one step and their peaks must not move. The cost of the chain is the build sides
+it holds, one per step, so the rule the measurement supports is that a chain
+composes only under a budget its sides fit (verification section 51): the same
+cases are run with no budget and with one, and outside a budget the candidate
+takes the eager path the control takes. Each case reports the median peak RSS
+and wall time over interleaved rounds, the worst round-to-round spread, and a
+byte-for-byte comparison of the two binaries' output.
+
+```bash
+python3 harness/bench_join_chain.py --candidate <candidate main.exe> --control <control main.exe>
+python3 harness/bench_join_chain.py --candidate <candidate main.exe> \
+  --control <control main.exe> --data harness/data/sf1 --budgets none,16M --cases q3,q11
+```

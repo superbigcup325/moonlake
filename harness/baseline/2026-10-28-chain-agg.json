@@ -1,0 +1,222 @@
+{
+ "schema": 1,
+ "kind": "moonlake-join-chain-baseline",
+ "created_at": "2026-10-28T23:48:30+0800",
+ "git": {
+  "commit": "aa63f7a680818c66b40209944288abb212e2f8dc",
+  "branch": "main",
+  "subject": "docs: write the contract for a chain of joins above a fold",
+  "dirty": true
+ },
+ "machine": {
+  "cpu_count": 16,
+  "quiet_gate": 3.0,
+  "quiet_load": 2.05
+ },
+ "python": "3.14.8",
+ "toolchain": [],
+ "binaries": {
+  "candidate": {
+   "path": "_build/native/release/build/cmd/main/main.exe",
+   "sha256": "baa23b35bd9d8290bdbaad70b5bef428a82c4a2775f5c4d7aee1ae0bf3750cf2"
+  },
+  "control": {
+   "path": ".internal/wt-chain/_build/native/release/build/cmd/main/main.exe",
+   "sha256": "ed6d2b9af59a300a0826eacf419b5c6901801d6863e8c674904abaede98e9100"
+  }
+ },
+ "fixtures": "TPC-H CSVs in harness/data/sf1",
+ "params": {
+  "rounds": 3,
+  "budgets": [
+   "none",
+   "16M"
+  ],
+  "cases": [
+   "q1",
+   "q10",
+   "q11",
+   "q12",
+   "q18",
+   "q20",
+   "q21",
+   "q3",
+   "q5",
+   "q7",
+   "q8",
+   "q9"
+  ]
+ },
+ "answer_mismatches": 0,
+ "worst_spread": 0.099,
+ "cases": {
+  "q3/16M": {
+   "candidate_mb": 262.4,
+   "candidate_s": 3.51,
+   "control_mb": 262.8,
+   "control_s": 3.57,
+   "same_answer": true
+  },
+  "q5/16M": {
+   "candidate_mb": 444.3,
+   "candidate_s": 4.94,
+   "control_mb": 445.2,
+   "control_s": 4.91,
+   "same_answer": true
+  },
+  "q7/16M": {
+   "candidate_mb": 546.8,
+   "candidate_s": 7.98,
+   "control_mb": 551.0,
+   "control_s": 7.91,
+   "same_answer": true
+  },
+  "q8/16M": {
+   "candidate_mb": 499.4,
+   "candidate_s": 4.93,
+   "control_mb": 499.5,
+   "control_s": 4.88,
+   "same_answer": true
+  },
+  "q9/16M": {
+   "candidate_mb": 662.2,
+   "candidate_s": 7.74,
+   "control_mb": 662.0,
+   "control_s": 7.62,
+   "same_answer": true
+  },
+  "q10/16M": {
+   "candidate_mb": 245.3,
+   "candidate_s": 4.51,
+   "control_mb": 245.4,
+   "control_s": 4.27,
+   "same_answer": true
+  },
+  "q11/16M": {
+   "candidate_mb": 25.4,
+   "candidate_s": 0.4,
+   "control_mb": 99.4,
+   "control_s": 0.7,
+   "same_answer": true
+  },
+  "q18/16M": {
+   "candidate_mb": 227.3,
+   "candidate_s": 5.81,
+   "control_mb": 227.4,
+   "control_s": 6.02,
+   "same_answer": true
+  },
+  "q20/16M": {
+   "candidate_mb": 99.4,
+   "candidate_s": 3.06,
+   "control_mb": 98.9,
+   "control_s": 2.9,
+   "same_answer": true
+  },
+  "q21/16M": {
+   "candidate_mb": 666.6,
+   "candidate_s": 13.89,
+   "control_mb": 666.7,
+   "control_s": 13.65,
+   "same_answer": true
+  },
+  "q1/16M": {
+   "candidate_mb": 75.4,
+   "candidate_s": 5.27,
+   "control_mb": 73.3,
+   "control_s": 5.25,
+   "same_answer": true
+  },
+  "q12/16M": {
+   "candidate_mb": 35.4,
+   "candidate_s": 2.91,
+   "control_mb": 39.3,
+   "control_s": 2.88,
+   "same_answer": true
+  },
+  "q3/no budget": {
+   "candidate_mb": 356.2,
+   "candidate_s": 2.54,
+   "control_mb": 356.7,
+   "control_s": 2.58,
+   "same_answer": true
+  },
+  "q5/no budget": {
+   "candidate_mb": 650.8,
+   "candidate_s": 3.04,
+   "control_mb": 650.3,
+   "control_s": 3.24,
+   "same_answer": true
+  },
+  "q7/no budget": {
+   "candidate_mb": 521.4,
+   "candidate_s": 3.98,
+   "control_mb": 520.6,
+   "control_s": 3.92,
+   "same_answer": true
+  },
+  "q8/no budget": {
+   "candidate_mb": 474.3,
+   "candidate_s": 2.34,
+   "control_mb": 468.1,
+   "control_s": 2.33,
+   "same_answer": true
+  },
+  "q9/no budget": {
+   "candidate_mb": 735.4,
+   "candidate_s": 4.08,
+   "control_mb": 735.0,
+   "control_s": 4.07,
+   "same_answer": true
+  },
+  "q10/no budget": {
+   "candidate_mb": 283.0,
+   "candidate_s": 2.64,
+   "control_mb": 283.0,
+   "control_s": 2.63,
+   "same_answer": true
+  },
+  "q11/no budget": {
+   "candidate_mb": 94.7,
+   "candidate_s": 0.42,
+   "control_mb": 99.1,
+   "control_s": 0.41,
+   "same_answer": true
+  },
+  "q18/no budget": {
+   "candidate_mb": 467.3,
+   "candidate_s": 4.9,
+   "control_mb": 470.4,
+   "control_s": 4.95,
+   "same_answer": true
+  },
+  "q20/no budget": {
+   "candidate_mb": 258.1,
+   "candidate_s": 2.85,
+   "control_mb": 258.0,
+   "control_s": 2.85,
+   "same_answer": true
+  },
+  "q21/no budget": {
+   "candidate_mb": 604.1,
+   "candidate_s": 8.15,
+   "control_mb": 608.3,
+   "control_s": 7.86,
+   "same_answer": true
+  },
+  "q1/no budget": {
+   "candidate_mb": 35.4,
+   "candidate_s": 2.93,
+   "control_mb": 35.3,
+   "control_s": 2.94,
+   "same_answer": true
+  },
+  "q12/no budget": {
+   "candidate_mb": 35.2,
+   "candidate_s": 2.89,
+   "control_mb": 35.3,
+   "control_s": 2.83,
+   "same_answer": true
+  }
+ }
+}
