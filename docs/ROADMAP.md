@@ -482,10 +482,10 @@ release completion alone does not promote them.
 
 ### What composing leaves open
 
-Two boundaries the contract drew on purpose, in the order they are worth
-revisiting. A third, `ORDER BY` above the composed aggregate, was lifted on
-2026-10-28 and is recorded here rather than removed, because the decision it
-needed is the same one the remaining two raise.
+The contract drew boundaries on purpose and each one is settled here rather
+than deleted. `ORDER BY` above the composed aggregate was lifted on 2026-10-28
+(§50), and the second join step, the widest one left, is taken under the contract
+below.
 
 **ORDER BY above the composed aggregate: done (§50).** The contract excluded it
 because a sort needs every row first, but the grouped result is one batch and
@@ -498,13 +498,47 @@ pool. That lifted the exclusion for both shapes at once, and q1 now holds 35 MB
 where it held 543 MB (q12: 113 → 35 MB). A second join step is what still keeps
 the other TPC-H joins off the path.
 
-**A second join step.** The fold's expressions are bound to the combined
-two-table layout, so a third table would need a mapping between the second
-cursor's output and that layout; nothing else in the composition depends on the
-step count.
+**A second join step: taken (§51).** It was the widest shape left, and the
+mapping it was expected to need turned out to be the cursor's own layout. The
+contract below records what it decided and what it left alone.
 
 **The growing build side and group state.** Both stay resident whole, as they
-were before, and E6c measures them; this task bounded neither.
+were before, and E6c measures them; the chain makes the first of them larger, one
+side per step, which is why the fit check now sums them.
+
+### The chain composition contract (2026-10-28)
+
+Written before the code change, because these answers decide the shape predicate
+and what the fit check measures.
+
+**Scope: a linear chain of any length.** `steps[i].table == i` for every step,
+every `FROM` item is a lazy base table, every key list is non-empty, and every
+kind is INNER, LEFT or FULL. Nothing else moves: DISTINCT and a window still keep
+the eager path, `ORDER BY` no longer does (§50), and RIGHT, SEMI/ANTI and a
+keyless cross join stay out for the reason they are out of a single step (they do
+not pair a probe row with rows of a resident side).
+
+**The layout question is answered by the cursor.** A step's probe layout is the
+previous step's output layout, which is exactly what `JoinCursor` hands out and
+what `exec_joins` feeds it, so no mapping is needed: the chain is one
+`JoinCursor` per step whose `next_left` is the previous cursor's `next`, and the
+fold's expressions stay bound to the last step's layout. The per-step order is
+`exec_joins`': the probe filter of step `i` applies to the previous output, its
+build filter at the scan of its table, and the deferred residual after the last
+step.
+
+**Every build side is resident, and that is now the cost.** A probe row finds its
+matches in a whole build side, so a chain holds one per step. `join_agg_fits`
+sums them against the budget, and a budget smaller than the sum keeps the eager
+path, which can partition each join instead. The scans this check already read
+are handed to that path for every table, so no table is read twice and the
+`scan` counters are the eager ones.
+
+**What it does not do.** It does not reorder the plan: the chain is the `FROM`
+order, so a query whose largest table is the last build side holds it whole. It
+does not pre-aggregate between steps. It changes neither the fold, nor the spill
+accounting, nor the row counters: `scan t` per table, `joins` for the rows the
+fold received, `aggregate`, `result`.
 
 ## Known limits, and what closing each one means
 
