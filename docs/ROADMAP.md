@@ -358,11 +358,13 @@ update.
 | Order | Task | Delivery and exit |
 |---|---|---|
 | 1 | E6a: bottleneck and ownership record | **Done** (2026-10-27), recorded in §48 and in `harness/baseline/2026-10-27-e6a-join-agg.json`. Use the released 0.5.1 source as the control. Fix the build side, group count and final result size; grow probe rows and join fanout for a two-table keyed INNER/LEFT join followed by GROUP BY. Separate scan cost, resident build state, intermediate rows, aggregate state and final output. Record exact answers, wall time, peak RSS, scan/join row counts and spill counters at several budgets. Include scan-only, join-only and single-table aggregate controls. Specify deferred predicates, schema/column mapping, buffer accounting, exhaustion, early close and failure cleanup before implementation. If intermediate collection does not dominate, close the investigation and select the measured bottleneck instead |
-| 2 | E6b: compose one supported join/aggregate shape | E6a demonstrated the cost (§48): the collection dominates, so start here, with the composition contract the measurement could not settle now [written below](#the-e6b-composition-contract): deferred predicates above the join, schema/column mapping into the aggregate, buffer accounting against the existing partition pool, and exhaustion, early close and failure cleanup. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
+| 2 | E6b: compose one supported join/aggregate shape | **Done** (2026-10-28), recorded in §49 and in `harness/baseline/2026-10-28-e6b-join-agg.json`. E6a demonstrated the cost (§48): the collection dominates, so start here, with the composition contract the measurement could not settle now [written below](#the-e6b-composition-contract): deferred predicates above the join, schema/column mapping into the aggregate, buffer accounting against the existing partition pool, and exhaustion, early close and failure cleanup. Feed the existing join cursor's batches into the exact aggregate fold or the budgeted partitioner, reusing their semantics and spill format. Preserve `execute`/`stream` behavior, the current budget rules and explicit fallback for unhandled join kinds, longer chains, ORDER BY, windows and SELECT DISTINCT. Keep the build side and aggregate/output state visible as resident costs; this task does not bound them |
 | 3 | E6c: prove answers, lifecycle and scaling | Compare with the released collected path and DuckDB, including NULL keys/values, duplicate keys and fanout, empty sides, LEFT unmatched rows, residual/deferred predicates, HAVING, DISTINCT aggregates, skew and state that exceeds a budget. Exercise source and spill failures, exhaustion and early close with no leaked runs. With fixed build/group/result size, retained intermediate rows must stop growing with probe rows or fanout. Report the growing build/group-state cases separately. Run target suites and goldens on native, wasm-gc and js, plus the affected correlation and spill gates; exercise portable composition and failure behavior on each target and extend the packaged consumer to the new composition. Record same-session interleaved control/candidate measurements with an answer oracle, medians and spread |
 
-Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`
-and `run_agg_pull`), `engine/exec_join.mbt`, `engine/exec_agg.mbt` and
+Implementation entry points are `engine/stream.mbt` (`InputPull`, `JoinedPull`,
+`run_agg_pull`, and since E6b `streaming_join_agg_source`, `JoinFoldPull` and
+`run_join_agg_pull`, with the fold's tail shared as `fold_pulled` /
+`finish_agg_pull`), `engine/exec_join.mbt`, `engine/exec_agg.mbt` and
 `engine/extagg.mbt`. Reuse the existing cursor, fold, resource rigs and corpus;
 no colenc API or format change is a prerequisite. The measurement matrix is
 `harness/bench_join_agg.py`, which carries its answer oracle as a unit test, and
@@ -475,6 +477,29 @@ profile shows them to matter. FSST reuse, I0, writer layout/dictionaries, wider
 SQL types and upstream ranged reads keep their existing entry conditions;
 release completion alone does not promote them.
 
+### What composing leaves open
+
+Three boundaries the contract drew on purpose, in the order they are worth
+revisiting.
+
+**ORDER BY above the composed aggregate.** The contract excludes it because a
+sort needs every row first, but the grouped result here is already one batch and
+the eager tail sorts exactly that batch, so the exclusion is narrower than it
+looks. It is also what keeps most of the TPC-H goldens off the path: at sf01 only
+q14 and q19 carry no `ORDER BY`, while q3, q10 and q12 sort their grouped answer
+and keep the eager path. Widening needs one decision the contract did not take:
+whether an over-budget sort of the grouped batch spills through the existing
+run-file pool inside a folded query. Then it needs the same answer and counter
+proof this task carried.
+
+**A second join step.** The fold's expressions are bound to the combined
+two-table layout, so a third table would need a mapping between the second
+cursor's output and that layout; nothing else in the composition depends on the
+step count.
+
+**The growing build side and group state.** Both stay resident whole, as they
+were before, and E6c measures them; this task bounded neither.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
@@ -488,7 +513,7 @@ refused:
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
 | Exact group state and the final grouped result are unbounded | Many groups, or one large DISTINCT/median/string state, even under a small `--memory` value | E5 bounds scan-input buffers, not exact state or output (verification §45). A separate design must choose exact spilling or a clear refusal, account for skew and define output consumption; approximate substitution requires an explicit query choice. |
-| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, and any of ORDER BY, GROUP BY, DISTINCT or a window above a join. SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
+| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, and any of ORDER BY, DISTINCT or a window above a join; a `GROUP BY` above a two-table keyed INNER/LEFT/FULL join folds the join's batches instead (verification §49). SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes and §30 the gate that now preserves their answers; §34 lists the join shapes that stay eager, and a semi/anti join is one of them (it is decorrelated into a scan first). |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |

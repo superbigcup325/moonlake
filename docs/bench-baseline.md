@@ -745,3 +745,39 @@ rather than §45's 0.9, the peak load during the run was 3.10, and the worst
 round-to-round spread was 32% on the short cases. Peak RSS is the evidence, and
 the same-code pair bounds it — a 0.1 MB median difference and a 19 MB worst case
 at the spilling 4,000,000-row points. §48 carries the full method and the limits.
+
+## A join feeding an aggregate, composed (2026-10-28)
+
+The pair §48 asked for. Candidate is the tree that folds the join's batches into
+the aggregate (`bc02ff1`); control is the released 0.5.1 source in a detached
+worktree, which collects the joined rows first. Fixtures, sweep, rounds, budgets
+and queries are unchanged from the record above, so the two tables read down the
+same points.
+
+- [`harness/baseline/2026-10-28-e6b-join-agg.json`](../harness/baseline/2026-10-28-e6b-join-agg.json)
+  — `bc02ff1`, clean tree, quiet gate 1.5, entered at load 0.75, peak load 2.53
+  during the run, worst round-to-round spread 38% on the short cases. Candidate
+  `52ede096…` and control `4d73a05f…`, the same control binary §48 used.
+- All 75 case runs return their expected answer, agree with the control's, and
+  the 45 grouped runs also agree with DuckDB. §49 carries the method, the
+  counter comparison and the limits.
+
+Peak RSS in MB, candidate against the collected control:
+
+| joined rows | no budget | 4M | 16M |
+|---|---|---|---|
+| 1,000,000 | 39 / 51 | 46 / 54 | 49 / 51 |
+| 2,000,000 | 39 / 97 | 45 / 117 | 61 / 100 |
+| 4,000,000 | 39 / 191 | 45 / 226 | 61 / 193 |
+| 2,000,000 (fanout 2, 1M probe rows) | 39 / 85 | 41 / 91 | 67 / 99 |
+| 4,000,000 (fanout 4, 1M probe rows) | 39 / 153 | 41 / 166 | 63 / 193 |
+
+The three controls have not moved and are the same in both records: the scan is
+35.3 to 35.6 MB at every point, the aggregate alone is 35 MB without a budget and
+45, 57 and 67 MB at 16M as its input grows, and the streaming join is 38.6 to
+39.5 MB. So the composed peak is the scan plus the build side plus one batch, and
+under a budget it is the budget rather than the joined rows; the collected peak
+is the joined rows. Wall times are direction only on this host: equal at no
+budget, faster for the composed path where the fold partitions early, slower
+where it buffers up to the budget before partitioning, while using 63 MB instead
+of 193 MB at that point.

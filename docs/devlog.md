@@ -2261,3 +2261,67 @@ keeps the eager path, where the join can be partitioned. The rule is the one E5
 already recorded, that a budget bounds the fold's input buffer and never the
 group state or the grouped result, and the row counters keep their names while
 the spill lines start describing a different plan.
+
+## The join feeds the fold (2026-10-28): E6b
+
+The contract the last entry ended on asked two questions and set one rule. The
+code that answers them is three pieces: a shape predicate, a pull over the join
+cursor, and a tail the two pulls now share. The predicate is
+`streaming_join_source`'s with the aggregate allowed instead of refused, so the
+shape it accepts is exactly the shape the join stream declines. `JoinFoldPull`
+runs the cursor, applies the deferred predicate to each batch, counts the rows it
+passes on and hands them to the fold. `run_agg_pull`'s tail moved into
+`fold_pulled` and `finish_agg_pull`, so `HAVING`, the spill lines, the
+aggregation, projection, ordering and the result are one sequence for both. The
+column-mapping question the contract worried about was already answered by the
+collected path: the cursor's batches are the layout the fold's expressions are
+bound to. A second step changes that layout, which is why a chain stays out.
+
+The build side is the part that cannot be folded away. A two-table join holds it
+whole, so `join_agg_fits` measures the materialized side against the budget and
+leaves the eager path in place when it does not fit, where the join can partition
+instead. That branch is handed the batches it already read, so the table is not
+scanned twice, and it is why the shape predicate never mentions a budget.
+
+Over the harness's five points, at no budget the peak is 39 MB from 1,000,000 to
+4,000,000 joined rows, and 39 MB again when the same 4,000,000 rows come from a
+four-row build side instead of four million probe rows. The collected control
+walks 51, 97, 191 MB on the first route and 153 MB on the second, so the route
+that produced the rows mattered and now does not. Under the 4M budget the
+composed query peaks at 41 to 46 MB against 53 to 226 MB, and under 16M at 49 to
+67 MB against 51 to 193 MB: the peak follows the budget and the fold's buffer,
+not the joined rows. The delta over the scan is the resident build side plus one
+batch, 3.6 to 3.8 MB, and it does not move across the sweep. All 75 case runs
+answer correctly, agree with the control and the 45 grouped ones agree with
+DuckDB.
+
+The five row counters needed no new definition and got no new values: same five
+lines as the control on the same query, which a whitebox test pins. The spill
+lines did change meaning. Under the 4M budget at 4,000,000 rows the collected
+path spills twice, the join's grace output in 31 partitions and then the
+aggregate in 46, for 115 files and 11.1 MB. The composed query never calls
+`join_or_spill`, so it reports one phase of 16 partitions, 394 files and 10.6 MB,
+plus the fold's own buffer estimate. More files for fewer bytes is the trade E5
+recorded for the aggregate's partition rule.
+
+The part worth writing down is a failure that stopped happening. A join whose
+single key outgrows every grace partition used to fail under a budget: the join
+wrote its runs, then refused. Composing removes the joined row set, so the same
+query now answers, writes nothing and leaves no directory. That made two gates
+wrong in the way that reads as a bug: the e2e failure test and the dirty-budget
+check in `spill_accept.sh` both pinned the refusal with an INNER join, which is
+now the shape that answers. Both were retargeted to RIGHT joins, which the
+contract excludes and which still spill and still refuse, and the answering case
+got its own test in the corpus gate. A gate that starts failing after an
+improvement is pinning the old limitation, not the behaviour, and this is what
+that looks like when the limitation was a shape rather than a bug.
+
+Coverage on real queries is narrow and says so. With the predicate instrumented
+at sf01, only q14 and q19 compose: q3, q10 and q12 carry an ORDER BY above the
+aggregate, q5, q11 and q18 join a third table, q16 and q20 decorrelate into
+SEMI/ANTI joins. q19 peaks at 41 MB against 109 MB anyway, and all 33 golden
+comparisons pass unchanged. The build side and the group state are still whole,
+which E6c measures, and the next widening is ORDER BY above the aggregate: the
+grouped result is already one batch and the eager tail already sorts it, so the
+exclusion is narrower than the contract makes it sound, but the decision about an
+over-budget sort of that batch belongs to its own contract.

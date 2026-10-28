@@ -3807,3 +3807,117 @@ from +16 MB at 1,000,000 joined rows to +154 MB at 4,000,000, while the scan, th
 group state and the streaming join each stay flat. The roadmap's rule was to
 start E6b only if E6a demonstrated that cost, so E6b is the next task. No engine
 behaviour changed for this section and no version is reserved by it.
+
+## 49. A join feeding an aggregate folds it (2026-10-28): E6b
+
+§48 measured the handoff this section removes: a two-table keyed join with a
+`GROUP BY` above it was answered by collecting the joined rows (`drain_join`) and
+aggregating the array, so peak RSS over the scan followed the joined rows
+(+16 MB at 1,000,000, +154 MB at 4,000,000). The
+[composition contract](ROADMAP.md#the-e6b-composition-contract) fixed the shape,
+the buffer accounting, the counters and the fallbacks before any code changed;
+this section records what composing it did. The record is
+[`harness/baseline/2026-10-28-e6b-join-agg.json`](../harness/baseline/2026-10-28-e6b-join-agg.json),
+written by [`harness/bench_join_agg.py`](../harness/bench_join_agg.py) at
+`bc02ff1` on a clean tree (`dirty: false`).
+
+**Method.** The same fixtures, cases, rounds, budgets and sweep as §48, so every
+row below has a row in §48's table: `probe(id, k, v)` with `k = i % 100` and
+`v = (13 * i) % 1000`, `build(k, w)` with `fanout` rows per key, 1, 2 and 4
+million probe rows at fanout 1 and 1 million probe rows at fanout 2 and 4, three
+interleaved rounds per case, three budgets, five queries. Candidate is this tree
+at `bc02ff1` (`52ede096…`); control is the released 0.5.1 source in a detached
+worktree at `v0.5.1` (`4d73a05f…`), so the pair differs by the composition and
+nothing else. The host was quiet when the run started (load 0.75 against a 1.5
+gate) but reached 2.53 during it, and the worst round-to-round spread was 38% on
+the short cases: wall times are direction only, peak RSS is the evidence.
+
+**Peak RSS in MB, candidate against the collected control** in the same cell:
+
+| joined rows | from | no budget | 4M | 16M |
+|---|---|---|---|---|
+| 1,000,000 | 1,000,000 rows x fanout 1 | 39 / 51 | 46 / 54 | 49 / 51 |
+| 2,000,000 | 2,000,000 rows x fanout 1 | 39 / 97 | 45 / 117 | 61 / 100 |
+| 4,000,000 | 4,000,000 rows x fanout 1 | 39 / 191 | 45 / 226 | 61 / 193 |
+| 2,000,000 | 1,000,000 rows x fanout 2 | 39 / 85 | 41 / 91 | 67 / 99 |
+| 4,000,000 | 1,000,000 rows x fanout 4 | 39 / 153 | 41 / 166 | 63 / 193 |
+
+**The delta over the scan stops following the joined rows.** At no budget the
+composed query peaks at 38.9, 38.9, 39.0, 38.9 and 39.2 MB across the five
+points, 3.6 to 3.8 MB over the 35.3-35.6 MB scan, which is the build side plus
+one batch in flight, against 16 to 156 MB for the control. The two routes to
+4,000,000 joined rows now agree to 0.2 MB where the control disagreed by 38 MB,
+because the composed cost does not depend on which side produced the rows.
+Under a budget the peak follows the budget and the fold's buffer, not the rows:
+41.4-45.5 MB at 4M and 49.4-67.3 MB at 16M, and it sits one batch and the
+resident build side above the aggregate-alone control at the same setting (45.4
+MB against 49.4 MB at 1,000,000 rows under 16M), where the control's peak is
+the joined rows plus a batch. The control is still raised by a budget, peaking
+at 225.7 MB with 4M against 191.3 MB without one at 4,000,000 rows, while the
+composed path drops from 191.3 to 45.4 MB in the same comparison.
+
+**The five row counters keep their values.** On the 4,000,000-row, fanout-1
+fixture the candidate's `--analyze` reads `scan probe: 4000000`,
+`scan build: 100`, `joins: 4000000`, `aggregate: 100`, `result: 100`, and the
+control's five lines are identical when run on the same fixture in the same
+session. `engine/join_agg_wbtest.mbt` pins that sequence for the composed path
+and pins it against the shape's own definition of each counter.
+
+**The spill lines now describe one plan.** Under the 4M budget at 4,000,000 rows
+the control reports two phases, 31 partitions for the join's grace output and 46
+for the aggregate, 115 files and 11.1 MB written. The composed path never runs
+`join_or_spill` for this query, so it reports one phase: 16 partitions, 394 files
+and 10.6 MB written, plus the fold's `buffered bytes peak (estimated)` and
+`largest partition spilled (estimated)` lines that the aggregate-owned phases
+already used. More files for slightly fewer bytes is the trade §45 recorded for
+the aggregate's own partition rule.
+
+**A refusal that stops being one.** A 5,000-row side whose single key outgrows
+every grace partition used to fail under an 8 KB budget: the join wrote its
+runs and then refused. With the shape composed the fold needs no joined row
+set, so the same query answers (50,000 for the `count(*)`), writes nothing, and
+leaves no directory. Two gates pinned the old refusal and now pin it on a RIGHT
+join, which the contract excludes: `engine/e2e_test.mbt` and
+`harness/spill_accept.sh`. A new e2e test pins the answering case instead, so
+the error path keeps its coverage and the improvement is claimed by a test
+rather than by a comment.
+
+**Answers.** All 75 case runs return their expected answer, every one agrees with
+the control's, and the 45 grouped runs also agree with DuckDB. The whitebox tests
+additionally cover what the sweep does not: NULL keys and values, duplicate build
+keys, an empty probe side, an empty build side, FULL's unmatched build rows, a
+group that spans batches, grouping by a build-side column (where an unmatched
+LEFT row lands in the NULL group), a global aggregate, `HAVING`, `count(distinct)`
+inside the fold, a budgeted run that spills and leaves no run file, and a `LIMIT`
+that counts against the grouped rows. Each excluded shape (a three-table chain, a
+RIGHT join, `ORDER BY`, `DISTINCT`, a derived table, a single table) is asserted
+not to compose. The corpus gates pass unchanged: the 33 golden comparisons of
+`harness/check_all.sh`, plus `harness/check_cli.sh` and `harness/spill_accept.sh`
+end to end.
+
+**Coverage on real queries.** With the shape predicate instrumented at sf01,
+`q14` and `q19` take the composed path; the other TPC-H queries that join and
+group either carry an `ORDER BY` above the aggregate (`q3`, `q10`, `q12`), join a
+third table (`q5`, `q11`, `q18`), or decorrelate into SEMI/ANTI joins (`q16`,
+`q20`), all excluded by the contract. At sf01 `q19` peaks at 41.3 MB against
+109.2 MB for the control, and `q3` is unchanged at 43.3 MB because it keeps the
+eager path. The comparison is directional: sf01 is small, so the numbers say the
+path is taken and the peak moves, not what a 1 GB dataset would show.
+
+**Wall time.** At no budget the two paths are indistinguishable (0.31 s against
+0.34 s at 4,000,000 joined rows; 0.17 s against 0.19 s at fanout 4). Under a
+budget the composed path is faster where the fold partitions early (1.08 s
+against 1.36 s at 4,000,000 rows and 4M) and slower where it buffers up to the
+budget first (0.91 s against 0.69 s at fanout 4 and 16M, 0.50 s against 0.39 s at
+2,000,000 rows and 16M), while using 63 MB instead of 193 MB at the first of
+those and 61 MB instead of 99 MB at the second. That is the budget's trade: hold
+input up to the budget, or hold the joined rows. The host's load does not support
+a finer claim than the direction.
+
+**What this does not say.** It does not bound the build side or the group state
+(E6c), does not extend to a chain, RIGHT, SEMI/ANTI, `ORDER BY`, `DISTINCT`, a
+window or a keyless cross join, and measures the native CLI only: wasm-gc and js
+are not in this record. It reports CSV input only, as §48 did, because the scan is
+flat there and the reader is not hiding retained input on this target. The
+deployed page, the packaged consumer and the three-target answer parity for the
+new path are E6c's, and §46-48 remain the evidence for the released tree.

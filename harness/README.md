@@ -401,18 +401,20 @@ uv run --python 3.12 --with-requirements harness/requirements.txt python harness
 
 ## Join feeding an aggregate (`bench_join_agg.py`)
 
-What a two-table join costs when an aggregate sits above it. The join probes in
-batches and the aggregate folds a scan, but neither accepts the other today, so
-the composed shape still collects the joined rows; this script measures how much
-that is. Every point of the matrix runs four controls over the same fixtures —
-`count(*)` (the scan), a `GROUP BY` over the probe alone (the aggregate state),
-the joined rows collected (the intermediate result) and the composed query — and
-the probe row count and the build-side fanout are swept while the build size, the
-group count and the final result stay fixed, because both sweeps multiply
-intermediate rows. Answers are recomputed here from the fixtures' key and value
-functions; `--duckdb` adds the third-party check, and `--control` interleaves a
-released binary round by round. It waits for a quiet host and prints the worst
-round-to-round spread, like `bench_agg_pull.py`.
+What a two-table join costs when an aggregate sits above it. Since E6b one shape
+is folded from the join's own batches (INNER, LEFT or FULL over two lazy tables,
+with no `ORDER BY`, window or `DISTINCT` above it); every other shape still
+collects the joined rows, so the matrix is run against a binary from before the
+composition as well as the one being measured. Every point runs five cases over
+the same fixtures: `count(*)` (the scan), a `GROUP BY` over the probe alone (the
+aggregate state), the joined rows collected (the intermediate result), the
+composed query and the same query over a LEFT join. The probe row count and the
+build-side fanout are swept while the build size, the group count and the final
+result stay fixed, because both sweeps multiply intermediate rows. Answers are
+recomputed here from the fixtures' key and value functions; `--duckdb` adds the
+third-party check, and `--control` interleaves a released binary round by round.
+It waits for a quiet host and prints the worst round-to-round spread, like
+`bench_agg_pull.py`.
 
 ```bash
 python3 harness/bench_join_agg.py --candidate <candidate main.exe> --control <released main.exe>

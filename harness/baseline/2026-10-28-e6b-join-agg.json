@@ -1,0 +1,2589 @@
+{
+ "schema": 1,
+ "kind": "moonlake-join-agg-baseline",
+ "created_at": "2026-10-28T19:22:10+0800",
+ "git": {
+  "commit": "bc02ff16714c047110f7956d9098a860cd2c8094",
+  "branch": "main",
+  "subject": "feat(engine): fold a join's batches into an aggregate",
+  "dirty": false
+ },
+ "machine": {
+  "cpu_count": 16,
+  "quiet_gate": 1.5,
+  "quiet_load": 0.75
+ },
+ "python": "3.12.14",
+ "toolchain": [
+  "moon 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moon",
+  "moonc v0.10.17+d971670cd (2026-10-23) ~/.moon/bin/moonc",
+  "moonrun 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moonrun",
+  "",
+  "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+ ],
+ "binaries": {
+  "candidate": {
+   "path": "_build/native/release/build/cmd/main/main.exe",
+   "sha256": "52ede096e274aea9a421f8fd86c1a6b7295991a0ed7f08e571c243cc7921be9c"
+  },
+  "control": {
+   "path": ".internal/wt-051/_build/native/release/build/cmd/main/main.exe",
+   "sha256": "4d73a05f1376bc09e0cf1bfe4a2ab0bc89de390805b48a76dac240ace0a740a1"
+  }
+ },
+ "fixture": {
+  "probe": "id,k,v with k = i % groups and v = (13 * i) % 1000",
+  "build": "k,w with fanout rows per key"
+ },
+ "params": {
+  "groups": 100,
+  "rounds": 3,
+  "budgets": [
+   "",
+   "4M",
+   "16M"
+  ],
+  "cases": [
+   "scan-only",
+   "agg-only",
+   "join-only",
+   "join-agg",
+   "join-left-agg"
+  ],
+  "duckdb": true
+ },
+ "points": [
+  [
+   1000000,
+   1
+  ],
+  [
+   2000000,
+   1
+  ],
+  [
+   4000000,
+   1
+  ],
+  [
+   1000000,
+   2
+  ],
+  [
+   1000000,
+   4
+  ]
+ ],
+ "worst_spread": 0.38137367731527255,
+ "worst_load": 2.53,
+ "cases": [
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.042,
+     "wall_spread": 0.021,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.043,
+     "wall_spread": 0.072,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.06,
+     "wall_spread": 0.081,
+     "rss_mb": 35.4
+    },
+    "control": {
+     "wall_median": 0.062,
+     "wall_spread": 0.041,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "result": 1000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.191,
+     "wall_spread": 0.053,
+     "rss_mb": 39.0
+    },
+    "control": {
+     "wall_median": 0.187,
+     "wall_spread": 0.012,
+     "rss_mb": 38.9
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.084,
+     "wall_spread": 0.07,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.084,
+     "wall_spread": 0.13,
+     "rss_mb": 51.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.084,
+     "wall_spread": 0.152,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.079,
+     "wall_spread": 0.034,
+     "rss_mb": 51.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.042,
+     "wall_spread": 0.029,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.045,
+     "wall_spread": 0.041,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4197376,
+    "largest partition spilled (estimated)": 565880,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 75,
+    "spill bytes written": 2098543
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.191,
+     "wall_spread": 0.008,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.193,
+     "wall_spread": 0.041,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "spill partitions": 8,
+    "joins": 1000000,
+    "result": 1000000,
+    "spill files": 16,
+    "spill bytes written": 2145109
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.193,
+     "wall_spread": 0.007,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.189,
+     "wall_spread": 0.013,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 846860,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 106,
+    "spill bytes written": 2641507
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.259,
+     "wall_spread": 0.046,
+     "rss_mb": 45.5
+    },
+    "control": {
+     "wall_median": 0.313,
+     "wall_spread": 0.019,
+     "rss_mb": 53.5
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 846860,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 106,
+    "spill bytes written": 2641507
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.257,
+     "wall_spread": 0.027,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.317,
+     "wall_spread": 0.024,
+     "rss_mb": 53.5
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.042,
+     "wall_spread": 0.016,
+     "rss_mb": 35.6
+    },
+    "control": {
+     "wall_median": 0.041,
+     "wall_spread": 0.058,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.059,
+     "wall_spread": 0.057,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.06,
+     "wall_spread": 0.027,
+     "rss_mb": 45.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "result": 1000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.199,
+     "wall_spread": 0.066,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.188,
+     "wall_spread": 0.02,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.075,
+     "wall_spread": 0.044,
+     "rss_mb": 49.4
+    },
+    "control": {
+     "wall_median": 0.082,
+     "wall_spread": 0.098,
+     "rss_mb": 51.4
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 1000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 100,
+    "joins": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.085,
+     "wall_spread": 0.133,
+     "rss_mb": 53.4
+    },
+    "control": {
+     "wall_median": 0.08,
+     "wall_spread": 0.052,
+     "rss_mb": 51.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.08,
+     "wall_spread": 0.104,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.081,
+     "wall_spread": 0.026,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.12,
+     "wall_spread": 0.034,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.115,
+     "wall_spread": 0.061,
+     "rss_mb": 35.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "result": 2000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.386,
+     "wall_spread": 0.027,
+     "rss_mb": 38.8
+    },
+    "control": {
+     "wall_median": 0.377,
+     "wall_spread": 0.034,
+     "rss_mb": 38.9
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.152,
+     "wall_spread": 0.008,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.169,
+     "wall_spread": 0.12,
+     "rss_mb": 97.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.159,
+     "wall_spread": 0.081,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.157,
+     "wall_spread": 0.108,
+     "rss_mb": 97.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.085,
+     "wall_spread": 0.091,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.082,
+     "wall_spread": 0.008,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4197376,
+    "largest partition spilled (estimated)": 1131736,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 140,
+    "spill bytes written": 4195165
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.387,
+     "wall_spread": 0.006,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.382,
+     "wall_spread": 0.02,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "spill partitions": 16,
+    "joins": 2000000,
+    "result": 2000000,
+    "spill files": 36,
+    "spill bytes written": 4194317
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.382,
+     "wall_spread": 0.028,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.382,
+     "wall_spread": 0.024,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 202,
+    "spill bytes written": 5280397
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.517,
+     "wall_spread": 0.015,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.617,
+     "wall_spread": 0.009,
+     "rss_mb": 117.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 202,
+    "spill bytes written": 5280397
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.525,
+     "wall_spread": 0.03,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.624,
+     "wall_spread": 0.018,
+     "rss_mb": 115.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.08,
+     "wall_spread": 0.041,
+     "rss_mb": 35.4
+    },
+    "control": {
+     "wall_median": 0.08,
+     "wall_spread": 0.018,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.12,
+     "wall_spread": 0.043,
+     "rss_mb": 57.3
+    },
+    "control": {
+     "wall_median": 0.123,
+     "wall_spread": 0.047,
+     "rss_mb": 57.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "result": 2000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.39,
+     "wall_spread": 0.018,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.376,
+     "wall_spread": 0.007,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 59,
+    "spill bytes written": 5278681
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.503,
+     "wall_spread": 0.014,
+     "rss_mb": 61.4
+    },
+    "control": {
+     "wall_median": 0.388,
+     "wall_spread": 0.02,
+     "rss_mb": 99.5
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 2000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 2000000,
+    "scan build": 100,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 59,
+    "spill bytes written": 5278681
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.507,
+     "wall_spread": 0.023,
+     "rss_mb": 67.4
+    },
+    "control": {
+     "wall_median": 0.387,
+     "wall_spread": 0.039,
+     "rss_mb": 99.5
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.164,
+     "wall_spread": 0.047,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.16,
+     "wall_spread": 0.026,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.226,
+     "wall_spread": 0.047,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.232,
+     "wall_spread": 0.041,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "result": 4000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.789,
+     "wall_spread": 0.134,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.796,
+     "wall_spread": 0.019,
+     "rss_mb": 38.9
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.31,
+     "wall_spread": 0.083,
+     "rss_mb": 39.0
+    },
+    "control": {
+     "wall_median": 0.335,
+     "wall_spread": 0.039,
+     "rss_mb": 191.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.305,
+     "wall_spread": 0.024,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.324,
+     "wall_spread": 0.108,
+     "rss_mb": 191.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.17,
+     "wall_spread": 0.021,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.171,
+     "wall_spread": 0.017,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4197376,
+    "largest partition spilled (estimated)": 2263448,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 269,
+    "spill bytes written": 8388746
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.811,
+     "wall_spread": 0.022,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.805,
+     "wall_spread": 0.031,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "spill partitions": 31,
+    "joins": 4000000,
+    "result": 4000000,
+    "spill files": 69,
+    "spill bytes written": 8657893
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.813,
+     "wall_spread": 0.02,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.782,
+     "wall_spread": 0.025,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 394,
+    "spill bytes written": 10558538
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 1.082,
+     "wall_spread": 0.023,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 1.356,
+     "wall_spread": 0.037,
+     "rss_mb": 225.7
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 394,
+    "spill bytes written": 10558538
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 1.081,
+     "wall_spread": 0.015,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 1.348,
+     "wall_spread": 0.009,
+     "rss_mb": 203.5
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.174,
+     "wall_spread": 0.029,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.173,
+     "wall_spread": 0.043,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16789504,
+    "largest partition spilled (estimated)": 2263448,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 76,
+    "spill bytes written": 8386430
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.805,
+     "wall_spread": 0.047,
+     "rss_mb": 67.4
+    },
+    "control": {
+     "wall_median": 0.786,
+     "wall_spread": 0.016,
+     "rss_mb": 67.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "spill partitions": 8,
+    "joins": 4000000,
+    "result": 4000000,
+    "spill files": 16,
+    "spill bytes written": 8576474
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.807,
+     "wall_spread": 0.02,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.786,
+     "wall_spread": 0.041,
+     "rss_mb": 39.0
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 108,
+    "spill bytes written": 10555106
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 1.078,
+     "wall_spread": 0.008,
+     "rss_mb": 61.4
+    },
+    "control": {
+     "wall_median": 1.352,
+     "wall_spread": 0.027,
+     "rss_mb": 193.4
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 4000000,
+   "fanout": 1,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 4000000,
+    "scan build": 100,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 108,
+    "spill bytes written": 10555106
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 1.075,
+     "wall_spread": 0.032,
+     "rss_mb": 67.4
+    },
+    "control": {
+     "wall_median": 1.332,
+     "wall_spread": 0.011,
+     "rss_mb": 194.4
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.051,
+     "wall_spread": 0.056,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.044,
+     "wall_spread": 0.086,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.066,
+     "wall_spread": 0.115,
+     "rss_mb": 35.3
+    },
+    "control": {
+     "wall_median": 0.061,
+     "wall_spread": 0.097,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "result": 2000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.338,
+     "wall_spread": 0.02,
+     "rss_mb": 38.6
+    },
+    "control": {
+     "wall_median": 0.33,
+     "wall_spread": 0.018,
+     "rss_mb": 38.6
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.113,
+     "wall_spread": 0.06,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.119,
+     "wall_spread": 0.173,
+     "rss_mb": 85.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.109,
+     "wall_spread": 0.032,
+     "rss_mb": 38.3
+    },
+    "control": {
+     "wall_median": 0.12,
+     "wall_spread": 0.044,
+     "rss_mb": 85.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.051,
+     "wall_spread": 0.126,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.047,
+     "wall_spread": 0.135,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4197376,
+    "largest partition spilled (estimated)": 565880,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 75,
+    "spill bytes written": 2098543
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.203,
+     "wall_spread": 0.009,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.201,
+     "wall_spread": 0.036,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "spill partitions": 8,
+    "joins": 2000000,
+    "result": 2000000,
+    "spill files": 16,
+    "spill bytes written": 2145237
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.337,
+     "wall_spread": 0.066,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.334,
+     "wall_spread": 0.017,
+     "rss_mb": 38.7
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 202,
+    "spill bytes written": 5271134
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.485,
+     "wall_spread": 0.028,
+     "rss_mb": 41.4
+    },
+    "control": {
+     "wall_median": 0.464,
+     "wall_spread": 0.022,
+     "rss_mb": 91.4
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 202,
+    "spill bytes written": 5271134
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.484,
+     "wall_spread": 0.014,
+     "rss_mb": 41.4
+    },
+    "control": {
+     "wall_median": 0.461,
+     "wall_spread": 0.036,
+     "rss_mb": 91.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.043,
+     "wall_spread": 0.041,
+     "rss_mb": 35.6
+    },
+    "control": {
+     "wall_median": 0.045,
+     "wall_spread": 0.128,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.063,
+     "wall_spread": 0.05,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.065,
+     "wall_spread": 0.03,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "result": 2000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.337,
+     "wall_spread": 0.007,
+     "rss_mb": 38.9
+    },
+    "control": {
+     "wall_median": 0.333,
+     "wall_spread": 0.381,
+     "rss_mb": 38.7
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 59,
+    "spill bytes written": 5269418
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.475,
+     "wall_spread": 0.018,
+     "rss_mb": 67.3
+    },
+    "control": {
+     "wall_median": 0.359,
+     "wall_spread": 0.03,
+     "rss_mb": 99.4
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 2,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 2000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 200,
+    "joins": 2000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 1693692,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 59,
+    "spill bytes written": 5269418
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.477,
+     "wall_spread": 0.016,
+     "rss_mb": 59.4
+    },
+    "control": {
+     "wall_median": 0.356,
+     "wall_spread": 0.045,
+     "rss_mb": 99.4
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.045,
+     "wall_spread": 0.191,
+     "rss_mb": 35.4
+    },
+    "control": {
+     "wall_median": 0.046,
+     "wall_spread": 0.085,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.063,
+     "wall_spread": 0.022,
+     "rss_mb": 35.4
+    },
+    "control": {
+     "wall_median": 0.064,
+     "wall_spread": 0.015,
+     "rss_mb": 35.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "result": 4000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.627,
+     "wall_spread": 0.021,
+     "rss_mb": 39.4
+    },
+    "control": {
+     "wall_median": 0.61,
+     "wall_spread": 0.022,
+     "rss_mb": 39.4
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.165,
+     "wall_spread": 0.049,
+     "rss_mb": 39.2
+    },
+    "control": {
+     "wall_median": 0.188,
+     "wall_spread": 0.018,
+     "rss_mb": 153.3
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.165,
+     "wall_spread": 0.026,
+     "rss_mb": 39.3
+    },
+    "control": {
+     "wall_median": 0.186,
+     "wall_spread": 0.065,
+     "rss_mb": 153.3
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.044,
+     "wall_spread": 0.077,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.044,
+     "wall_spread": 0.086,
+     "rss_mb": 35.5
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4197376,
+    "largest partition spilled (estimated)": 565880,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 75,
+    "spill bytes written": 2098543
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.204,
+     "wall_spread": 0.007,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.202,
+     "wall_spread": 0.107,
+     "rss_mb": 45.4
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "spill partitions": 8,
+    "joins": 4000000,
+    "result": 4000000,
+    "spill files": 16,
+    "spill bytes written": 2145365
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.638,
+     "wall_spread": 0.015,
+     "rss_mb": 39.4
+    },
+    "control": {
+     "wall_median": 0.62,
+     "wall_spread": 0.02,
+     "rss_mb": 39.4
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 394,
+    "spill bytes written": 10422982
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.912,
+     "wall_spread": 0.049,
+     "rss_mb": 41.4
+    },
+    "control": {
+     "wall_median": 0.767,
+     "wall_spread": 0.142,
+     "rss_mb": 166.4
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "4M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 4229480,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 394,
+    "spill bytes written": 10422982
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.899,
+     "wall_spread": 0.027,
+     "rss_mb": 41.4
+    },
+    "control": {
+     "wall_median": 0.743,
+     "wall_spread": 0.033,
+     "rss_mb": 172.7
+    }
+   }
+  },
+  {
+   "case": "scan-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 1,
+    "result": 1
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.045,
+     "wall_spread": 0.042,
+     "rss_mb": 35.5
+    },
+    "control": {
+     "wall_median": 0.045,
+     "wall_spread": 0.074,
+     "rss_mb": 35.4
+    }
+   }
+  },
+  {
+   "case": "agg-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "aggregate": 100,
+    "result": 100
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.064,
+     "wall_spread": 0.032,
+     "rss_mb": 45.4
+    },
+    "control": {
+     "wall_median": 0.071,
+     "wall_spread": 0.175,
+     "rss_mb": 45.3
+    }
+   }
+  },
+  {
+   "case": "join-only",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "result": 4000000
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.648,
+     "wall_spread": 0.016,
+     "rss_mb": 39.5
+    },
+    "control": {
+     "wall_median": 0.629,
+     "wall_spread": 0.012,
+     "rss_mb": 39.5
+    }
+   }
+  },
+  {
+   "case": "join-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 108,
+    "spill bytes written": 10419550
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.91,
+     "wall_spread": 0.023,
+     "rss_mb": 62.5
+    },
+    "control": {
+     "wall_median": 0.689,
+     "wall_spread": 0.03,
+     "rss_mb": 192.7
+    }
+   }
+  },
+  {
+   "case": "join-left-agg",
+   "rows": 1000000,
+   "fanout": 4,
+   "groups": 100,
+   "budget": "16M",
+   "intermediate_rows": 4000000,
+   "counters": {
+    "scan probe": 1000000,
+    "scan build": 400,
+    "joins": 4000000,
+    "spill partitions": 16,
+    "buffered bytes peak (estimated)": 16819560,
+    "largest partition spilled (estimated)": 3387356,
+    "aggregate": 100,
+    "result": 100,
+    "spill files": 108,
+    "spill bytes written": 10419550
+   },
+   "answers": [
+    "candidate answer ok",
+    "control answer ok",
+    "control same",
+    "duckdb same"
+   ],
+   "runs": {
+    "candidate": {
+     "wall_median": 0.911,
+     "wall_spread": 0.01,
+     "rss_mb": 61.4
+    },
+    "control": {
+     "wall_median": 0.69,
+     "wall_spread": 0.023,
+     "rss_mb": 193.2
+    }
+   }
+  }
+ ]
+}

@@ -14,6 +14,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   fixtures and checked by `harness/test_bench_join_agg.py`. The baseline it
   produced is `harness/baseline/2026-10-27-e6a-join-agg.json`; the measurement
   is verification §48. No engine behaviour changed.
+- `harness/baseline/2026-10-28-e6b-join-agg.json`: the same matrix after the
+  composition below, candidate against the released 0.5.1 control.
+
+### Changed
+
+- A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
+  batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
+  both `FROM` items are lazy base tables, the key lists are non-empty, and there
+  is no `ORDER BY`, window or `SELECT DISTINCT` above it. Peak RSS over the scan
+  stops following the joined rows: 39 MB from 1,000,000 to 4,000,000 of them,
+  against 51 to 191 MB before, and 41 to 67 MB under the 4M and 16M budgets
+  against 51 to 226 MB. Answers and the five `--analyze` row counters
+  (`scan <probe>`, `scan <build>`, `joins`, `aggregate`, `result`) are unchanged;
+  the spill lines now describe one phase, because these queries no longer run
+  `join_or_spill`. A budget the materialized build side does not fit keeps the
+  eager path, which can partition the join instead, and reuses the scan it
+  already has. A query that used to refuse under a budget because its join skewed
+  answers when it has this shape, since the fold needs no joined row set.
+  Measurement: verification §49. Every shape the contract excludes (a longer
+  chain, RIGHT, SEMI/ANTI, a keyless cross join, `ORDER BY`, `DISTINCT`, a
+  window) still runs the eager path.
 
 ## [0.5.1] - 2026-10-27
 
