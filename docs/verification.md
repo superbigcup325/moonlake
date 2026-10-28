@@ -4006,3 +4006,104 @@ a window function, a chain, RIGHT, SEMI/ANTI and a keyless cross join still
 keep the eager path. The record is the native CLI over CSV input at SF1, as §49
 was; wasm-gc, js and the packaged consumer are unchanged by this and still ride
 §46–48.
+## 51. A chain of joins above a fold (2026-10-28): E6b, one step further
+
+§49 composed one join step into the fold and §50 lifted `ORDER BY` above it.
+The shape that stayed out was the second step: a chain of three or more tables,
+which is what every other TPC-H join query in the corpus is. The mapping the
+contract expected to need turned out to be free. A step's probe layout is the
+previous step's output layout, which is exactly what `JoinCursor` hands out and
+what the collected path feeds it, so the chain is one cursor per step whose
+`next_left` is the previous cursor's `next`, and the fold's expressions stay
+bound to the last step's layout. The per-step order is the collected path's:
+step `i`'s probe filter trims what the step below produced, its build filter is
+applied at that table's scan, and the residual waits until after the last step.
+A linear chain of any length whose steps are all INNER, LEFT or FULL over lazy
+base tables now folds instead of collecting, and the row counters keep their
+order: `scan t0`, `scan t1..tn`, `joins`, `aggregate`, `result`.
+
+### The decision this needed
+
+The contract left one question open and the first measurement answered it
+against the naive version. Every step's build side is resident and indexed, so a
+chain holds one side per step at once, and the sum can weigh more than the
+joined rows the eager path would have held. With the composed path taken
+whenever the shape matched, TPC-H q3 at SF1 held 32 MB more than collecting it
+(352.7 against 384.5 MB in one exploratory round), while q11 held 63 MB less and
+q10 and q5 about 15 MB less each; a chain whose largest table is the last build
+side is the losing case, and `FROM` order decides that, not the shape.
+
+So a chain composes only under a budget its sides fit: with one, the peak is the
+bound the sides were checked against; without one, the resident sides and their
+index are the peak and there is nothing to compare them to. A single step still
+composes without a budget, because one resident side is a different order of
+magnitude from a sum of them. The check runs on the bytes of the scans before
+the layout copies exist, so a chain that keeps the eager path pays for no copy
+(the copies alone were 13 MB on q18) and the scans it read are handed to the
+eager path, which reuses them, so no table is read twice and the counters stay
+the eager ones.
+
+### What is measured
+
+`harness/bench_join_chain.py` runs the TPC-H queries that carry an aggregate
+over two or more join steps at SF1, candidate against the tree before the change
+(`aa63f7a`), three rounds interleaved, recorded in
+`harness/baseline/2026-10-28-chain-agg.json` (the candidate tree was `aa63f7a`
+plus this change, dirty at measurement time; quiet load 2.05, worst
+round-to-round spread 10%). Each query's output is compared byte for byte
+between the two binaries and no case disagreed.
+
+Peak RSS in MB, control against candidate, with wall seconds beside it:
+
+| query | shape | no budget | 16 MB budget | wall s, no budget / 16 MB |
+| --- | --- | --- | --- | --- |
+| q3 | three tables | 356.7 → 356.2 | 262.8 → 262.4 | 2.58 → 2.54 / 3.57 → 3.51 |
+| q5 | six tables | 650.3 → 650.8 | 445.2 → 444.3 | 3.24 → 3.04 / 4.91 → 4.94 |
+| q10 | four tables | 283.0 → 283.0 | 245.4 → 245.3 | 2.63 → 2.64 / 4.27 → 4.51 |
+| q11 | three tables | 99.1 → 94.7 | 99.4 → 25.4 | 0.41 → 0.42 / 0.70 → 0.40 |
+| q18 | three tables, `IN` | 470.4 → 467.3 | 227.4 → 227.3 | 4.95 → 4.90 / 6.02 → 5.81 |
+| q20 | five tables, `IN` | 258.0 → 258.1 | 98.9 → 99.4 | 2.85 → 2.85 / 2.90 → 3.06 |
+| q21 | four tables, `NOT EXISTS` | 608.3 → 604.1 | 666.7 → 666.6 | 7.86 → 8.15 / 13.65 → 13.89 |
+| q1 | one table (invariant) | 35.3 → 35.4 | 73.3 → 75.4 | 2.94 → 2.93 / 5.25 → 5.27 |
+| q12 | one step (invariant) | 35.3 → 35.2 | 39.3 → 35.4 | 2.83 → 2.89 / 2.88 → 2.91 |
+
+**One corpus chain fits a 16 MB budget, and it is the shape the rule was for.**
+q11 folds `partsupp ⋈ supplier ⋈ nation` from 99.4 MB to 25.4 MB, and it stops
+spilling altogether: the eager path partitions both joins and writes 13 run
+files (22.4 MB) where the composed path writes none, because its two build sides
+are `supplier` and `nation`. Its answer and all five counters are identical.
+
+**Every other case takes the same path as the control, and the record shows it
+in the spill trace rather than only in RSS.** At 16 MB q3, q5, q10, q18, q20 and
+q21 report the same spill file count and the same bytes written as the control,
+which is what "the shape composes only when its sides fit" has to look like from
+outside; their peaks move by the recorded spread. The two invariants move by it
+as well, which is why q1 and q12 are in the matrix: q1 composes one table and
+q12 one step in both binaries, and the 4 MB q12 shows at 16 MB is the spread
+(the same case read 35.5 against 35.5 in an earlier round of this record). q7,
+q8 and q9 keep a derived
+table, so their plan is not a chain of lazy tables at all and the composition
+never applies. Without a budget every chain is on the eager path, so the
+candidate and the control read the same tables and move inside the spread too.
+
+**The gates hold.** `moon test` is 382 tests green (the chain answers, counters,
+filters, a FULL step mid-chain, an ordered chain and the fit check are new), the
+33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` are
+unchanged by this.
+
+### What this does not say
+
+It does not make the composed chain cheap enough to take without a budget. The
+cost is the per-key id lists a bridge-shaped build side builds when it primes
+its hash map, and the exploratory round described above says what the gate
+would buy: about 60 MB on q11 and 15 MB each on q10 and q5, at 32 MB on q3.
+Making that trade even needs the index to be cheaper, which is a separate
+change.
+
+It does not reorder the plan: the chain is the `FROM` order, so a query whose
+largest table is the last build side still holds it whole. It does not
+pre-aggregate between steps. DISTINCT, a window, RIGHT, SEMI/ANTI, a keyless
+cross join and a `FROM` item that is not a lazy base table still keep the eager
+path, and a grouped result stays unbounded. The record is the native CLI over
+CSV input at SF1, as §49 and §50 were; wasm-gc, js and the packaged consumer are
+unchanged by this and still ride §46–48.

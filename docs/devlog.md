@@ -2363,3 +2363,39 @@ What is left is the shape list that has shrunk one item at a time: a second
 join step (q3, q5, q7, q8, q10, q11, q18, q21), DISTINCT, a window, a chain,
 RIGHT, SEMI/ANTI and a keyless cross join. The second join step is now the
 widest.
+
+### A chain of joins folds too, and the budget decides when (2026-10-28)
+
+The second join step was the widest shape left, and the mapping it was expected
+to need was already there. A step's probe layout is the previous step's output
+layout, which is what `JoinCursor` hands out and what the collected path feeds
+it, so the chain became one cursor per step whose `next_left` is the previous
+cursor's `next`, with the fold's expressions bound to the last step's layout and
+the per-step filter order copied from `exec_joins`. A linear chain of any length
+over lazy base tables, INNER, LEFT or FULL on every step, now folds its joined
+rows instead of collecting them.
+
+The measurement then decided the routing, and it said less than the design did.
+A chain holds one resident build side per step, so it needs one side's worth of
+memory more than a single step does: at SF1 q3 held 32 MB more than collecting
+the joined rows, because its chain builds on the two largest tables, and q11
+held 63 MB less, because its second step builds on `nation`. Net across the
+corpus that trade is positive, but it is not a promise, and the arc's promise is
+that a peak follows the budget. So a chain composes only under a budget its
+sides fit, and nothing else about it is conditional: the shape, the counters and
+the answers are the same either way.
+
+Under a 16 MB budget exactly one corpus chain fits, q11: 99 MB to 26 MB, and the
+13 run files the eager path writes are gone. Everything else reports the same
+spill file count and the same bytes as the binary from before the change, which
+is how "this shape is not claimed" should look from outside. The fit check now
+runs on the scans before the layout copies exist, because a chain that keeps the
+eager path should not pay for copies it will never use: measured on q18 that
+alone was 13 MB.
+
+What would lift the gate is a cheaper index over a build side. The per-key id
+lists that a bridge-shaped side allocates are the cost that makes a large build
+side a bad trade, and shrinking them would move the no-budget numbers without
+touching the fold. That is a separate change, and the roadmap's limits row now
+says a chain is composed when its sides fit a budget rather than claiming the
+shape outright.

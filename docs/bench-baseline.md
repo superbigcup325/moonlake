@@ -802,3 +802,31 @@ aggregate now costs what an unordered one costs; the collected 543 MB is the
 input. Under a 16 MB budget the candidate's peak is the budget plus the fold's
 buffer while the collected path still holds the input it read (558.7 MB). q3
 and q10 move inside the recorded spread, which is what an invariant should do.
+
+## A chain of joins above an aggregate (2026-10-28)
+
+`harness/bench_join_chain.py` at SF1, the tree of `aa63f7a` plus the change
+recorded in verification §51 against that tree's own binary, three rounds
+interleaved, quiet load 2.05, worst round-to-round spread 10%
+(`harness/baseline/2026-10-28-chain-agg.json`). Peak RSS in MB, control against
+candidate, with wall seconds beside it:
+
+| query | shape | no budget | 16 MB | wall s, no budget / 16 MB |
+| --- | --- | --- | --- | --- |
+| q3 | three tables | 356.7 → 356.2 | 262.8 → 262.4 | 2.58 → 2.54 / 3.57 → 3.51 |
+| q5 | six tables | 650.3 → 650.8 | 445.2 → 444.3 | 3.24 → 3.04 / 4.91 → 4.94 |
+| q10 | four tables | 283.0 → 283.0 | 245.4 → 245.3 | 2.63 → 2.64 / 4.27 → 4.51 |
+| q11 | three tables | 99.1 → 94.7 | 99.4 → 25.4 | 0.41 → 0.42 / 0.70 → 0.40 |
+| q18 | three tables, `IN` | 470.4 → 467.3 | 227.4 → 227.3 | 4.95 → 4.90 / 6.02 → 5.81 |
+| q20 | five tables, `IN` | 258.0 → 258.1 | 98.9 → 99.4 | 2.85 → 2.85 / 2.90 → 3.06 |
+| q21 | four tables, `NOT EXISTS` | 608.3 → 604.1 | 666.7 → 666.6 | 7.86 → 8.15 / 13.65 → 13.89 |
+| q1 | one table, invariant | 35.3 → 35.4 | 73.3 → 75.4 | 2.94 → 2.93 / 5.25 → 5.27 |
+| q12 | one step, invariant | 35.3 → 35.2 | 39.3 → 35.4 | 2.83 → 2.89 / 2.88 → 2.91 |
+
+The rule the numbers support is in §51: a chain holds one resident build side per
+step, so it composes only under a budget those sides fit. That is q11 and nothing
+else in the corpus at 16 MB, where it drops from 99.4 to 25.4 MB and stops
+spilling (13 run files, 22.4 MB before). Every other case reports the same spill
+trace as the control, and the 4 MB q12 shows at 16 MB is the recorded spread on a
+case that composes in both binaries. Without a budget every chain takes the eager
+path, so those rows are the control's own shape.

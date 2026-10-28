@@ -64,10 +64,10 @@ buffers replace the collected input (verification §45: 195 MB → 63 MB at
 8,000,000 rows, 100 groups and a 4M budget). Parquet-input controls show bounded
 retained input on native, wasm-gc and js. The CSV reader's own footprint grows
 on wasm-gc and js, and group state and the final grouped result remain unbounded.
-What still accumulates is listed per shape: a chain of three or more joins, a
-`RIGHT` or `SEMI`/`ANTI` join, a keyless cross join, `DISTINCT` or a window
-above a join, and a `FROM` item that is not a lazy base table (a derived table),
-plus set operations. A `GROUP BY` above a two-table keyed INNER/LEFT/FULL
+What still accumulates is listed per shape: a chain of three or more joins
+without a budget its sides fit, a `RIGHT` or `SEMI`/`ANTI` join, a keyless cross
+join, `DISTINCT` or a window above a join, and a `FROM` item that is not a lazy
+base table (a derived table), plus set operations. A `GROUP BY` above a two-table keyed INNER/LEFT/FULL
 join folds the join's batches instead, with or without an `ORDER BY`
 (verification §49, §50). `--memory` budgets the operators that honour it and is
 not a process RSS cap.
@@ -499,8 +499,12 @@ where it held 543 MB (q12: 113 → 35 MB). A second join step is what still keep
 the other TPC-H joins off the path.
 
 **A second join step: taken (§51).** It was the widest shape left, and the
-mapping it was expected to need turned out to be the cursor's own layout. The
-contract below records what it decided and what it left alone.
+mapping it was expected to need turned out to be the cursor's own layout. What
+the measurement then decided is the routing: a chain holds one resident build
+side per step, so it composes only under a budget those sides fit, and at SF1
+and 16 MB that is q11 alone (99 → 25 MB, no spill). Without a budget the eager
+path is kept, and §51 records what the ungated version measured on the same
+corpus. The contract below records the rest of what it decided.
 
 **The growing build side and group state.** Both stay resident whole, as they
 were before, and E6c measures them; the chain makes the first of them larger, one
@@ -534,6 +538,14 @@ path, which can partition each join instead. The scans this check already read
 are handed to that path for every table, so no table is read twice and the
 `scan` counters are the eager ones.
 
+**A chain composes only under a budget.** With one, the peak is the bound the
+sides fit into; without one, the resident sides and the index over each of them
+are the peak, and §51 measures what that costs when a step builds on a large
+table: on q3 the composed chain holds 32 MB more than collecting the joined rows
+does. So the shape waits for the bound that makes its promise true, and a chain
+without a budget keeps the eager path. A single step still composes without one,
+because one resident side is a different order of magnitude from a sum of them.
+
 **What it does not do.** It does not reorder the plan: the chain is the `FROM`
 order, so a query whose largest table is the last build side holds it whole. It
 does not pre-aggregate between steps. It changes neither the fold, nor the spill
@@ -553,7 +565,7 @@ refused:
 |---|---|---|
 | wasm-gc and js scans read the whole file | Browser sessions over large CSVs or archives | Their filesystem module has no ranged read, so the fix starts upstream. `moonbitlang/async` already reads at a position, but only on native targets; the synchronous filesystem being built in `moonbitlang/x` does not carry one yet, and a wasm-gc version needs the runtime to export it as well. The browser playground has no filesystem at all and would keep using in-memory input either way. |
 | Exact group state and the final grouped result are unbounded | Many groups, or one large DISTINCT/median/string state, even under a small `--memory` value | E5 bounds scan-input buffers, not exact state or output (verification §45). A separate design must choose exact spilling or a clear refusal, account for skew and define output consumption; approximate substitution requires an explicit query choice. |
-| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins, a RIGHT/SEMI/ANTI join, a cross join, and DISTINCT or a window above a join; a `GROUP BY` above a two-table keyed INNER/LEFT/FULL join folds the join's batches instead, with or without an `ORDER BY`, and a single-table ordered aggregate sorts its groups after the fold (verification §49, §50). SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
+| The executor is not streaming end to end | Unrestricted results and queries with blocking operators | A single-table scan streams its result through `stream`/`stream_with`, and the CLI prints through it, so an unrestricted `WHERE`/projection result no longer holds its rows (verification §31: `--json` over 16 columns and 2,000,000 rows, 1,090.6 MB → 35.2 MB of peak RSS). A single-table aggregate folds the scan's batches as they arrive, so it holds its state and one batch rather than its input (verification §32: 109.7 MB → 35.3 MB). An `ORDER BY` under a budget merges its runs into batches instead of materializing the sorted answer (§33: 506.8 MB → 178.8 MB), and a two-table join probes a batch at a time with only its build side resident (§34: 270.8 MB → 35.3 MB). What still retains its input: a chain of three or more joins without a budget its build sides fit, a RIGHT/SEMI/ANTI join, a cross join, and DISTINCT or a window above a join; a `GROUP BY` above a two-table keyed INNER/LEFT/FULL join folds the join's batches instead, with or without an `ORDER BY`, a chain of the same kinds folds one cursor per step when its sides fit a budget, and a single-table ordered aggregate sorts its groups after the fold (verification §49, §50, §51). SF1 measured 159 MB for one projected column and 3.1 GB for all sixteen before any of this; §34 re-measures the join on a 16-column probe. See verification §25 for the eager measurements and §27 for the LIMIT comparison. |
 | Reading is limited to flat schemas, v1 data pages, `INT32`/`INT64`/float/`STRING`/`DATE`/boolean, and the page encodings listed in the README; `DECIMAL`, `TIMESTAMP`, `INT96`, nested fields, v2 pages and the remaining codecs are refused with a pointed error | Producers that write those types | Each type or encoding needs the whole chain designed together: SQL type, CSV inference, Parquet read/write, spill format and JSON output. Starting with one of them alone tends to produce a value that is wrong somewhere later. |
 | A non-equality correlation is answered by a nested loop | A correlated subquery whose predicate is not an equality over a large inner table | Keyless semi/anti joins test candidate inner rows; a scalar theta aggregate tests distinct outer combinations against inner rows. A range-aware or index-backed join needs a data layout that can answer the predicate without a scan. Start that optimization when a real query shows the cost. Verification §28 records the supported shapes and §30 the gate that now preserves their answers; §34 lists the join shapes that stay eager, and a semi/anti join is one of them (it is decorrelated into a scan first). |
 | Spill reclamation declines to judge a directory it cannot prove is dead | A `--spill-dir` shared between containers, or a platform without `/proc` | Deliberate: a pid is only meaningful inside its own PID namespace, so the safe answer is to keep the directory and report it. Point each container at its own `--spill-dir`. |

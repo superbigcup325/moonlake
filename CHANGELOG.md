@@ -21,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the TPC-H queries that carry an `ORDER BY` over an aggregate, the ordered
   one-table and one-join shapes against a control binary, with the two-join
   shapes kept in the matrix as invariants. The measurement is verification §50.
+- `harness/bench_join_chain.py` and its baseline
+  `harness/baseline/2026-10-28-chain-agg.json`: peak RSS and wall time for the
+  TPC-H queries that carry an aggregate over two or more join steps, the
+  candidate against the binary before the change, with the single-step
+  compositions kept in the matrix as invariants. The measurement is
+  verification §51.
 
 ### Changed
 
@@ -50,6 +56,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   budget) and q12 from 113 to 35 MB, with answers byte-identical to the previous
   binary; q3 and q10 keep a second join step and are unchanged. Measurement:
   verification §50.
+- An aggregate over a chain of join steps (three or more lazy base tables,
+  INNER, LEFT or FULL on every step, with no `DISTINCT` or window above it) is
+  folded as the rows arrive instead of collecting the chain's output, one
+  hash-probing cursor per step, each fed by the previous step's batches. It
+  composes only under a budget its build sides fit, because a chain holds one
+  resident build side per step: with a 16 MB budget TPC-H q11 drops from 99 to
+  25 MB of peak RSS, stops partitioning and writes no spill file at all
+  (13 files, 22.4 MB before), and answers are byte-identical with the same
+  `--analyze` counters in the same order. Without a budget the eager path is
+  kept: measured on the same corpus, the ungated chain held 32 MB more than
+  the eager path on q3 and 60 MB less on q11, so the shape waits for the bound
+  that makes its promise true. A single-step composition still composes with or
+  without a budget. Measurement: verification §51.
 
 ## [0.5.1] - 2026-10-27
 
