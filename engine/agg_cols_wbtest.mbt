@@ -40,7 +40,11 @@ test "the column-wise fold takes one integer key over sums and counts only" {
   assert_true(col_agg_plan([@types.Int32], aggs) is Some(_))
   assert_true(col_agg_plan([@types.Int64], aggs) is Some(_))
   assert_true(col_agg_plan([@types.Str], aggs) is None)
-  assert_true(col_agg_plan([@types.Int32, @types.Int32], aggs) is None)
+  assert_true(col_agg_plan([@types.Int32, @types.Int32], aggs) is Some(_))
+  assert_true(col_agg_plan([@types.Int32, @types.Int64], aggs) is None)
+  assert_true(
+    col_agg_plan([@types.Int32, @types.Int32, @types.Int32], aggs) is None,
+  )
   let max = cols_spec(
     Max,
     Some(PhysExpr::ColRef(2, @types.Int32)),
@@ -161,4 +165,94 @@ test "the column-wise fold of an empty input has no groups" {
   )
   assert_eq(out.row_count(), 0)
   assert_eq(out.columns().length(), 5)
+}
+
+///|
+test "the column-wise fold of two Int32 keys answers as the general fold does" {
+  let aggs = cols_specs()
+  let general = aggs.copy()
+  general.push(
+    cols_spec(Max, Some(PhysExpr::ColRef(2, @types.Int32)), @types.Int32),
+  )
+  let keys = [
+    PhysExpr::ColRef(1, @types.Int32),
+    PhysExpr::ColRef(2, @types.Int32),
+  ]
+  let types : Array[@types.DataType] = [
+    @types.DataType::Int32,
+    @types.DataType::Int32,
+  ]
+  let fast = aggregate(agg_batches(), keys, types, aggs) catch {
+    e => abort("aggregate failed: \{e}")
+  }
+  let slow = aggregate(agg_batches(), keys, types, general) catch {
+    e => abort("aggregate failed: \{e}")
+  }
+  assert_eq(fast.row_count(), slow.row_count())
+  assert_true(fast.row_count() > 3)
+  for c in 0..<6 {
+    for r in 0..<fast.row_count() {
+      assert_eq(
+        fast.columns()[c].get(r).to_string(),
+        slow.columns()[c].get(r).to_string(),
+      )
+    }
+  }
+}
+
+///|
+test "the column-wise fold of two Int32 keys keeps signs and NULL patterns apart" {
+  let a = @types.ColumnVector::make(@types.Int32, 7)
+  let b = @types.ColumnVector::make(@types.Int32, 7)
+  let av : Array[@types.Scalar] = [
+    @types.Int32(-1),
+    @types.Int32(1),
+    @types.Int32(-1),
+    @types.Int32(0),
+    @types.Null,
+    @types.Int32(1),
+    @types.Null,
+  ]
+  let bv : Array[@types.Scalar] = [
+    @types.Int32(1),
+    @types.Int32(-1),
+    @types.Int32(1),
+    @types.Int32(0),
+    @types.Int32(1),
+    @types.Null,
+    @types.Int32(1),
+  ]
+  for i in 0..<7 {
+    a.set(i, av[i])
+    b.set(i, bv[i])
+  }
+  let batch = @types.DataBatch::new([a, b], 7)
+  let spec = cols_spec(CountStar, None, @types.Int64)
+  let out = aggregate(
+    [batch],
+    [PhysExpr::ColRef(0, @types.Int32), PhysExpr::ColRef(1, @types.Int32)],
+    [@types.Int32, @types.Int32],
+    [spec],
+  ) catch {
+    e => abort("aggregate failed: \{e}")
+  }
+  // (-1,1) x2, (1,-1), (0,0), (NULL,1) x2, (1,NULL), in first-seen order
+  assert_eq(out.row_count(), 5)
+  let counts = [2L, 1L, 1L, 2L, 1L]
+  for r in 0..<5 {
+    assert_eq(
+      out.columns()[2].get(r).to_string(),
+      @types.Scalar::Int64(counts[r]).to_string(),
+    )
+  }
+  assert_true(out.columns()[0].get(3) is @types.Null)
+  assert_true(out.columns()[1].get(4) is @types.Null)
+  assert_eq(
+    out.columns()[0].get(0).to_string(),
+    @types.Scalar::Int32(-1).to_string(),
+  )
+  assert_eq(
+    out.columns()[1].get(1).to_string(),
+    @types.Scalar::Int32(-1).to_string(),
+  )
 }
