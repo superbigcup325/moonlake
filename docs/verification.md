@@ -4946,3 +4946,88 @@ output arriving as the probe input (174.5 MB), which is the eager path
 materializing a chain's intermediates. Lowering that means composing q21's chain
 rather than passing its rows through a materialized array, and that is a
 different contract.
+
+## 67. A field ends at a word's edge, and a batch is 1024 rows (2026-10-30)
+
+Every round before this one measured memory. Wall time had not been looked at
+since the CSV reader landed, and a TPC-H query at SF1 spends most of its time
+there: `SELECT count(*)` over lineitem — index the file, decode nothing — took
+4.3 s against a directory the page cache serves at 4.8 GB/s, so ~180 MB/s of the
+engine's own work sat between the file and the count. Three things were in that
+gap, and the census could not see any of them because none of them allocates
+anything of size.
+
+**A field's end, eight bytes at a time.** An unquoted field body ends at the first
+`,` or newline, and the scan walked to it one byte per iteration: 773 MB of
+per-byte `if`s, the largest single cost of a scan. It now reads a word, xors with
+each separator, uses the borrow trick for a zero byte, and takes the lowest set
+bit of the mask. A byte *above* a match can show a high bit too — a 0x01 byte
+whose borrow came out of a lower zero byte — which is harmless here because the
+caller wants the first delimiter and the lowest set bit is always a real one.
+That is the only subtle step in the change and it is why the helper carries a
+comment rather than a name.
+
+**A quoted cell is remembered, not flagged.** The index wrote a quoted/unquoted
+flag per cell so that a rare quoted field could be found again: 96M writes on
+lineitem to answer a question the TPC-H fixtures always answer "no". The scan now
+records only the cells that were quoted, ascending, and a lookup is a binary
+search over that list — zero entries for these files, a handful for the reader's
+own quoted fixtures. The cell-emptiness test asks the width first (`e - s == 2`)
+so the search only runs for two-byte cells.
+
+**A batch is 1024 rows.** `SCAN_BATCH_ROWS` was 4096. The sweep below says the
+knob is a cache question, not a call-overhead question.
+
+| rows | `count(*)` | q21 | q9 | q1 |
+| --- | --- | --- | --- | --- |
+| 16384 | +35.2% | +24.5% | +19.0% | |
+| 2048 | −23.0% | −14.2% | | |
+| 1024 | −24.6% | −17.5% | | −7.0% |
+| 512 | −26.2% | −17.0% | −17.3% | |
+
+16384 is the direction to remember: bigger batches made every query a fifth
+slower, because a batch's columns stop fitting in cache while the engine walks
+them. 1024 and 512 sit within noise of each other and 1024 keeps half the
+per-batch work, so 1024 is the setting landed.
+
+**Numbers.** The bench harness, control `b3d3ae0` against this build, both on SF1
+with no budget and three rounds, interleaved:
+
+| case | wall `b3d3ae0` | wall this build | | peak RSS |
+| --- | --- | --- | --- | --- |
+| q1 | 9.64 s | 8.31 s | −13.8% | 35.2 → 29.2 MB |
+| q7 | 8.15 s | 7.02 s | −13.9% | 325.9 → 325.7 MB |
+| q9 | 9.41 s | 7.78 s | −17.3% | 652.3 → 670.7 MB |
+| q21 | 19.58 s | 16.68 s | −14.8% | 501.2 → 492.1 MB |
+
+The host was not quiet — the harness waited for load under 2.5, timed out at 3.13
+and said so — so the absolutes are inflated roughly 2.7x and only the ratios are
+read: every case is interleaved, so the load lands on both builds. Peak RSS did
+not move for two of the four and moved 18 MB either way for the others, inside the
+6% spread across rounds; this round is not about memory. What the smaller batch
+does to the census numbers has not been measured, and it is the first thing to
+re-baseline, because `--mem` names batches and there are now four times as many of
+them.
+
+**Gates.** Both scan changes were checked separately: 33 golden comparisons each
+(22 TPC-H + the parquet variant + the reader's encoding and multi-row-group
+fixtures, plus the external-sort / grace-join / grace-aggregation equivalence
+checks), `moon test` 408/408 — including the quoted-field, quoted-newline and
+encoding-variant tests, which is what the sparse list had to keep true — and after
+the batch change `harness/check_cli.sh` and `harness/spill_accept.sh`, the latter
+being the one that could have broken: 1024-row batches mean four times as many
+spill files. Two tests pinned 4096 rows a batch; they now derive their numbers
+from the constant, so it can move again without a test edit.
+
+**What is left.** The index still writes two offsets per cell (start and end),
+which is 768 MB of writes for lineitem; one of them is derivable from the other
+when a chunk has no CRLF and would have to fall back for one that does.
+Pre-sizing those arrays from the previous chunk's cell count instead of letting
+them double was measured and is 2.8-5.5% *slower*: a 4 MB array made eagerly per
+chunk costs more than the doubling chain it saves, so the allocator's growth is
+cheaper than the arithmetic suggests.
+`check_width` still makes a second pass over the rows to verify their cell
+counts against the header — one subtraction a row, so a cheap pass the clock
+probably cannot see — which the scan could count as it goes. And q21 scans lineitem three times — the outer
+chain plus the two decorrelated `EXISTS`/`NOT EXISTS` sides — which is a planner
+question worth about as much as everything in this round.

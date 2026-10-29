@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Scans are about 15% faster on TPC-H at SF1, from three changes in the CSV
+  reader's inner loops: a field's end is found a word at a time instead of a byte
+  at a time, a quoted cell is remembered in a list instead of a flag written per
+  cell (96M writes on lineitem saved for a question these files always answer
+  "no"), and a batch holds 1024 rows instead of 4096. Without a budget the bench
+  harness reports q1 9.64 -> 8.31 s, q7 8.15 -> 7.02 s, q9 9.41 -> 7.78 s and q21
+  19.58 -> 16.68 s, with peak RSS unchanged within the spread. `SCAN_BATCH_ROWS`
+  is a public constant and it changed value: 16384-row batches proved ~20% slower,
+  so the knob is a cache question rather than a call-overhead one. Verification
+  §67.
 - A chain of joins lets go of a table as soon as its last step has run, instead of
   holding every collected table until the query ends. On q21 at SF1 without a
   budget the process high-water fell from 551.2 MB to 491.2 MB (median of three
