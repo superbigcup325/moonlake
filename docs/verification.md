@@ -4532,3 +4532,91 @@ later maximum. This measurement cannot tell these apart, and no counter inside
 the engine reads the live bytes by structure. Until one exists the inner side of
 q21 is a measured quantity (about 603 MB without a budget) with an unexplained
 composition, and the next step is that counter, not another lever.
+
+## 61. The structure census names q21's peak (2026-10-29)
+
+This is the measurement §60 asked for instead of another lever. The contract
+("The structure census contract", roadmap) was written first and committed
+alone: it fixes what a checkpoint counts, what it refuses to count, where it
+reports, and what the number may be compared against. `moonlake exec --mem` runs
+a query with the census on and prints one block per declared label, largest
+first, each block listing the structures alive at that point, largest first.
+Without the flag no census is built.
+
+**How it counts.** At a checkpoint the executor sums structures it can point
+at, sized from the structures themselves with the budget's own estimate
+(`estimate_batch_bytes`) plus its own for index arrays and map entries:
+collected scan batches per table, a step's probe input and filtered build scan,
+the concatenated copy a build or output makes, the dense/starts/ids arrays of an
+index and an estimate for its hashed slots. It is not an allocator hook:
+strings, boxing, freed-but-unreturned heap and a source's decoder buffers are
+outside it, so its total is a lower bound on RSS rather than a decomposition of
+it.
+
+**q21 at SF1, no budget.** Native release build, SF1 CSVs, six interleaved
+plain/census rounds: plain peak RSS 602.1–614.6 MB (median 609.7), `--mem`
+605.6–620.2 MB, wall 6.95–7.05 s plain and 7.14–7.41 s measured, answers
+identical. The largest census point:
+
+```
+-- resident by structure (largest point of each of 9 labels, 9 points seen)
+# hash join collapsed its output (step 2): 521664603 bytes
+probe input: 174491660
+collected FROM tables: 145969437
+collected output: 100613349
+collapsed output: 100590157
+```
+
+and the collected tables inside it, by table:
+
+| table | bytes |
+| --- | --- |
+| lineitem | 60739648 |
+| __semi0 | 48009744 |
+| __semi1 | 30346392 |
+| orders | 6573525 |
+| supplier | 300084 |
+| nation | 44 |
+
+The other blocks, largest first: step 1's collapse 495.3 MB (the same tables,
+174.5 collected and 174.5 collapsed); step 2 collecting 451.0 MB (probe input
+174.5, tables 146.0, output 100.6, index map 17.5, build copy 6.6, index arrays
+5.8); step 1 collecting 396.7 MB (output 174.5, tables 146.0, build copy 60.7,
+index arrays 15.3); the semi side of step 4 at 307.4 MB (tables 146.0, index
+54.0, filtered build scan 48.0, inner copy 48.0, two probe copies of 5.7) and of
+step 5 at 263.5 MB (tables 146.0, index 44.7, build scan 30.3, inner copy 30.3,
+two probe copies of 6.1); step 3's collapse 257.9 MB and collection 252.3 MB.
+
+**What it says.** The peak is not on the semi/anti side. It is the second chain
+step's collapse: the collected join output and the single batch it becomes are
+live together (2 × 100.6 MB), on top of that step's probe input (174.5 MB, which
+is step 1's whole output) and the collected FROM tables (146.0 MB). The semi
+sides §58 probed peak at 307.4 and 263.5 MB, below the chain's 521.7 MB. The two
+copies §58 inferred do exist, but at the outer branch's output collapse, not at
+the inner side's collection; §60's releasing collection was aimed at the wrong
+copy. That is an attribution, not a lever: the census exists to name the
+composition, and any change to it needs its own contract and measurement.
+
+**The gap.** The largest point names 521.7 MB of a roughly 610 MB peak: about
+88 MB, 15%, is outside the contract — source decoder buffers, allocations it
+does not name, and freed memory not yet returned to the process. The contract
+says that gap is reportable, and this is it.
+
+**Scope, honestly.** A budgeted run reaches the grace path, which the contract
+does not instrument: q21 at 16 MB reports one block (the tables, 146.0 MB) while
+peaking at 678.1 MB. A pulled shape reaches no checkpoint at all: q18 prints
+nothing at 145.2 MB, and q20's only eager step (supplier × nation) names 0.5 MB
+against 99.3 MB of RSS. Those are the contract's declared limits, not failures.
+
+**The counter must not perturb.** The first version of the collapse checkpoint
+named the index and the build copy, which are already released when the
+concatenation runs; merely referencing them kept the cursor alive across the
+copy, and the census run's peak rose to 639 MB, against 610 MB for a build with
+the observe code deleted. The checkpoint now names only what is alive there, and
+the paired runs above sit inside the plain run's spread. This is recorded because
+a counter that changes the thing it measures is worse than none.
+
+**Gates.** `moon test` 404 on wasm-gc and 417 on native; `check_all.sh` all 33
+goldens on the native release binary; `check_cli.sh` (which now pins `--mem`: the
+header, the tables block, a pulled shape printing nothing) and
+`spill_accept.sh` pass. Nothing is measured unless the flag is given.

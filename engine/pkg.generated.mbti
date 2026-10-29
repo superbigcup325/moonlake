@@ -19,6 +19,8 @@ pub fn explain_analyze(String, @catalog.Catalog) -> String raise @types.SqlError
 
 pub fn explain_analyze_with(String, @catalog.Catalog, ExecOptions) -> String raise @types.SqlError
 
+pub fn mem_report_with(String, @catalog.Catalog, ExecOptions) -> String raise @types.SqlError
+
 pub fn run_select(String, @catalog.Catalog) -> SelectResult raise @types.SqlError
 
 pub fn run_select_opts(String, @catalog.Catalog, ExecOptions) -> SelectResult raise @types.SqlError
