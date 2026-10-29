@@ -56,6 +56,8 @@ fn usage() -> String {
     #|      --date-col <c>        declare a Parquet column as DATE (epoch-day)
     #|      --explain             print the physical plan instead of running
     #|      --analyze             run it: plan plus actual rows per stage
+    #|      --mem                 run it and print held bytes by structure, one
+    #|                            block per census point (contract: ROADMAP)
     #|      --json                emit the result as one JSON array line
     #|      --memory <n>[K|M|G]   budget for the blocking ORDER BY; beyond
     #|                            it runs spill to disk (external sort).

@@ -302,6 +302,7 @@ fn exec_command(args : Array[String]) -> Unit raise {
   let date_cols : Array[String] = []
   let mut explain = false
   let mut analyze = false
+  let mut mem = false
   let mut json = false
   let mut sql_file : String? = None
   let mut memory : Int32 = 0
@@ -324,6 +325,9 @@ fn exec_command(args : Array[String]) -> Unit raise {
       i += 1
     } else if args[i] == "--analyze" {
       analyze = true
+      i += 1
+    } else if args[i] == "--mem" {
+      mem = true
       i += 1
     } else if args[i] == "--json" {
       json = true
@@ -367,6 +371,13 @@ fn exec_command(args : Array[String]) -> Unit raise {
     None => args[i]
   }
   let cat = register_inputs(groups, date_cols)
+  if mem {
+    let rendered = mem_query(sql, cat, memory, spill_dir) catch {
+      err => raise cli_fail(err.to_string())
+    }
+    println(rendered)
+    return
+  }
   if explain || analyze {
     let rendered = if analyze {
       analyze_query(sql, cat, memory, spill_dir) catch {
@@ -480,6 +491,24 @@ fn analyze_query(
   }
   with_spill_run(spill_dir, memory, opts => {
     @engine.explain_analyze_with(sql, cat, opts)
+  })
+}
+
+///|
+/// A structure census under the same memory options a real run would use: a
+/// budgeted census has to see the same store and budget as the query it stands
+/// in for, or it would measure a different plan.
+fn mem_query(
+  sql : String,
+  cat : @catalog.Catalog,
+  memory : Int32,
+  spill_dir : String?,
+) -> String raise @types.SqlError {
+  if memory <= 0 {
+    return @engine.mem_report_with(sql, cat, @engine.ExecOptions::in_memory())
+  }
+  with_spill_run(spill_dir, memory, opts => {
+    @engine.mem_report_with(sql, cat, opts)
   })
 }
 

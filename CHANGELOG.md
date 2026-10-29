@@ -28,6 +28,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   candidate against the binary before the change, with the single-step
   compositions kept in the matrix as invariants. The measurements are
   verification §51 and §52.
+- `exec --mem`: a structure census that runs a query with the census on and
+  prints one block per checkpoint label — the collected tables, a join step's
+  collecting and collapsing output, a semi/anti join's inner copy and index —
+  each sized from the structures themselves, with the contract in
+  `docs/ROADMAP.md` and the q21 measurement in verification §61. Off unless the
+  flag is given; answers and counters are the plain run's.
 
 ### Changed
 

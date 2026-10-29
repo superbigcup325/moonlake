@@ -101,4 +101,24 @@ set -e
 grep -q "cannot parse" "$work/pe" || fail "the scan error is not on stderr"
 grep -q "PanicError" "$work/pe" && fail "the failure printed a panic trace"
 
+# --mem runs the query with the structure census on and prints its blocks
+# instead of rows; the plain run over the same file still answers. The census
+# is off unless asked for, and a pulled shape reaches no declared point, so it
+# prints nothing rather than an empty header.
+echo "== --mem prints the census, and only with the flag"
+printf 'k,w\n1,10\n2,20\n' > "$work/m.csv"
+sql="SELECT count(*) AS c FROM m a WHERE EXISTS (SELECT 1 FROM m b WHERE b.k = a.k)"
+plain=$("$BIN" exec --csv "$work/m.csv" "$sql")
+[ "$plain" = "c
+2" ] || fail "plain run answered '$plain'"
+mem=$("$BIN" exec --csv "$work/m.csv" --mem "$sql")
+case $mem in
+  "-- resident by structure"*) ;;
+  *) fail "--mem printed no census header: $mem" ;;
+esac
+printf '%s\n' "$mem" | grep -q '^# collected FROM tables: ' || fail "no tables block"
+printf '%s\n' "$mem" | grep -q '^scan m: ' || fail "no scan entry"
+out=$("$BIN" exec --csv "$work/m.csv" --mem "SELECT sum(w) AS s FROM m")
+[ -z "$out" ] || fail "a pulled shape printed a census: $out"
+
 echo "cli checks pass"

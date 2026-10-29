@@ -17,6 +17,7 @@ priv struct Correlator {
   mut sub_items : Array[@sql.FromItem] // the inner query's FROM, per attempt
   mut counter : Int32
   opts : ExecOptions
+  census : MemCensus? // a profiling run sees the inner sides too
 }
 
 ///|
@@ -71,6 +72,7 @@ fn decorrelate(
   sel : @sql.Select,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
+  census~ : MemCensus? = None,
 ) -> (@sql.Select, Array[@catalog.TableSchema], Array[Array[@types.DataBatch]]) raise @types.SqlError {
   let extra_schemas : Array[@catalog.TableSchema] = []
   let extra_batches : Array[Array[@types.DataBatch]] = []
@@ -80,6 +82,7 @@ fn decorrelate(
     sub_items: [],
     counter: 0,
     opts,
+    census,
   }
   // select items are walked even without a WHERE clause: correlated
   // scalar subqueries live there too
@@ -489,7 +492,13 @@ fn Correlator::try_exists_grouped(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
+  let inner = run_parsed(
+    inner_sel,
+    self.catalog,
+    [],
+    self.opts,
+    census=self.census,
+  )
   let name = "__semi\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -694,7 +703,13 @@ fn Correlator::build_scalar_table(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
+  let inner = run_parsed(
+    inner_sel,
+    self.catalog,
+    [],
+    self.opts,
+    census=self.census,
+  )
   let name = "__scalar\{self.counter}"
   self.counter = self.counter + 1
   let columns : Array[@catalog.Column] = []
@@ -869,7 +884,7 @@ fn Correlator::build_theta_table(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(eager, self.catalog, [], self.opts)
+  let inner = run_parsed(eager, self.catalog, [], self.opts, census=self.census)
   if inner.types().length() != 1 + values.length() {
     return None // no schema to attach: leave the subquery to the runner
   }
@@ -1495,7 +1510,13 @@ fn Correlator::finish_semi(
     windows: [],
     setop: None,
   }
-  let inner = run_parsed(inner_sel, self.catalog, [], self.opts)
+  let inner = run_parsed(
+    inner_sel,
+    self.catalog,
+    [],
+    self.opts,
+    census=self.census,
+  )
   // NOT IN poison: a NULL in an inner key column makes every comparison
   // against it unknown, so an outer row whose set holds that NULL cannot pass
   // — but which rows those are depends on what narrows the set per outer row.

@@ -15,10 +15,23 @@ fn exec_joins(
   opts : ExecOptions,
   stats : Array[(String, Int64)],
   prescanned : Array[Bool],
+  census~ : MemCensus? = None,
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   if steps.length() == 0 {
     let cols : Array[@types.ColumnVector] = []
     return filter_batches([@types.DataBatch::new(cols, 1)], deferred)
+  }
+  // Every collected table stays live for the whole chain, so a census point in
+  // a step names them once and whatever that step copies on top (§61).
+  let base : Int64 = match census {
+    Some(_) => {
+      let mut total = 0L
+      for t in tables {
+        total += batches_bytes(t).to_int64()
+      }
+      total
+    }
+    None => 0L
   }
   let mut acc = tables[steps[0].table]
   for i, step in steps {
@@ -33,7 +46,34 @@ fn exec_joins(
       } else {
         filter_batches(tables[step.table], step.build_filter)
       }
-      acc = [join_or_spill(acc, right, step, opts, stats)]
+      match census {
+        Some(c) => {
+          // the roots this step stands on: the tables always, the probe input
+          // once it is a step's own output, the filtered build scan if the
+          // eager path just made one (a prescanned table is already counted)
+          let extra : Array[(String, Int64)] = [("collected FROM tables", base)]
+          extra.push(("probe input", batches_bytes(acc).to_int64()))
+          // a scan the eager path did not pre-filter, and a predicate to apply,
+          // means `right` is a fresh compacted copy; without the predicate
+          // `filter_batches` hands the table's own batches back, already counted
+          if !prescanned[step.table] && step.build_filter is Some(_) {
+            extra.push(("filtered build scan", batches_bytes(right).to_int64()))
+          }
+          acc = [
+            join_or_spill(
+              acc,
+              right,
+              step,
+              opts,
+              stats,
+              census=Some(c),
+              extra~,
+              tag="step \{i}",
+            ),
+          ]
+        }
+        None => acc = [join_or_spill(acc, right, step, opts, stats)]
+      }
     }
   }
   filter_batches(acc, deferred)
@@ -49,13 +89,16 @@ fn join_or_spill(
   step : JoinStep,
   opts : ExecOptions,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
+  extra~ : Array[(String, Int64)] = [],
+  tag~ : String = "",
 ) -> @types.DataBatch raise @types.SqlError {
   if opts.budget <= 0 {
-    return join_step(acc, right, step)
+    return join_step(acc, right, step, census~, extra~, tag~)
   }
   let total = batches_bytes(acc) + batches_bytes(right)
   if total <= opts.budget {
-    return join_step(acc, right, step)
+    return join_step(acc, right, step, census~, extra~, tag~)
   }
   match opts.spill {
     Some(store) => {
@@ -99,12 +142,15 @@ fn join_step(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,
+  census~ : MemCensus? = None,
+  extra~ : Array[(String, Int64)] = [],
+  tag~ : String = "",
 ) -> @types.DataBatch raise @types.SqlError {
   if step.kind is Right {
     return join_swapped(acc, right, step)
   }
   if step.kind is Semi || step.kind is Anti || step.kind is AntiLoose {
-    return join_semi(acc, right, step)
+    return join_semi(acc, right, step, census~, extra~, tag~)
   }
   let build = concat_batches(
     right,
@@ -123,7 +169,41 @@ fn join_step(
     }
   }
   let cursor = JoinCursor::open(step, build, next_left)
-  concat_batches(drain_join(cursor), step.out_dtypes)
+  let out = drain_join(cursor)
+  match census {
+    Some(c) => {
+      // the point where the step's own copies and its index are all live: the
+      // collected FROM tables, the probe input, this step's build scan (when
+      // the eager path made one), its concatenated copy, the index and the
+      // output batches not yet collapsed into one
+      let entries = extra.copy()
+      entries.push(("build copy", estimate_batch_bytes(build).to_int64()))
+      entries.push(("index arrays", cursor.int_index.bytes()))
+      entries.push(("index map (estimate)", cursor.int_index.map_bytes()))
+      entries.push(("index keys (estimate)", str_map_bytes(cursor.str_map)))
+      entries.push(("join output", batches_bytes(out).to_int64()))
+      c.observe("hash join collected its output (\{tag})", entries)
+    }
+    None => ()
+  }
+  let result = concat_batches(out, step.out_dtypes)
+  match census {
+    Some(c) => {
+      // the collapse: the collected output and the single batch it becomes are
+      // live together until the collected one lets go. Only what is still alive
+      // here is named: the cursor (and with it the index and the build copy) was
+      // released before the concatenation started, and naming it would both
+      // overstate the point and keep it alive for the census run alone.
+      let entries = extra.copy()
+      entries.push(("collected output", batches_bytes(out).to_int64()))
+      entries.push(
+        ("collapsed output", estimate_batch_bytes(result).to_int64()),
+      )
+      c.observe("hash join collapsed its output (\{tag})", entries)
+    }
+    None => ()
+  }
+  result
 }
 
 ///|
@@ -266,6 +346,34 @@ fn IntKeyIndex::build(
     }
   }
   { lo, dense, slots, starts, ids, }
+}
+
+///|
+/// The bytes the index's arrays own: the dense slot table, the per-slot starts
+/// and the row-id range, four bytes a cell each. The hashed slot table is a map
+/// and is estimated separately, so a report never mixes a sum with an estimate.
+fn IntKeyIndex::bytes(self : IntKeyIndex) -> Int64 {
+  4L * self.dense.length().to_int64() +
+  4L * self.starts.length().to_int64() +
+  4L * self.ids.length().to_int64()
+}
+
+///|
+/// The hashed slot table at twenty-four bytes an entry: an estimate, and named
+/// as one wherever it is reported.
+fn IntKeyIndex::map_bytes(self : IntKeyIndex) -> Int64 {
+  self.slots.length().to_int64() * 24L
+}
+
+///|
+/// The string half of a join index: each canonical key's id array plus the key
+/// string and an entry, at twenty-four bytes a key: an estimate, named as one.
+fn str_map_bytes(m : Map[String, Array[Int32]]) -> Int64 {
+  let mut total = 0L
+  m.each(fn(k, ids) {
+    total += 24L + k.length().to_int64() + 4L * ids.length().to_int64()
+  })
+  total
 }
 
 ///|
@@ -1169,6 +1277,9 @@ fn join_semi(
   acc : Array[@types.DataBatch],
   inner : Array[@types.DataBatch],
   step : JoinStep,
+  census~ : MemCensus? = None,
+  extra~ : Array[(String, Int64)] = [],
+  tag~ : String = "",
 ) -> @types.DataBatch raise @types.SqlError {
   let anti = step.kind is Anti || step.kind is AntiLoose
   let null_key_excludes = step.kind is Anti
@@ -1222,6 +1333,20 @@ fn join_semi(
   let left_keys : Array[@types.ColumnVector] = []
   for e in step.keys_l {
     left_keys.push(eval_vec(e, left))
+  }
+  match census {
+    Some(c) => {
+      // the inner side's own copy and index next to the probe copy: this is
+      // the point §58 could only estimate, before the answer rows are filtered
+      let entries = extra.copy()
+      entries.push(("inner copy", estimate_batch_bytes(inner_batch).to_int64()))
+      entries.push(("index arrays", int_index.bytes()))
+      entries.push(("index map (estimate)", int_index.map_bytes()))
+      entries.push(("index keys (estimate)", str_map_bytes(str_map)))
+      entries.push(("probe copy", estimate_batch_bytes(left).to_int64()))
+      c.observe("semi/anti join's inner side (\{tag})", entries)
+    }
+    None => ()
   }
   let left_ids : Array[Int32] = []
   for r in 0..<n_left {

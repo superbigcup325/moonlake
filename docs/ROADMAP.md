@@ -713,11 +713,18 @@ so far is an inference.
 
 **What the counter is.** A per-query census, enabled only by a profiling run. At
 declared points the executor records the byte size of the structures that are
-alive at that point, sized from the structures themselves, and keeps the point
-with the largest total. It is not an allocator hook and not a GC counter: the
+alive at that point, sized from the structures themselves, and keeps the largest
+point at each declared label. It is not an allocator hook and not a GC counter: the
 census does not see strings, boxing or garbage the runtime has not collected, so
 its total is a lower bound on the process's RSS at that point, to be compared
 with the RSS a benchmark measures.
+
+**A checkpoint never extends a structure's life.** It names only what is alive
+at that moment, and nothing it reads may keep a structure alive that the plain
+run would have released. The first version's collapse checkpoint named the index
+and the build copy across the concatenation, which held the join cursor alive and
+raised q21's peak by about 30 MB (§61): the census must be invisible in the run it
+measures.
 
 **What a checkpoint counts.** Each one is a named set of roots the engine holds
 there:
@@ -738,8 +745,8 @@ there:
 runs on. The pulled shapes stay uncounted until a measurement needs them.
 
 **Where it reports.** `moonlake exec --mem` runs the query with a census and
-prints a `-- resident by structure` block: the largest checkpoint's label, its
-total and its entries, largest first. The flag is off by default; without it no
+prints a `-- resident by structure` header followed by one block per label,
+largest first: the label, its total, then its entries largest first. The flag is off by default; without it no
 census is built and nothing is paid.
 
 **Answers and counters.** Unchanged: the census reads structures that already
@@ -753,6 +760,14 @@ names the structures §58 and §60 could not split, its total compared with the
 enough to size by hand, the checkpoint equals the sizes the test computes. A
 query run without the flag builds no census, and the gate suite's answers,
 counters and timings do not move.
+
+**Result (§61).** Built and measured. q21's peak is the second chain step's
+output collapse (521.7 MB of a ~610 MB peak): the collected output and the batch
+it becomes are live together at 2 × 100.6 MB, over that step's 174.5 MB probe
+input and the 146.0 MB of collected tables. The semi sides peak lower, at 307.4
+and 263.5 MB, so §58's inner-side reading was aimed at the wrong copy. About
+88 MB of the peak is outside the contract, as are the grace path (a budgeted run
+names only its tables) and the pulled shapes (nothing).
 
 ## Known limits, and what closing each one means
 

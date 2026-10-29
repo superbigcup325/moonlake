@@ -67,8 +67,9 @@ fn run_parsed(
   catalog : @catalog.Catalog,
   stats : Array[(String, Int64)],
   opts : ExecOptions,
+  census~ : MemCensus? = None,
 ) -> SelectResult raise @types.SqlError {
-  match prepare_select(sel, catalog, opts) {
+  match prepare_select(sel, catalog, opts, census~) {
     Setop(result) => result
     Ready(launch) =>
       match streaming_source(launch.bq, launch.sources) {
@@ -91,7 +92,7 @@ fn run_parsed(
           }
           result
         }
-        None => run_pipeline(launch, opts, stats)
+        None => run_pipeline(launch, opts, stats, census~)
       }
   }
 }
@@ -185,10 +186,16 @@ fn prepare_select(
   sel_in : @sql.Select,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
+  census~ : MemCensus? = None,
 ) -> Prepared raise @types.SqlError {
   // correlated EXISTS / IN conjuncts become semi/anti joins against
   // pre-executed synthetic tables before anything else runs
-  let (sel, extra_schemas, extra_batches) = decorrelate(sel_in, catalog, opts)
+  let (sel, extra_schemas, extra_batches) = decorrelate(
+    sel_in,
+    catalog,
+    opts,
+    census~,
+  )
   let schemas : Array[@catalog.TableSchema] = []
   let tables : Array[Array[@types.DataBatch]] = []
   // base tables keep their entry so the scan can go through its source;
@@ -242,7 +249,7 @@ fn prepare_select(
         }
       }
       Sub(inner) => {
-        let r = run_parsed(inner, catalog, [], opts)
+        let r = run_parsed(inner, catalog, [], opts, census~)
         let names = r.names()
         let types = r.types()
         // an explicit column alias list renames the outputs positionally
@@ -291,6 +298,7 @@ fn run_pipeline(
   launch : Launch,
   opts : ExecOptions,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
   let plan = launch.plan
@@ -410,6 +418,20 @@ fn run_pipeline(
     }
     stats.push(("scan \{schemas[k].table}", rows.to_int64()))
   }
+  // What the collected scan batches cost, by table: the first root a census
+  // point names, and the one every later join point stands on top of.
+  match census {
+    Some(c) => {
+      let entries : Array[(String, Int64)] = []
+      for k, batches in narrowed {
+        entries.push(
+          ("scan \{schemas[k].table}", batches_bytes(batches).to_int64()),
+        )
+      }
+      c.observe("collected FROM tables", entries)
+    }
+    None => ()
+  }
   let joined = exec_joins(
     narrowed,
     bq.steps,
@@ -417,6 +439,7 @@ fn run_pipeline(
     opts,
     stats,
     prescanned,
+    census~,
   )
   if bq.steps.length() > 1 {
     let mut joined_rows = 0
@@ -582,6 +605,30 @@ pub fn explain_analyze_with(
   }
   let _ = result
   sb.to_string()
+}
+
+///|
+/// Run the query with the structure census on and print what each declared point
+/// held, largest first: the checkpoints and what they count are the contract in
+/// docs/ROADMAP.md. The answer is dropped, because this is a measurement rather
+/// than a result API; the text is empty when the query reached no declared
+/// point. A census run takes slightly longer than the plain run (it sizes every
+/// structure it names), so it is not a benchmark.
+pub fn mem_report_with(
+  sql : String,
+  catalog : @catalog.Catalog,
+  opts : ExecOptions,
+) -> String raise @types.SqlError {
+  let census = MemCensus::new()
+  let stats : Array[(String, Int64)] = []
+  let _ = run_parsed(
+    @sql.parse_select(sql),
+    catalog,
+    stats,
+    opts,
+    census=Some(census),
+  )
+  census.render()
 }
 
 ///|
