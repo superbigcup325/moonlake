@@ -4192,3 +4192,35 @@ and DISTINCT, a window, RIGHT, SEMI/ANTI, a keyless cross join and a non-lazy
 **The gates hold.** `moon test` is 384 tests green (two pin the index: one id per
 valid row, contiguous slots, NULL keys absent), the 33 golden comparisons pass,
 and `check_cli.sh` and `spill_accept.sh` pass unchanged.
+
+## 53. The semi, anti and right joins take the same index (2026-10-29)
+
+**What changed.** `join_semi` and `join_swapped` were the last places that
+indexed a build side as a list per distinct key on the integer path. They now
+build an `IntKeyIndex`, the same row-id range the hash join cursor uses (§52).
+The string-key path keeps its lists. No list-per-key index over `Int64` keys is
+left in the engine.
+
+**What it is worth: nothing measurable.** §52 named these two forms as the next
+lever on eager peaks. Three interleaved rounds against the binary of the
+previous commit, quiet host (load about 1.2), answers identical byte for byte.
+Peak RSS in MB:
+
+| query | form | no budget | 16 MB |
+| --- | --- | --- | --- |
+| q18 | `IN` subquery | 471.6 → 469.3 | 227.3 → 227.3 |
+| q20 | `IN` subqueries | 258.9 → 259.1 | 87.5 → 87.4 |
+| q21 | `NOT EXISTS` | 615.2 → 619.3 | 682.7 → 684.5 |
+| q3 | invariant | 356.9 → 356.8 | 261.9 → 260.6 |
+
+Every difference is inside the 11% worst spread recorded in §52, and the wall
+times are level. So the peaks of q18, q20 and q21 are not set by the index over
+a semi or anti side, and the lever §52 named does not exist in this corpus. What
+does set them is not shown by this measurement.
+
+**Why it is kept.** The change removes the last list-per-key code on the integer
+path and costs nothing, so there is one index shape to reason about. It is a
+cleanup and is recorded as one, not as a saving.
+
+**The gates hold.** `moon test` is 384 tests green, the 33 golden comparisons
+pass, and `check_cli.sh` and `spill_accept.sh` pass unchanged.

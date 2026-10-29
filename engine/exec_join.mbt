@@ -995,7 +995,7 @@ fn join_semi(
   let null_key_excludes = step.kind is Anti
   let inner_batch = concat_batches(inner, [])
   let n_inner = inner_batch.row_count()
-  let int_map : Map[Int64, Array[Int32]] = Map([])
+  let mut int_index = IntKeyIndex::empty()
   let str_map : Map[String, Array[Int32]] = Map([])
   let inner_keys : Array[@types.ColumnVector] = []
   for e in step.keys_r {
@@ -1016,16 +1016,8 @@ fn join_semi(
       _ => abort("unreachable: single_int checked above")
     }
     let valid = v_validity(inner_keys[0])
-    for r in 0..<n_inner {
-      if valid[r] {
-        // NULL inner keys match nothing
-        let k = d[r]
-        match int_map.get(k) {
-          Some(ids) => ids.push(r)
-          None => int_map[k] = [r]
-        }
-      }
-    }
+    // NULL inner keys match nothing, and the index skips them
+    int_index = IntKeyIndex::build(d, valid, n_inner)
   } else {
     for r in 0..<n_inner {
       let kv : Array[@types.Scalar] = []
@@ -1075,9 +1067,10 @@ fn join_semi(
           @types.Int64(v) => v
           _ => 0L
         }
-        match int_map.get(k) {
-          Some(ids) =>
-            for id in ids {
+        match int_index.slots.get(k) {
+          Some(slot) =>
+            for j in int_index.starts[slot]..<int_index.starts[slot + 1] {
+              let id = int_index.ids[j]
               if residual_ok(rstate, left, r, inner_batch, id) {
                 matched = true
               }
@@ -1175,22 +1168,14 @@ fn join_swapped(
   let int_keys = int_key_cols(build_keys, probe_keys)
   match int_keys {
     Some((bd, bv, pd, pv)) => {
-      let map : Map[Int64, Array[Int32]] = Map([])
-      for r in 0..<n_build {
-        if bv[r] {
-          let k = bd[r]
-          match map.get(k) {
-            Some(ids) => ids.push(r)
-            None => map[k] = [r]
-          }
-        }
-      }
+      let index = IntKeyIndex::build(bd, bv, n_build)
       for r in 0..<n_probe {
         let mut matched = false
         if pv[r] {
-          match map.get(pd[r]) {
-            Some(ids) =>
-              for id in ids {
+          match index.slots.get(pd[r]) {
+            Some(slot) =>
+              for j in index.starts[slot]..<index.starts[slot + 1] {
+                let id = index.ids[j]
                 if residual_ok(rstate, build, id, probe, r) {
                   acc_ids.push(id)
                   right_ids.push(r)
