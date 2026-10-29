@@ -61,3 +61,48 @@ test "concat_batches copies live rows, not vector capacity" {
   assert_eq(out.columns()[0].get(4096), @types.Int32(0))
   assert_eq(out.columns()[0].get(4195), @types.Int32(198))
 }
+
+///|
+test "the fast-path key index groups ids without a list per key" {
+  // rows 0..7 over keys: 7, 7, 9, 7, (null), 9, 11, 7
+  let bd : FixedArray[Int64] = FixedArray::make(8, 0L)
+  let bv : FixedArray[Bool] = FixedArray::make(8, true)
+  let keys = [7L, 7L, 9L, 7L, 0L, 9L, 11L, 7L]
+  let valid = [true, true, true, true, false, true, true, true]
+  for i in 0..<8 {
+    bd[i] = keys[i]
+    bv[i] = valid[i]
+  }
+  let index = IntKeyIndex::build(bd, bv, 8)
+  // three distinct keys, and every valid row appears exactly once: the ids
+  // array is the row count, not a padded per-key list
+  assert_eq(index.starts.length(), 4)
+  assert_eq(index.ids.length(), 7)
+  // each slot's ids are contiguous and in ascending row order
+  for slot in 0..<(index.starts.length() - 1) {
+    let from = index.starts[slot]
+    let to = index.starts[slot + 1]
+    assert_true(from < to)
+    for j in (from + 1)..<to {
+      assert_true(index.ids[j - 1] < index.ids[j])
+    }
+  }
+  // key 7 has four rows (0, 1, 3, 7) and key 11 has one (6)
+  let seven = index.slots.get(7L).unwrap()
+  assert_eq(index.starts[seven + 1] - index.starts[seven], 4)
+  let eleven = index.slots.get(11L).unwrap()
+  assert_eq(index.starts[eleven + 1] - index.starts[eleven], 1)
+  assert_eq(index.ids[index.starts[eleven]], 6)
+}
+
+///|
+test "the fast-path key index of an empty side has no slots and no ids" {
+  let index = IntKeyIndex::build(
+    FixedArray::make(0, 0L),
+    FixedArray::make(0, true),
+    0,
+  )
+  assert_eq(index.starts.length(), 1)
+  assert_eq(index.ids.length(), 0)
+  assert_eq(index.slots.get(1L), None)
+}

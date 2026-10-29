@@ -132,6 +132,73 @@ fn join_step(
 const JOIN_OUT_BATCH : Int32 = 4096
 
 ///|
+/// The fast-path half of a build side's index: every matching row id, grouped by
+/// key into one contiguous array, with a slot table holding each key's range. A
+/// unique key costs its slot and one id, not an allocated list, which matters
+/// when the build side is a primary key over millions of rows.
+priv struct IntKeyIndex {
+  slots : Map[Int64, Int32] // key -> slot, dense in 0..<slot count
+  starts : FixedArray[Int32] // start of each slot's ids, plus one sentinel
+  ids : FixedArray[Int32] // build row numbers, grouped by slot
+}
+
+///|
+fn IntKeyIndex::empty() -> IntKeyIndex {
+  {
+    slots: Map([]),
+    starts: FixedArray::make(1, 0),
+    ids: FixedArray::make(0, 0),
+  }
+}
+
+///|
+/// Group the valid build keys by value. Two passes over the keys: the first
+/// numbers the slots and counts them, the second writes each row id into its
+/// slot's range, so the ids array is exactly `4 * rows` bytes and no per-key
+/// list is ever allocated.
+fn IntKeyIndex::build(
+  bd : FixedArray[Int64],
+  bv : FixedArray[Bool],
+  n : Int32,
+) -> IntKeyIndex {
+  let slots : Map[Int64, Int32] = Map([])
+  let counts : Array[Int32] = []
+  for r in 0..<n {
+    if bv[r] {
+      let k = bd[r]
+      match slots.get(k) {
+        Some(slot) => counts[slot] = counts[slot] + 1
+        None => {
+          slots[k] = counts.length()
+          counts.push(1)
+        }
+      }
+    }
+  }
+  let m = counts.length()
+  let starts : FixedArray[Int32] = FixedArray::make(m + 1, 0)
+  let mut total = 0
+  for slot in 0..<m {
+    starts[slot] = total
+    total += counts[slot]
+  }
+  starts[m] = total
+  let ids : FixedArray[Int32] = FixedArray::make(total, 0)
+  let cursor : Array[Int32] = []
+  for slot in 0..<m {
+    cursor.push(starts[slot])
+  }
+  for r in 0..<n {
+    if bv[r] {
+      let slot = slots.get(bd[r]).unwrap()
+      ids[cursor[slot]] = r
+      cursor[slot] = cursor[slot] + 1
+    }
+  }
+  { slots, starts, ids, }
+}
+
+///|
 /// One hash join as a cursor. The build side is resident — a probe row has to
 /// find its matches — but the probe side arrives a batch at a time and the
 /// output leaves in batches of at most `JOIN_OUT_BATCH` rows, so a caller never
@@ -146,9 +213,9 @@ priv struct JoinCursor {
   step : JoinStep
   build : @types.DataBatch
   build_keys : Array[@types.ColumnVector]
-  int_map : Map[Int64, Array[Int32]] // the fast path: packed Int64 keys
+  mut int_index : IntKeyIndex // the fast path: packed Int64 keys
   str_map : Map[String, Array[Int32]]
-  mut fast : Bool // which map was built
+  mut fast : Bool // which index was built
   left_width : Int32
   empty_left : @types.DataBatch // the layout to gather NULLs from
   matched : FixedArray[Bool] // FULL: which build rows matched
@@ -176,7 +243,7 @@ fn JoinCursor::open(
     step,
     build,
     build_keys,
-    int_map: Map([]),
+    int_index: IntKeyIndex::empty(),
     str_map: Map([]),
     fast: false,
     left_width,
@@ -204,16 +271,8 @@ fn JoinCursor::prime(
   match int_key_cols(self.build_keys, left_keys) {
     Some((bd, bv, _, _)) => {
       self.fast = true
-      for r in 0..<n_build {
-        if bv[r] {
-          // NULL join keys never match
-          let k = bd[r]
-          match self.int_map.get(k) {
-            Some(ids) => ids.push(r)
-            None => self.int_map[k] = [r]
-          }
-        }
-      }
+      // NULL join keys never match, and the index skips them
+      self.int_index = IntKeyIndex::build(bd, bv, n_build)
     }
     None =>
       for r in 0..<n_build {
@@ -253,9 +312,11 @@ fn JoinCursor::match_batch(
     for r in 0..<n_left {
       let mut hit = false
       if lv[r] {
-        match self.int_map.get(ld[r]) {
-          Some(ids) =>
-            for id in ids {
+        match self.int_index.slots.get(ld[r]) {
+          Some(slot) => {
+            let stops = self.int_index.starts
+            for j in stops[slot]..<stops[slot + 1] {
+              let id = self.int_index.ids[j]
               if residual_ok(rstate, left, r, self.build, id) {
                 self.out_l.push(r)
                 self.out_r.push(id)
@@ -263,6 +324,7 @@ fn JoinCursor::match_batch(
                 hit = true
               }
             }
+          }
           None => ()
         }
       }
