@@ -4288,3 +4288,44 @@ sum stays NULL on an `Int64` key, an int64 sum overflow still raises, and an
 empty input has no groups. `moon test` passes on wasm-gc (389) and native (402),
 the 33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
 unchanged.
+
+## 55. A pair of Int32 keys joins the column-wise fold (2026-10-29)
+
+**What changed.** §54 left q20 where it was because its `GROUP BY` has two
+integer keys. The column-wise fold now also takes a pair of `Int32` keys. The
+pair packs into one `Int64` slot key (high half the first key, low half the
+second), which is exact for 32-bit values, so the slot map and the per-group
+arrays are the single-key ones. A row with a NULL in either key cannot take that
+slot, so it goes through a small side map keyed by its text, one entry per NULL
+pattern, which keeps `(NULL, 1)` and `(1, NULL)` apart as the general fold does.
+Group order, sums and the overflow error are unchanged. Other pairs (an `Int64`
+or a string in either position) and three or more keys keep the general fold.
+
+**What it is worth.** Three interleaved rounds against the single-key build of
+§54, quiet host, answers identical byte for byte. Peak RSS in MB, wall seconds
+beside it:
+
+| case | budget | before | after | wall s |
+| --- | --- | --- | --- | --- |
+| `(l_orderkey, l_linenumber)`, `sum`, about 4M groups | none | 1630.5 | 410.6 | 4.32 → 3.05 |
+| `(l_partkey, l_suppkey)`, `sum`, 800k groups | none | 353.9 | 109.1 | 6.19 → 3.04 |
+| `(l_partkey, l_suppkey)`, `sum`, 800k groups | 16 MB | 82.5 | 59.3 | 5.86 → 3.54 |
+| q20 | none | 258.8 | 99.2 | 2.96 → 2.50 |
+| q20 | 16 MB | 87.4 | 87.3 | 3.21 → 2.80 |
+| q18 | none | 388.8 | 388.8 | 4.99 → 5.00 |
+| q3 | none | 356.8 | 357.0 | 2.74 → 2.72 |
+
+The 800k-group probe went from about 400 bytes a group (the string-key path, one
+concatenated key text per row) to about 90, and q20, whose peak was that one
+aggregate, fell by 160 MB. The group count of the first row is approximate (four
+lines an order over the orders below key 4,000,000); it was not counted. q20 at
+16 MB did not move: under a budget its peak is set elsewhere, which this
+measurement does not say. q18 and q3 group by more than two keys or by strings
+and are unchanged, as expected.
+
+**The gates hold.** Two tests are added (the pair agrees cell for cell with the
+general fold on batches with NULLs in either position, and negative keys and
+each NULL pattern stay separate groups) and the plan test now pins which key
+shapes take the fold. `moon test` passes on wasm-gc (391) and native (404), the
+33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
+unchanged.

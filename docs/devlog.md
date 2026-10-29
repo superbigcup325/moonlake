@@ -2439,3 +2439,8 @@ sums and counts now keeps that state as arrays by group id, and a million groups
 fell from 323 MB to 117 MB. q18 fell by less than the probe line promised
 because its other half is a build side, which the measurement then named: the
 aggregate was never the whole peak (verification §54).
+
+The same fold took a pair of Int32 keys next, packed into one Int64 with NULL
+patterns on a side map. q20's single aggregate was most of its peak, so it fell
+from 259 MB to 99 MB (verification §55). What is left in the corpus is not group
+state: q18's resident `lineitem` build side and q21's semi and anti sides.

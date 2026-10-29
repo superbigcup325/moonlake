@@ -926,17 +926,27 @@ fn col_agg_kind(spec : AggSpec) -> ColAggKind? {
 }
 
 ///|
-/// The column-wise fold applies to one Int32 or Int64 group key over aggregates
-/// that are all of the kinds above; any other shape keeps the general fold.
+/// The column-wise fold applies to one Int32 or Int64 group key, or to a pair of
+/// Int32 keys, over aggregates that are all of the kinds above; any other shape
+/// keeps the general fold.
 fn col_agg_plan(
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
 ) -> Array[ColAggKind]? {
-  if group_types.length() != 1 || aggs.length() == 0 {
+  if aggs.length() == 0 {
     return None
   }
-  match group_types[0] {
-    @types.Int32 | @types.Int64 => ()
+  match group_types.length() {
+    1 =>
+      match group_types[0] {
+        @types.Int32 | @types.Int64 => ()
+        _ => return None
+      }
+    2 =>
+      match (group_types[0], group_types[1]) {
+        (@types.Int32, @types.Int32) => ()
+        _ => return None
+      }
     _ => return None
   }
   let kinds : Array[ColAggKind] = []
@@ -950,13 +960,15 @@ fn col_agg_plan(
 }
 
 ///|
-/// Hash aggregation for one integer key, with the group state held column-wise:
-/// the key of each group is a slot in one `Int64` array and every aggregate is
-/// one array (two for a sum), so a group costs its map slot and a few bytes
-/// rather than a key row, an accumulator row and an object per aggregate. Group
-/// order, NULL handling (one shared null-key group, opened where the first
-/// null-keyed row arrives), sums in row order and the overflow error are the
-/// general fold's.
+/// Hash aggregation for one integer key, or a pair of Int32 keys, with the group
+/// state held column-wise: the keys of each group are slots in `Int64` arrays and
+/// every aggregate is one array (two for a sum), so a group costs its map slot
+/// and a few bytes rather than a key row, an accumulator row and an object per
+/// aggregate. A pair of Int32 keys packs into one `Int64` slot key, which loses
+/// nothing; a row with a NULL in either key goes through a small side map keyed
+/// by its text, so each NULL pattern is its own group as in the general fold.
+/// Group order (first seen), the shared NULL group of a single key, sums in row
+/// order and the overflow error are the general fold's.
 fn aggregate_cols(
   seq : BatchSeq,
   group_exprs : Array[PhysExpr],
@@ -965,8 +977,12 @@ fn aggregate_cols(
   aggs : Array[AggSpec],
 ) -> @types.DataBatch raise @types.SqlError {
   let m = aggs.length()
+  let nk = group_exprs.length()
   let slots : Map[Int64, Int32] = Map([])
-  let keys : Array[Int64] = []
+  let nullkeys : Map[String, Int32] = Map([])
+  let ka : Array[Int64] = []
+  let kb : Array[Int64] = [] // second key, pairs only
+  let kf : Array[Int32] = [] // pairs only: bit 0 first key NULL, bit 1 second
   let cols : Array[ColAgg] = []
   for k in kinds {
     cols.push({ kind: k, ints: [], dbls: [], flags: [], })
@@ -974,20 +990,30 @@ fn aggregate_cols(
   let mut null_gi = -1
   while (seq.next)() is Some(batch) {
     let rows = batch.row_count()
-    let key_col = eval_vec(group_exprs[0], batch)
-    let valid = v_validity(key_col)
-    let kd : FixedArray[Int64] = match key_col {
-      @types.I32(d, _) => {
-        let o : FixedArray[Int64] = FixedArray::make(rows, 0L)
-        for i in 0..<rows {
-          o[i] = d[i].to_int64()
-        }
-        o
-      }
-      @types.I64(d, _) => d
-      _ =>
-        raise @types.SqlError::Execute("internal: group key dtype drift (int)")
+    let kds : Array[FixedArray[Int64]] = []
+    let kvs : Array[FixedArray[Bool]] = []
+    for e in group_exprs {
+      let key_col = eval_vec(e, batch)
+      kvs.push(v_validity(key_col))
+      kds.push(
+        match key_col {
+          @types.I32(d, _) => {
+            let o : FixedArray[Int64] = FixedArray::make(rows, 0L)
+            for i in 0..<rows {
+              o[i] = d[i].to_int64()
+            }
+            o
+          }
+          @types.I64(d, _) => d
+          _ =>
+            raise @types.SqlError::Execute(
+              "internal: group key dtype drift (int)",
+            )
+        },
+      )
     }
+    let valid = kvs[0]
+    let kd = kds[0]
     let ins : Array[FastInput] = []
     for spec in aggs {
       match spec.input {
@@ -996,14 +1022,54 @@ fn aggregate_cols(
       }
     }
     for r in 0..<rows {
-      let gi = if valid[r] {
+      let gi = if nk == 2 {
+        let v0 = kvs[0][r]
+        let v1 = kvs[1][r]
+        let a = kds[0][r]
+        let b = kds[1][r]
+        if v0 && v1 {
+          let k = (a << 32) | (b & 0xFFFFFFFFL)
+          match slots.get(k) {
+            Some(i) => i
+            None => {
+              let i = ka.length()
+              slots[k] = i
+              ka.push(a)
+              kb.push(b)
+              kf.push(0)
+              for c in cols {
+                c.open()
+              }
+              i
+            }
+          }
+        } else {
+          let key = (if v0 { a.to_string() } else { "N" }) +
+            "," +
+            (if v1 { b.to_string() } else { "N" })
+          match nullkeys.get(key) {
+            Some(i) => i
+            None => {
+              let i = ka.length()
+              nullkeys[key] = i
+              ka.push(if v0 { a } else { 0L })
+              kb.push(if v1 { b } else { 0L })
+              kf.push((if v0 { 0 } else { 1 }) | (if v1 { 0 } else { 2 }))
+              for c in cols {
+                c.open()
+              }
+              i
+            }
+          }
+        }
+      } else if valid[r] {
         let k = kd[r]
         match slots.get(k) {
           Some(i) => i
           None => {
-            let i = keys.length()
+            let i = ka.length()
             slots[k] = i
-            keys.push(k)
+            ka.push(k)
             for c in cols {
               c.open()
             }
@@ -1012,8 +1078,8 @@ fn aggregate_cols(
         }
       } else {
         if null_gi < 0 {
-          null_gi = keys.length()
-          keys.push(0L)
+          null_gi = ka.length()
+          ka.push(0L)
           for c in cols {
             c.open()
           }
@@ -1062,26 +1128,41 @@ fn aggregate_cols(
       }
     }
   }
-  let n = keys.length()
-  let key_valid : FixedArray[Bool] = FixedArray::make(n, true)
-  if null_gi >= 0 {
-    key_valid[null_gi] = false
-  }
+  let n = ka.length()
   let columns : Array[@types.ColumnVector] = []
-  match group_types[0] {
-    @types.Int32 => {
-      let d : FixedArray[Int32] = FixedArray::make(n, 0)
-      for i in 0..<n {
-        d[i] = keys[i].to_int()
-      }
-      columns.push(@types.I32(d, key_valid))
+  if nk == 2 {
+    let da : FixedArray[Int32] = FixedArray::make(n, 0)
+    let db : FixedArray[Int32] = FixedArray::make(n, 0)
+    let va : FixedArray[Bool] = FixedArray::make(n, true)
+    let vb : FixedArray[Bool] = FixedArray::make(n, true)
+    for i in 0..<n {
+      da[i] = ka[i].to_int()
+      db[i] = kb[i].to_int()
+      va[i] = (kf[i] & 1) == 0
+      vb[i] = (kf[i] & 2) == 0
     }
-    _ => {
-      let d : FixedArray[Int64] = FixedArray::make(n, 0L)
-      for i in 0..<n {
-        d[i] = keys[i]
+    columns.push(@types.I32(da, va))
+    columns.push(@types.I32(db, vb))
+  } else {
+    let key_valid : FixedArray[Bool] = FixedArray::make(n, true)
+    if null_gi >= 0 {
+      key_valid[null_gi] = false
+    }
+    match group_types[0] {
+      @types.Int32 => {
+        let d : FixedArray[Int32] = FixedArray::make(n, 0)
+        for i in 0..<n {
+          d[i] = ka[i].to_int()
+        }
+        columns.push(@types.I32(d, key_valid))
       }
-      columns.push(@types.I64(d, key_valid))
+      _ => {
+        let d : FixedArray[Int64] = FixedArray::make(n, 0L)
+        for i in 0..<n {
+          d[i] = ka[i]
+        }
+        columns.push(@types.I64(d, key_valid))
+      }
     }
   }
   for c in cols {
