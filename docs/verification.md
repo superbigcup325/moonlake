@@ -4763,3 +4763,92 @@ a forbidden pattern.
   no workspace override) passes on native, wasm-gc and JS with the same checks
   as above. Default `~/.moon` is read-only here, so both runs used a scratch
   `MOON_HOME` holding the credentials.
+
+## 65. The chain hands its batches on, and the peak falls 58 MB (2026-10-29)
+
+The contract ("The chain without a collapse contract", roadmap) was written
+first and committed alone (`1fc6398`). `join_step`, `join_semi`, `join_swapped`
+and `join_or_spill` now return `Array[DataBatch]`, and the chain's state between
+steps is that array: a step's collected output goes to the next step's probe
+side without being copied into one batch. The census obeying §61's rule, nine of
+q21's declared points became six — no step declares a collapse it no longer
+makes.
+
+**q21 at SF1, no budget, three interleaved runs each.** Peak RSS, and the
+`--mem` high-water that agrees with it:
+
+| run | 0.6.0 | this build |
+| --- | --- | --- |
+| 1 | 591.6 MB | 545.9 MB |
+| 2 | 604.9 MB | 546.7 MB |
+| 3 | 606.0 MB | 547.2 MB |
+| median | 604.9 MB | 546.7 MB |
+
+That is 58.2 MB (−9.6%) and inside the contract's predicted 540–560 MB. The
+census's header now reads `high 560324 KB, peak at hash join collected its
+output (step 2)`, and its six points are:
+
+| point | named MB | resident MB | high-water MB |
+| --- | --- | --- | --- |
+| collected FROM tables | 139.2 | 234.3 | 234.3 |
+| collected its output (step 1) | 378.4 | 443.6 | 488.8 |
+| collected its output (step 2) | 430.2 | 539.0 | 547.2 |
+| semi/anti join's inner side (step 4) | 247.4 | 508.8 | 547.2 |
+| collected its output (step 3) | 240.6 | 502.2 | 547.2 |
+| semi/anti join's inner side (step 5) | 222.3 | 363.5 | 547.2 |
+
+The largest named point is the one the contract predicted, at the size it
+predicted (430.1 MB, measured 430.2); its residency fell with the peak (577.4 →
+539.0 MB at the old peak's point). What it cost is what §63 said it would cost:
+
+- **The invariants did not move.** q1 and q12 (single-step compositions), q18 and
+  q20 (pulled shapes) sit inside the spread, and every row of the matrix answered
+  byte for byte; q6 is covered by the goldens (33), which pass on the same commit
+  as the unit suites (406 wasm-gc, 420 native), `harness/check_cli.sh` and
+  `harness/spill_accept.sh`.
+- **The budget path is where the collapse is still needed, and it was measured.**
+  Handing a step's output on as batches to a *partitioner* is not free: a
+  partitioner slices every input batch into every partition (256 `take_rows`
+  per batch), so a chain whose steps hand on ~500 batches made q7 at 16 MB run
+  35.6 s against 8.0 s and peak at 2122 MB. Collapsing both sides inside the
+  partitioner instead cost q3 +86 MB and q5 +160 MB, because the build side is a
+  table's own scan batches and copying it is new. Collapsing only the handover,
+  still inside the partitioner, cost q21 +98 MB: the caller still holds the
+  batches while the copy exists, so both are resident. The collapse therefore
+  stays at the producer for a budgeted run (`collapse_handed`, `collapse=true`),
+  which is where it was, and the win is confined to the runs that never
+  partition — exactly the shape the contract named.
+
+**The matrix.** `harness/bench_join_chain.py --budgets none,16M --rounds 3`
+against a 0.6.0 binary built from the tag, median peak RSS in MB, worst
+round-to-round spread 15%:
+
+| case | no budget | 16 MB |
+| --- | --- | --- |
+| q3 | 295.2 → 295.7 | 257.7 → 257.2 |
+| q5 | 466.8 → 468.6 | 443.0 → 443.0 |
+| q7 | 517.9 → 405.9 | 531.0 → 527.9 |
+| q8 | 467.8 → 467.0 | 498.5 → 498.1 |
+| q9 | 659.6 → 661.1 | 659.7 → 660.1 |
+| q10 | 234.0 → 233.8 | 241.7 → 241.1 |
+| q11 | 27.4 → 25.3 | 25.5 → 25.5 |
+| q18 | 140.2 → 140.5 | 67.4 → 71.4 |
+| q20 | 98.1 → 93.0 | 84.5 → 85.4 |
+| q21 | 596.2 → 547.0 | 661.6 → 673.2 |
+| q1 | 35.4 → 35.3 | 72.9 → 75.4 |
+| q12 | 35.3 → 35.4 | 35.4 → 35.4 |
+
+Every wall time stayed inside its spread (no-budget q21 7.84 → 7.67 s, q7 3.19 →
+3.50 s; 16 MB q21 14.03 → 13.98 s, q7 8.22 → 8.07 s), and every answer was
+byte-identical between the two binaries. Two rows moved beyond what a chain's
+own intermediates explain: q7 without a budget fell 112.0 MB, because its
+step 3 collects a 174.5 MB probe output that is no longer copied, and q21 at
+16 MB rose 11.6 MB (1.8%, inside the spread but consistent across runs) — the
+collapse now happens after the grace path returns instead of inside the step,
+which holds the partition outputs and the merged batch at once for a moment.
+
+**What is left.** The peak is still unnamed for about 109 MB (539.0 MB resident
+against 430.2 MB named), and the largest named member of the peak's point is the
+probe input (174.5 MB) — a table's narrowed copy alive while its scan's batches
+are. That is the next lever, and it is a different contract: what a scan keeps
+when it narrows, not what the chain passes on.
