@@ -4756,6 +4756,10 @@ a forbidden pattern.
 - CI on `main` at the release commit: 7 of 7 green (run 40870578658); the pages
   deployment of the same commit is green, and the local browser acceptance of
   the playground passes 16 of 16.
-- `moon publish --dry-run` is not run here: it uploads the archive and needs
-  credentials and an explicit decision, and the mooncakes upload of 0.6.0 is the
-  one step of this release still pending that decision.
+- mooncakes: `moon publish --dry-run` answered `202 Accepted — Dry run
+  completed successfully`, and `moon publish` then answered `200 OK`; the
+  registry now reports `Latest: 0.6.0`, `Versions: 7`, published 2026-10-29. A
+  consumer fetching `0.6.0` from the registry (fresh index and dependency cache,
+  no workspace override) passes on native, wasm-gc and JS with the same checks
+  as above. Default `~/.moon` is read-only here, so both runs used a scratch
+  `MOON_HOME` holding the credentials.
