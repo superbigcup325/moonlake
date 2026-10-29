@@ -7,7 +7,7 @@
 /// Rows per batch a scan source should aim for. Sources may emit a final
 /// smaller batch; a zero-row table emits one empty batch so the engine still
 /// sees the column layout.
-pub const SCAN_BATCH_ROWS : Int32 = 4096
+pub const SCAN_BATCH_ROWS : Int32 = 1024
 
 ///|
 /// One conjunctive predicate hint, in the table's own column numbering

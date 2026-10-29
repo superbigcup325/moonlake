@@ -72,19 +72,21 @@ test "bool column inference is case-insensitive" {
 
 ///|
 test "rows split into fixed size batches" {
+  let bs = @catalog.SCAN_BATCH_ROWS
+  let rows = 3 * bs + 17
   let sb = StringBuilder()
   sb.write_string("n\n")
-  for i in 0..<5000 {
+  for i in 0..<rows {
     sb.write_string(i.to_string())
     sb.write_char('\n')
   }
   let entry = @csv.scan_string(sb.to_string(), "big")
-  assert_eq(read_all(entry)[0].row_count(), 4096)
-  assert_eq(read_all(entry)[1].row_count(), 904)
-  assert_eq(
-    read_all(entry)[1].columns()[0].get(903),
-    @types.Scalar::Int32(4999),
-  )
+  let batches = read_all(entry)
+  assert_eq(batches.length(), 4)
+  assert_eq(batches[0].row_count(), bs)
+  let last = batches[batches.length() - 1]
+  assert_eq(last.row_count(), 17)
+  assert_eq(last.columns()[0].get(16), @types.Scalar::Int32(rows - 1))
 }
 
 ///|
