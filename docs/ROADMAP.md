@@ -807,6 +807,14 @@ pulled, are invariants and must not move. If a collected column is shared with
 its build side, less memory leaves than predicted; that is a result, not a
 failure of the measurement.
 
+**Result (§62).** Implemented, measured and reverted. The census's named peak
+fell by exactly one copy (q21: 521.7 MB → 451.0 MB) and peak RSS did not move
+(601.7 → 598.0 MB median, inside the spread; the chain queries likewise). The
+high-water is therefore not at the collapse — it is reached at a moment no
+checkpoint declares, or the runtime keeps freed blocks resident. The next step
+is to measure the high-water itself, and to name the unnamed 82.6 MB of resident
+memory, not to shrink this copy again.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

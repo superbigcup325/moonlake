@@ -4551,7 +4551,9 @@ the concatenated copy a build or output makes, the dense/starts/ids arrays of an
 index and an estimate for its hashed slots. It is not an allocator hook:
 strings, boxing, freed-but-unreturned heap and a source's decoder buffers are
 outside it, so its total is a lower bound on RSS rather than a decomposition of
-it.
+it. The numbers here are from `3bd799b`, which also fixed a double count in the
+semi/anti point (a collected table named once as a table and again as its
+filtered scan).
 
 **q21 at SF1, no budget.** Native release build, SF1 CSVs, six interleaved
 plain/census rounds: plain peak RSS 602.1–614.6 MB (median 609.7), `--mem`
@@ -4582,20 +4584,21 @@ The other blocks, largest first: step 1's collapse 495.3 MB (the same tables,
 174.5 collected and 174.5 collapsed); step 2 collecting 451.0 MB (probe input
 174.5, tables 146.0, output 100.6, index map 17.5, build copy 6.6, index arrays
 5.8); step 1 collecting 396.7 MB (output 174.5, tables 146.0, build copy 60.7,
-index arrays 15.3); the semi side of step 4 at 307.4 MB (tables 146.0, index
-54.0, filtered build scan 48.0, inner copy 48.0, two probe copies of 5.7) and of
-step 5 at 263.5 MB (tables 146.0, index 44.7, build scan 30.3, inner copy 30.3,
-two probe copies of 6.1); step 3's collapse 257.9 MB and collection 252.3 MB.
+index arrays 15.3); the semi side of step 4 at 259.4 MB (tables 146.0, index
+54.0, inner copy 48.0, probe input 5.7, probe copy 5.7) and of step 5 at
+233.1 MB (tables 146.0, index 44.7, inner copy 30.3, probe input 6.1, probe
+copy 6.1); step 3's collapse 257.9 MB and collection 252.3 MB.
 
 **What it says.** The peak is not on the semi/anti side. It is the second chain
 step's collapse: the collected join output and the single batch it becomes are
 live together (2 × 100.6 MB), on top of that step's probe input (174.5 MB, which
 is step 1's whole output) and the collected FROM tables (146.0 MB). The semi
-sides §58 probed peak at 307.4 and 263.5 MB, below the chain's 521.7 MB. The two
-copies §58 inferred do exist, but at the outer branch's output collapse, not at
-the inner side's collection; §60's releasing collection was aimed at the wrong
-copy. That is an attribution, not a lever: the census exists to name the
-composition, and any change to it needs its own contract and measurement.
+sides §58 probed peak at 259.4 and 233.1 MB, below the chain's 521.7 MB. They do
+hold their collected side and a concatenated copy of it (48.0 MB and 48.0 MB at
+step 4), so §58's two copies are real there as well; they are simply not the
+peak, which is why §60's release of that collection moved nothing. That is an
+attribution, not a lever: the census exists to name the composition, and any
+change to it needs its own contract and measurement.
 
 **The gap.** The largest point names 521.7 MB of a roughly 610 MB peak: about
 88 MB, 15%, is outside the contract — source decoder buffers, allocations it
@@ -4620,3 +4623,57 @@ a counter that changes the thing it measures is worse than none.
 goldens on the native release binary; `check_cli.sh` (which now pins `--mem`: the
 header, the tables block, a pulled shape printing nothing) and
 `spill_accept.sh` pass. Nothing is measured unless the flag is given.
+
+## 62. The collapse's single copy does not move the peak (2026-10-29)
+
+The contract ("The collapse single copy contract", roadmap) was written first and
+committed alone. This measures it. `concat_batches_releasing` built a join step's
+collapsed output one column at a time and dropped each source column from its
+batch as soon as it was copied, so the collected output and the batch it becomes
+are never both at full width; it was used by `join_step` only, because `right`
+may be a catalog table's own batches. Gates were green and answers byte-identical
+throughout: `moon test` 406 on wasm-gc and 419 on native with the change in (two
+new tests, back to 404 and 417 after the revert), `check_all.sh` 33 goldens,
+`check_cli.sh`, `spill_accept.sh`.
+
+**What it did to the census.** Exactly what the contract predicted, one copy
+less at every collapse:
+
+| point | §61 build | this build |
+| --- | --- | --- |
+| hash join collapsed its output (step 2) | 521664603 | 421051254 |
+| hash join collapsed its output (step 1) | 495293629 | 320761181 |
+| hash join collected its output (step 2) | 450980407 | 450980407 |
+| semi/anti join's inner side (step 4) | 259364815 | 259364815 |
+
+The largest declared point became the second step's collection at 451.0 MB —
+the same point it was before, now no longer outweighed by the collapse.
+
+**What it did to RSS.** Nothing measurable. Paired plain runs, native release,
+SF1, candidate against the §61 build `3bd799b`: control 601.7, 599.6, 602.4 MB
+(median 601.7), candidate 596.4, 598.0, 599.9 MB (median 598.0). The 3.7 MB
+difference is inside the spread this comparison has had all along (the same
+build has measured 595.3–614.6 MB across §60 and §61). The chain bench over the
+composed queries agrees: q3 306.2 → 306.9, q5 472.6 → 471.6, q7 521.4 → 515.2,
+q9 661.3 → 660.4, q21 602.6 → 598.7 MB, two rounds each, answers identical.
+
+**What that means.** The named peak was 521.7 MB of a roughly 600 MB process.
+Taking 70 MB of it away left the process at the same high-water, so the
+high-water is not at the collapse: it is reached earlier, at a moment no
+checkpoint declares, or the freed blocks stay resident in the runtime. The gap
+between the largest declared point and RSS says the same thing from the other
+side — on the reverted build it is 82.6 MB at SF1 against 17.1 MB at SF0.1 and
+28.1 MB at SF0.01, so the unnamed part grows with the data at the top end and is
+now larger than one collapse copy.
+
+**Reverted.** The change was correct and gate-clean, and it is kept only as this
+measurement: freeing a copy early buys no resident byte, and the time it costs
+sits on the hot path. This is §60's precedent — a change that moves no number
+its contract promised is not a change to keep.
+
+**Next.** Not another lever on this copy. Two things have to be found first:
+where the high-water actually is (sample RSS at each checkpoint on native, so the
+census can report the process peak beside the named total instead of implying
+that its largest declared point is that peak), and what the 82.6 MB of unnamed
+resident memory is (object overhead the batch estimate does not count — it sizes
+a string as four bytes plus its characters — is the first candidate).
