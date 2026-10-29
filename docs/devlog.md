@@ -2459,3 +2459,33 @@ q21 was supposed to gain from indexing 32-bit keys without widening them. It did
 not: q3 and q5 fell by 22 and 48 MB and q21 stayed at 603 MB, so the estimate in
 the previous record was a transient and not the peak (verification §59). What is
 left there is the inner side held twice.
+
+## The peak found, and shipped as an instrument (2026-10-29): E7, 0.6.0
+
+q21 was the last query the memory arc had not explained, and it stayed at 603 MB
+through a wider index that should have helped it. The answer took three records.
+A structure census now runs beside the executor: every place that collects a
+join step's output, collapses it, or builds an index reports what it holds, and
+the census keeps the largest point at each label and prints them (verification
+§61). It named the collapse of the second chain step at 497.5 MB of a ~600 MB
+run, with a probe input, the tables and a collected output around it.
+
+The obvious lever followed: do not hold the copy twice. `concat_batches_releasing`
+dropped each source column as it copied, so the named peak fell by 70 MB and the
+process peak did not move at all (verification §62). The negative result is in
+the record rather than in the code, and the next question was where the peak
+actually is — which no count could answer, because a count names structures and
+a process has a high-water mark.
+
+So the census learned to read the process: every point now samples resident and
+high-water KB from `/proc`, injected through the CLI so the engine still never
+touches a file, and absent — not zero — on a target without `/proc` (verification
+§63). On q21 the instrument agrees with the harness' peak to the megabyte and
+puts it at the second step's collapse: 599.1 MB high-water where 497.5 MB is
+named, and the semi/anti points hold 211 MB and 113 MB more than they name. The
+peak follows what a run allocates and retains, not the size of one live pair, so
+the next lever has to allocate less — not free sooner.
+
+0.6.0 ships that arc's results: the cheaper build-side index, the chain that
+composes without a budget, the column-wise group state, and the census as an
+opt-in diagnostic. The two negative results ship as records only.

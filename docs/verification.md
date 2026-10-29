@@ -4738,3 +4738,24 @@ chain's intermediate collapse itself — `join_step` returns one batch, so a ste
 collected output is always copied into a second allocation before the next step
 probes it, and passing the batches through instead would remove the copy rather
 than free it early. That needs its own contract and its own measurement.
+
+## 64. 0.6.0 is released (2026-10-29)
+
+The version claims, checked by `harness/check_release.py --tag v0.6.0`:
+`moon.mod`, the library's `VERSION`, the test that pins it, the newest CHANGELOG
+heading and the tag all say 0.6.0; the archive holds 243 files and none matching
+a forbidden pattern.
+
+- Tag `v0.6.0`, annotated, at `293a51e` (`chore(release): 0.6.0`), pushed to
+  `main`; the GitHub release is
+  <https://github.com/superbigcup325/moonlake/releases/tag/v0.6.0>.
+- Consumer: the packaged archive, on a fresh registry and dependency cache, runs
+  on native, wasm-gc and JS — version, CSV, Parquet raw and Snappy, DATE and
+  NULL handling, `drop`, and four streamed shapes agreeing with the collected
+  ones.
+- CI on `main` at the release commit: 7 of 7 green (run 40870578658); the pages
+  deployment of the same commit is green, and the local browser acceptance of
+  the playground passes 16 of 16.
+- `moon publish --dry-run` is not run here: it uploads the archive and needs
+  credentials and an explicit decision, and the mooncakes upload of 0.6.0 is the
+  one step of this release still pending that decision.
