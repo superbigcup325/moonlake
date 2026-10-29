@@ -645,6 +645,56 @@ expected to pass the cap and take no swap, so their peaks must not move. Result
 (§57): q18 fell from 325 MB to 145 MB without a budget and from 227 MB to 71 MB
 at 16 MB, and the other chains did not move.
 
+### The single-copy inner side contract (2026-10-29)
+
+Written before the code change, because these answers decide which batches may
+be released, who owns them, and what the measurement is allowed to claim.
+
+**The problem it answers.** A decorrelated `EXISTS` or `IN` runs its inner query
+as an ordinary query before the outer one starts (`run_parsed`), and a
+single-table inner query is collected by `drain_scan`: the scan's batches are
+pushed into an array and then concatenated into one result batch, so at the
+concatenation both the scan's batches and the result exist. Verification §58
+measured that as 10 bytes a cell where a column needs 5 (a derived table over two
+integers of six million rows: 157.7 MB against a 35.3 MB base, twice the 61 MB
+the columns need). q21 holds two such sides. The same collection serves every
+collected single-table result and every derived table over one table.
+
+**The change.** `drain_scan` concatenates column by column and lets go of each
+chunk's column as soon as it has been copied, so the peak is the result plus the
+columns not yet copied, not the result plus every chunk. Nothing else about the
+collected path moves: the same batch is returned, with the same rows in the same
+order, and an empty or single-chunk input is returned as it always was.
+
+**Ownership.** The batch contract says a batch belongs to the caller, but a
+source may hand out batches that share vectors with a table that outlives the
+query (an in-memory table is scanned without copying). So the release works on a
+shell the collection makes: each chunk's column array is copied into a new batch
+before it is kept, and only the shell's slots are cleared. A vector nobody else
+holds is freed when its slot is cleared; a vector the source also holds stays
+where it is, untouched. The source's own batches are never written to.
+
+**Scope.** The collected single-table result of `run_parsed`, which covers the
+inner side of a decorrelated subquery over one table and a derived table over
+one table. Not in scope, and still taken as they were: the build sides of a
+chain (`join_agg_sides` concatenates scans that are kept for the eager hand-off,
+which is a separate question about when that hand-off stops needing them), an
+inner query that aggregates or joins (it does not go through `drain_scan`), and
+the widening of keys, which §59 closed.
+
+**Counters and answers.** Unchanged by construction: the `scan` and `result`
+counters are pushed from the same places, and the batch returned is cell for cell
+the one the plain concatenation makes.
+
+**What it must show.** The release concatenation equals the plain one for several
+batches with NULLs, and leaves no column in its shells; a query over an in-memory
+table twice in a row answers the same and leaves the table's batches with their
+rows. The measurement is q21 at SF1, with and without a budget, against the build
+of §59 with q3, q5, q9, q18 and q20 as invariants, plus the derived-table probe of
+§58, which should fall from 157.7 MB toward the 97 MB one copy implies. The q21
+figure is not predicted beyond that: its two sides are resident one after the
+other, so what falls is the larger transient, not both.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
