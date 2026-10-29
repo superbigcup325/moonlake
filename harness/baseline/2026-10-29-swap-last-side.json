@@ -1,0 +1,228 @@
+{
+ "schema": 1,
+ "kind": "moonlake-join-chain-baseline",
+ "created_at": "2026-10-29T17:02:32+0800",
+ "git": {
+  "commit": "40a0c71a493f415c919e3ea76309c11dfae6849f",
+  "branch": "perf/follow-ups",
+  "subject": "docs: write the contract for swapping the last build side",
+  "dirty": true
+ },
+ "machine": {
+  "cpu_count": 16,
+  "quiet_gate": 3.0,
+  "quiet_load": 2.3
+ },
+ "python": "3.14.8",
+ "toolchain": [
+  "moon 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moon",
+  "moonc v0.10.17+d971670cd (2026-10-23) ~/.moon/bin/moonc",
+  "moonrun 0.1.20261023 (3778465 2026-10-23) ~/.moon/bin/moonrun",
+  "",
+  "Feature flags enabled: rr_moon_mod,rr_moon_pkg"
+ ],
+ "binaries": {
+  "candidate": {
+   "path": ".internal/main-swap.exe",
+   "sha256": "8c825b30b12453add8202a5c3a45ecf69f80c6324d41f2cf50dac444ce571a48"
+  },
+  "control": {
+   "path": ".internal/main-dense.exe",
+   "sha256": "14746f3528d5a0a268b513fb30c6f3eaa9cd07f0dab01ef2e9b10d2a5e2e6235"
+  }
+ },
+ "fixtures": "TPC-H CSVs in harness/data/sf1",
+ "params": {
+  "rounds": 3,
+  "budgets": [
+   "none",
+   "16M"
+  ],
+  "cases": [
+   "q1",
+   "q10",
+   "q11",
+   "q12",
+   "q18",
+   "q20",
+   "q21",
+   "q3",
+   "q5",
+   "q7",
+   "q8",
+   "q9"
+  ]
+ },
+ "answer_mismatches": 0,
+ "worst_spread": 0.104,
+ "cases": {
+  "q3/16M": {
+   "candidate_mb": 261.3,
+   "candidate_s": 3.52,
+   "control_mb": 262.8,
+   "control_s": 3.48,
+   "same_answer": true
+  },
+  "q5/16M": {
+   "candidate_mb": 445.3,
+   "candidate_s": 4.71,
+   "control_mb": 445.4,
+   "control_s": 4.73,
+   "same_answer": true
+  },
+  "q7/16M": {
+   "candidate_mb": 567.7,
+   "candidate_s": 7.75,
+   "control_mb": 565.8,
+   "control_s": 7.69,
+   "same_answer": true
+  },
+  "q8/16M": {
+   "candidate_mb": 500.9,
+   "candidate_s": 4.69,
+   "control_mb": 503.0,
+   "control_s": 4.71,
+   "same_answer": true
+  },
+  "q9/16M": {
+   "candidate_mb": 664.1,
+   "candidate_s": 7.39,
+   "control_mb": 663.7,
+   "control_s": 7.39,
+   "same_answer": true
+  },
+  "q10/16M": {
+   "candidate_mb": 245.1,
+   "candidate_s": 4.38,
+   "control_mb": 245.0,
+   "control_s": 4.37,
+   "same_answer": true
+  },
+  "q11/16M": {
+   "candidate_mb": 25.5,
+   "candidate_s": 0.39,
+   "control_mb": 23.4,
+   "control_s": 0.37,
+   "same_answer": true
+  },
+  "q18/16M": {
+   "candidate_mb": 71.2,
+   "candidate_s": 4.86,
+   "control_mb": 227.3,
+   "control_s": 5.68,
+   "same_answer": true
+  },
+  "q20/16M": {
+   "candidate_mb": 86.9,
+   "candidate_s": 2.86,
+   "control_mb": 86.9,
+   "control_s": 2.92,
+   "same_answer": true
+  },
+  "q21/16M": {
+   "candidate_mb": 684.4,
+   "candidate_s": 13.73,
+   "control_mb": 684.2,
+   "control_s": 13.7,
+   "same_answer": true
+  },
+  "q1/16M": {
+   "candidate_mb": 73.2,
+   "candidate_s": 5.53,
+   "control_mb": 73.2,
+   "control_s": 5.57,
+   "same_answer": true
+  },
+  "q12/16M": {
+   "candidate_mb": 39.5,
+   "candidate_s": 2.92,
+   "control_mb": 35.5,
+   "control_s": 2.87,
+   "same_answer": true
+  },
+  "q3/no budget": {
+   "candidate_mb": 328.9,
+   "candidate_s": 2.44,
+   "control_mb": 328.8,
+   "control_s": 2.38,
+   "same_answer": true
+  },
+  "q5/no budget": {
+   "candidate_mb": 524.2,
+   "candidate_s": 2.46,
+   "control_mb": 524.4,
+   "control_s": 2.46,
+   "same_answer": true
+  },
+  "q7/no budget": {
+   "candidate_mb": 527.4,
+   "candidate_s": 3.03,
+   "control_mb": 527.4,
+   "control_s": 3.04,
+   "same_answer": true
+  },
+  "q8/no budget": {
+   "candidate_mb": 475.1,
+   "candidate_s": 2.36,
+   "control_mb": 478.8,
+   "control_s": 2.36,
+   "same_answer": true
+  },
+  "q9/no budget": {
+   "candidate_mb": 699.8,
+   "candidate_s": 3.13,
+   "control_mb": 700.9,
+   "control_s": 3.14,
+   "same_answer": true
+  },
+  "q10/no budget": {
+   "candidate_mb": 237.0,
+   "candidate_s": 3.1,
+   "control_mb": 237.0,
+   "control_s": 2.81,
+   "same_answer": true
+  },
+  "q11/no budget": {
+   "candidate_mb": 27.3,
+   "candidate_s": 0.38,
+   "control_mb": 27.3,
+   "control_s": 0.37,
+   "same_answer": true
+  },
+  "q18/no budget": {
+   "candidate_mb": 145.2,
+   "candidate_s": 4.45,
+   "control_mb": 324.7,
+   "control_s": 4.48,
+   "same_answer": true
+  },
+  "q20/no budget": {
+   "candidate_mb": 99.2,
+   "candidate_s": 2.6,
+   "control_mb": 98.9,
+   "control_s": 2.61,
+   "same_answer": true
+  },
+  "q21/no budget": {
+   "candidate_mb": 615.2,
+   "candidate_s": 7.11,
+   "control_mb": 616.6,
+   "control_s": 7.12,
+   "same_answer": true
+  },
+  "q1/no budget": {
+   "candidate_mb": 35.3,
+   "candidate_s": 2.97,
+   "control_mb": 35.3,
+   "control_s": 2.95,
+   "same_answer": true
+  },
+  "q12/no budget": {
+   "candidate_mb": 35.3,
+   "candidate_s": 2.96,
+   "control_mb": 35.3,
+   "control_s": 2.91,
+   "same_answer": true
+  }
+ }
+}

@@ -371,7 +371,9 @@ test "the build side, not the whole join, decides whether a shape composes" {
     None =>
       abort("the shape must be accepted before its build side is measured")
   }
-  let scans = join_agg_scans(src, launch) catch { e => abort("\{e}") }
+  let scans = join_agg_scans_part(src, launch, [], launch.bq.steps.length() - 1) catch {
+    e => abort("\{e}")
+  }
   let build_batches = join_agg_sides(scans, launch.bq.steps)
   // the scan handed to the eager path is the same rows, before the step's
   // layout concat
@@ -405,7 +407,9 @@ test "a chain's fit check sums every build side" {
     Some(src) => src
     None => abort("the chain must be accepted before its sides are measured")
   }
-  let scans = join_agg_scans(src, launch) catch { e => abort("\{e}") }
+  let scans = join_agg_scans_part(src, launch, [], launch.bq.steps.length() - 1) catch {
+    e => abort("\{e}")
+  }
   assert_eq(scans.length(), 2)
   let bytes = join_agg_sides_bytes(scans)
   assert_true(bytes > batches_bytes(scans[0]))
@@ -651,4 +655,141 @@ test "a LIMIT over a composed join counts against the grouped rows" {
   // the fold cannot stop early: every joined row still decides a group
   assert_eq(ja_stat(stats, "joins"), 8L)
   assert_eq(ja_stat(stats, "scan probe"), 7L)
+}
+
+///|
+/// The rows the earlier steps of a chain hand the last step, and the rows table 0
+/// delivered, when the swap attempt ends inside the cap; `None` past it.
+fn ja_swap_prefix(
+  sql : String,
+  cat : @catalog.Catalog,
+) -> (Array[@types.DataBatch], Int64)? {
+  let launch = ja_launch(sql, cat)
+  let src = match streaming_join_agg_source(launch.bq, launch.sources) {
+    Some(s) => s
+    None => abort("expected a composable chain")
+  }
+  let have = join_agg_scans_part(src, launch, [], launch.bq.steps.length() - 2) catch {
+    e => abort("\{e}")
+  }
+  join_agg_swap_prefix(src, launch, have, ExecOptions::in_memory()) catch {
+    e => abort("\{e}")
+  }
+}
+
+///|
+/// A chain whose first step joins `n` probe rows of key 1 to one build row, so the
+/// swap prefix is exactly `n` rows.
+fn ja_wide_catalog(n : Int32) -> @catalog.Catalog {
+  let ks : Array[@types.Scalar] = []
+  let vs : Array[@types.Scalar] = []
+  for i in 0..<n {
+    ks.push(@types.Scalar::Int32(1))
+    vs.push(@types.Scalar::Int32(i))
+  }
+  let probe = [
+    @types.DataBatch::new(
+      [ja_col(@types.Int32, ks), ja_col(@types.Int32, vs)],
+      n,
+    ),
+  ]
+  let build = [
+    @types.DataBatch::new(
+      [
+        ja_col(@types.Int32, [@types.Scalar::Int32(1)]),
+        ja_col(@types.Int32, [@types.Scalar::Int32(100)]),
+      ],
+      1,
+    ),
+  ]
+  ja_catalog(probe, build)
+}
+
+///|
+test "a chain with few earlier rows swaps its last step" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  match ja_swap_prefix(JA_CHAIN, cat) {
+    Some((rows, scanned)) => {
+      assert_eq(batches_rows(rows), 8)
+      assert_eq(scanned, 7L)
+    }
+    None => abort("expected the swap to be taken")
+  }
+}
+
+///|
+fn batches_rows(batches : Array[@types.DataBatch]) -> Int32 {
+  let mut total = 0
+  for b in batches {
+    total += b.row_count()
+  }
+  total
+}
+
+///|
+test "the swap prefix stops at the cap: exactly the cap swaps, one more does not" {
+  let at = ja_swap_prefix(JA_CHAIN, ja_wide_catalog(SWAP_PREFIX_ROWS))
+  assert_true(at is Some(_))
+  let past = ja_swap_prefix(JA_CHAIN, ja_wide_catalog(SWAP_PREFIX_ROWS + 1))
+  assert_true(past is None)
+}
+
+///|
+test "the last step swaps only when its answer does not depend on row order" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  assert_true(join_agg_swappable(ja_launch(JA_CHAIN, cat).bq))
+  // a LEFT last step owes its unmatched rows to the side that would be hashed
+  let left = "select e.w as w, count(*) as n from probe p join build b on p.k = b.k left join extra e on b.k = e.k group by e.w"
+  assert_false(join_agg_swappable(ja_launch(left, cat).bq))
+  // a window over unsorted groups would keep different groups
+  assert_false(join_agg_swappable(ja_launch(JA_CHAIN + " limit 1", cat).bq))
+  assert_true(
+    join_agg_swappable(ja_launch(JA_CHAIN + " order by w limit 1", cat).bq),
+  )
+}
+
+///|
+test "a swapped chain answers what the unswapped chain answered" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let shapes = [
+    "b.k as bk, e.w as w, count(*) as n, sum(p.v) as s from probe p join build b on p.k = b.k join extra e on b.k = e.k group by b.k, e.w",
+    // a residual spanning both sides of the last step
+     "e.w as w, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k and p.v < e.w group by e.w",
+    // a build filter on the last table and a probe filter on its step
+     "e.w as w, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k and e.w > 100 and b.w < 300 group by e.w",
+  ]
+  for body in shapes {
+    let swapped = ja_show_sql("select " + body, cat, ExecOptions::in_memory())
+    let eager = ja_show_sql(
+      "select distinct " + body,
+      cat,
+      ExecOptions::in_memory(),
+    )
+    assert_eq(swapped, eager)
+    assert_true(swapped.length() > 0)
+  }
+}
+
+///|
+test "an empty prefix swaps, answers nothing and still reads the last table" {
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let sql = "select e.w as w, count(*) as n from probe p join build b on p.k = b.k and p.v > 1000 join extra e on b.k = e.k group by e.w"
+  match ja_swap_prefix(sql, cat) {
+    Some((rows, _)) => assert_eq(batches_rows(rows), 0)
+    None => abort("an empty prefix is inside the cap")
+  }
+  let stats : Array[(String, Int64)] = []
+  assert_eq(ja_show_sql(sql, cat, ExecOptions::in_memory()), [])
+  ignore(ja_run(sql, cat, ExecOptions::in_memory(), stats))
+  // the table is streamed to its end even with nothing to match it against
+  assert_eq(ja_stat(stats, "scan extra"), 4L)
+  assert_eq(ja_stat(stats, "joins"), 0L)
+}
+
+///|
+test "a swapped chain keeps its duplicate and NULL keys apart" {
+  // key 1 matches two `build` rows and two `extra` rows: 3 probe rows x 2 x 2
+  let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
+  let sql = "select b.k as k, count(*) as n from probe p join build b on p.k = b.k join extra e on b.k = e.k group by b.k"
+  assert_eq(ja_show_sql(sql, cat, ExecOptions::in_memory()), ["1|12", "2|2"])
 }

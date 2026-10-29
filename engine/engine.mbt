@@ -324,7 +324,23 @@ fn run_pipeline(
   let mut prebuilt : Array[Array[@types.DataBatch]]? = None
   match streaming_join_agg_source(bq, sources) {
     Some(src) => {
-      let scans = join_agg_scans(src, launch)
+      // The last build side may be swapped with the rows the earlier steps
+      // produce when those are few (the contract is in docs/ROADMAP.md): they
+      // become the hash side and the last table streams past them. What a
+      // swap attempt has scanned is kept, so no table is read twice.
+      let last = bq.steps.length() - 1
+      let mut have : Array[Array[@types.DataBatch]] = []
+      if join_agg_swappable(bq) {
+        have = join_agg_scans_part(src, launch, [], last - 1)
+        if join_agg_composes(join_agg_sides_bytes(have), opts) {
+          match join_agg_swap_prefix(src, launch, have, opts) {
+            Some(prefix) =>
+              return run_join_agg_swap(src, launch, have, prefix, opts, stats)
+            None => ()
+          }
+        }
+      }
+      let scans = join_agg_scans_part(src, launch, have, last)
       let sides = join_agg_sides_bytes(scans)
       if join_agg_composes(sides, opts) {
         return run_join_agg_pull(

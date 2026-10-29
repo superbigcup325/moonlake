@@ -4370,3 +4370,56 @@ span that overflows `Int64`, negative keys, and keys below, inside and above the
 range that are absent. `moon test` passes on wasm-gc (392) and native (405), the
 33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
 unchanged.
+
+## 57. The last build side swaps with a few earlier rows (2026-10-29)
+
+**What changed.** A chain keeps the `FROM` order, so q18 held all of `lineitem`,
+six million rows and their index, as its last build side to match nine orders.
+Under the contract in the roadmap, the last step of a chain now runs swapped when
+the rows the earlier steps produce are few: they become the hash side
+(`SwapCursor`, with the same `IntKeyIndex` and string-key fallback as
+`JoinCursor`) and the last table streams past them through its build filter.
+The step must be INNER over a lazy table, and the query must not carry
+`string_agg` or `approx_quantile`, nor a LIMIT or OFFSET without an ORDER BY.
+The decision is taken at run time: the earlier steps are pulled up to 65,536 rows
+(under a budget also a quarter of the budget in estimated bytes); inside that cap
+the step swaps, past it the chain runs as before.
+
+**One deviation from the contract.** The contract said a prefix that passes the
+cap is replayed ahead of the rest of the pull. The code drops it and lets the
+unswapped chain open table 0 again, so a query that passes the cap reads the part
+of table 0 the prefix pull consumed twice. The build sides of the earlier steps
+are kept, so none of them is read twice, and the counters come from the run that
+is kept. It is simpler and bounded by the cap, and the invariant rows below did
+not move beyond the spread.
+
+**What it is worth.** `harness/bench_join_chain.py` against the build of §56,
+`harness/baseline/2026-10-29-swap-last-side.json`, three rounds, quiet load 2.30,
+worst peak-RSS spread 10%, no answer disagreed. Peak RSS in MB with wall
+seconds:
+
+| query | budget | RSS | wall s |
+| --- | --- | --- | --- |
+| q18 | none | 324.7 → 145.2 | 4.48 → 4.45 |
+| q18 | 16 MB | 227.3 → 71.2 | 5.68 → 4.86 |
+| q3, q5, q10, q11 | none | within 2 MB | level |
+| q7, q8, q9, q20, q21 | none | within 4 MB | level |
+| q1, q12 | none | within 0.1 MB | level |
+| every other case | 16 MB | within the spread | level |
+
+q18 lands where §54 measured its `IN` subquery alone (147 MB), which is the
+prediction the contract left unclaimed. q3, q5 and q10 pass the cap and keep
+the unswapped chain, as expected, so their peaks do not move. q12 at 16 MB reads
+35.5 → 39.5 MB, inside the spread.
+
+**What it changes, on purpose.** Rows reach the fold in the table's order
+instead of the prefix's, which moves the first-seen order of groups and the order
+float sums accumulate in. The 33 golden comparisons pass unchanged, and the
+answers above are byte-identical at this scale.
+
+**The gates hold.** Seven tests pin the swap: a few earlier rows swap, the cap
+boundary (exactly the cap swaps, one more does not), the exclusions, equality
+with the unswapped chain for a residual, a probe filter and a build filter, an
+empty prefix that still reads the last table to its end, and duplicate and NULL
+keys. `moon test` passes on wasm-gc (398) and native (411), `check_cli.sh` and
+`spill_accept.sh` pass unchanged.

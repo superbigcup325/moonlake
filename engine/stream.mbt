@@ -469,21 +469,29 @@ fn join_agg_composes(sides_bytes : Int32, opts : ExecOptions) -> Bool {
 /// and because a budget too small to hold the sides sends them to the eager path,
 /// no table is read twice. The padded copies the cursors read are separate
 /// (`join_agg_sides`), so a query that keeps the eager path never pays for them.
-fn join_agg_scans(
+///
+/// The first `upto` build sides, taking the ones already scanned from `have` so
+/// that no table is read twice when a swap attempt has scanned a prefix of them.
+fn join_agg_scans_part(
   src : JoinSource,
   launch : Launch,
+  have : Array[Array[@types.DataBatch]],
+  upto : Int32,
 ) -> Array[Array[@types.DataBatch]] raise @types.SqlError {
   let bq = launch.bq
-  let steps = bq.steps
   let scans : Array[Array[@types.DataBatch]] = []
-  for i in 1..<steps.length() {
-    scans.push(
-      materialize_scan(
-        src.builds[i - 1],
-        scan_request_of(bq, launch.plan.table_cols[i], i),
-        scan_filter_of(bq, i),
-      ),
-    )
+  for i in 1..<(upto + 1) {
+    if i - 1 < have.length() {
+      scans.push(have[i - 1])
+    } else {
+      scans.push(
+        materialize_scan(
+          src.builds[i - 1],
+          scan_request_of(bq, launch.plan.table_cols[i], i),
+          scan_filter_of(bq, i),
+        ),
+      )
+    }
   }
   scans
 }
