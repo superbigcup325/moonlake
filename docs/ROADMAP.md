@@ -813,7 +813,10 @@ fell by exactly one copy (q21: 521.7 MB → 451.0 MB) and peak RSS did not move
 high-water is therefore not at the collapse — it is reached at a moment no
 checkpoint declares, or the runtime keeps freed blocks resident. The next step
 is to measure the high-water itself, and to name the unnamed 82.6 MB of resident
-memory, not to shrink this copy again.
+memory, not to shrink this copy again. §63 then did measure it, and the
+high-water *is* at that collapse (599.1 MB, where 497.5 MB is named): what did
+not move was the process peak, because the copy's real cost there was about
+57 MB against the 100.6 MB the census names.
 
 ### The high-water readout contract (2026-10-29)
 
