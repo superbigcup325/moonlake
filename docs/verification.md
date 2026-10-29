@@ -4858,3 +4858,91 @@ belong to tables whose last step has already run by that point. That lifetime is
 what the next contract is about. What a scan keeps while it narrows is already
 answerable from the code and was checked: a lazy source decodes only the
 projected columns, so a scan holds one batch's working set, not a table's.
+
+## 66. A step lets go of the tables it finished with, and the peak falls to the step before (2026-10-29)
+
+The contract ("The table lifetime contract", roadmap) was written first and
+committed alone (`f02f7d4`). When a step completes, the tables whose last step it
+was are released — the left-deep plan names each table in the step that joins it
+and nothing re-scans — and the census counts and names only the tables still
+alive at each point.
+
+**q21 at SF1, no budget, three interleaved runs each.**
+
+| run | `a56517e` | this build |
+| --- | --- | --- |
+| 1 | 560.1 MB | 488.3 MB |
+| 2 | 551.2 MB | 491.2 MB |
+| 3 | 550.6 MB | 492.1 MB |
+| median | 551.2 MB | 491.2 MB |
+
+−60.0 MB, and the contract's prediction held on every part of it: the named total
+at the peak 430.2 → 372.0 MB (predicted 369.2), the resident sample 539.0 →
+480.1 MB (predicted about 478), and the high-water 547.2 → 488.3 MB, at the
+bottom of the predicted 490–547 MB band rather than the middle.
+
+**Why the high-water followed, which §62 could not answer.** The release happens
+after the first step and before the allocations that used to set the peak, and
+the census shows exactly where the peak went: it is now at the *first* step's
+point, where the high-water was already 488.8 MB in §65 and is 488.3 MB here — the
+second step's collection, which used to reach 547.2 MB, now stays below what the
+first step had already reached. §62 released a copy *after* the peak and the
+high-water did not move; this releases 61.0 MB *before* it and the allocator
+reuses them. Both results are the same rule, seen from the two sides.
+
+**The lifetime, point by point.** `collected FROM tables`, the root a step's
+point names, as the chain gives tables up (this build, q21, no budget):
+
+| point | tables still alive | named MB | resident MB | high-water MB |
+| --- | --- | --- | --- | --- |
+| collected FROM tables | all six | 139.2 | 234.6 | 234.6 |
+| collected its output (step 1) | all six | 378.1 | 447.7 | 488.3 |
+| collected its output (step 2) | lineitem and supplier gone | 372.0 | 480.1 | 488.3 |
+| semi/anti join's inner side (step 4) | orders gone | 182.9 | 439.9 | 488.3 |
+| collected its output (step 3) | nation gone | 176.2 | 433.2 | 488.3 |
+| semi/anti join's inner side (step 5) | `__semi0` gone | 112.1 | 258.3 | 488.3 |
+
+The root falls 145.9 → 84.9 → 78.3 → 30.3 MB as the chain lets go: lineitem's
+narrowed copy (60.7) and supplier's (0.3) after the first step, orders (6.6)
+after the second, nation (44 B) after the third, `__semi0` (48.0) after the
+fourth. The peak's names are honest now: what is alive at 488.3 MB is named down
+to 372.0 MB, and the 108 MB that is not named does not change — the unnamed
+quantity was never a table.
+
+**The matrix.** `harness/bench_join_chain.py --budgets none,16M --rounds 3`
+against an `a56517e` binary built from the commit, median peak RSS in MB, worst
+round-to-round spread 18%:
+
+| case | no budget | 16 MB |
+| --- | --- | --- |
+| q3 | 302.2 → 302.9 | 261.4 → 245.4 |
+| q5 | 469.6 → 468.8 | 445.5 → 436.0 |
+| q7 | 409.4 → 321.6 | 523.6 → 436.1 |
+| q8 | 468.5 → 466.3 | 499.1 → 499.1 |
+| q9 | 662.4 → 652.0 | 661.4 → 661.2 |
+| q10 | 237.2 → 237.1 | 245.2 → 195.3 |
+| q11 | 27.3 → 25.4 | 25.5 → 25.5 |
+| q18 | 145.3 → 144.9 | 67.5 → 67.3 |
+| q20 | 99.3 → 93.3 | 86.8 → 73.5 |
+| q21 | 550.7 → 493.3 | 677.1 → 583.5 |
+| q1 | 35.3 → 35.3 | 73.3 → 75.4 |
+| q12 | 35.3 → 35.4 | 35.5 → 35.6 |
+
+Every answer is byte-identical and every wall time is inside the spread. The
+budget path was not predicted to gain and did: q21 at 16 MB fell 93.6 MB, q7
+87.5 MB and q10 49.9 MB, because a spilled step's probe side is read from the
+partition runs and the tables it finished with were still being held. q1 and q12
+single-step invariants did not move; q3, q5, q8, q9 and q18 sit inside the
+spread.
+
+**Gates.** 33 goldens, 408 wasm-gc and 422 native unit tests (the two new ones
+cover the per-step release and a table named by two steps), `harness/check_cli.sh`
+and `harness/spill_accept.sh` pass; `moon info` shows no interface change.
+
+**What is left.** The peak is still unnamed for 108 MB (480.1 MB resident against
+372.0 MB named) — unchanged by this round, which is the point: it was never a
+table. What the census does name at the peak is dominated by the previous step's
+output arriving as the probe input (174.5 MB), which is the eager path
+materializing a chain's intermediates. Lowering that means composing q21's chain
+rather than passing its rows through a materialized array, and that is a
+different contract.

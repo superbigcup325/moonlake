@@ -944,6 +944,22 @@ the result says so — that would leave allocating less as the only lever, which
 means composing q21's chain rather than materializing its intermediates, and that
 is a different contract.
 
+**Result (§66).** Kept, and it answers the question §62 left open. q21 without a
+budget: high-water 551.2 → 491.2 MB (median of three interleaved runs each), with
+the named total at the peak 430.2 → 372.0 MB and the resident sample 539.0 →
+480.1 MB, as predicted; the high-water landed at the bottom of the predicted band
+because the whole 61.0 MB was reused, not because the prediction was generous.
+The census shows where the peak went: it is now the *first* step's point (488.3
+MB, where it was already 488.8 MB in §65), and the second step's collection —
+the old peak at 547.2 MB — stays below it. §62's release after the peak moved
+nothing; this one, before it, moves everything, which is one rule with two sides:
+a release only pays if the allocation it hands memory back to comes later. The
+root the census names falls point by point as the chain lets go — 145.9 → 84.9 →
+78.3 → 30.3 MB — and the 108 MB that was never named does not change. The budget
+path gained too, unpredicted: q7 523.6 → 436.1 MB, q21 677.1 → 583.5 MB, q10
+245.2 → 195.3 MB. Every answer byte-identical, wall times inside the spread, the
+single-step invariants (q1, q12) unmoved.
+
 ### The high-water readout contract (2026-10-29)
 
 Written because §62 falsified the assumption behind the census's presentation:

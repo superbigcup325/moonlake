@@ -21,18 +21,10 @@ fn exec_joins(
     let cols : Array[@types.ColumnVector] = []
     return filter_batches([@types.DataBatch::new(cols, 1)], deferred)
   }
-  // Every collected table stays live for the whole chain, so a census point in
-  // a step names them once and whatever that step copies on top (§61).
-  let base : Int64 = match census {
-    Some(_) => {
-      let mut total = 0L
-      for t in tables {
-        total += batches_bytes(t).to_int64()
-      }
-      total
-    }
-    None => 0L
-  }
+  // A census point in a step names the tables still alive and whatever that step
+  // copies on top (§61). Which ones are alive changes: a step releases the
+  // tables whose last step it was, so the total is read at the point, not once
+  // before the loop.
   let mut acc = tables[steps[0].table]
   for i, step in steps {
     if i == 0 {
@@ -48,10 +40,12 @@ fn exec_joins(
       }
       match census {
         Some(c) => {
-          // the roots this step stands on: the tables always, the probe input
-          // once it is a step's own output, the filtered build scan if the
+          // the roots this step stands on: the tables still alive, the probe
+          // input once it is a step's own output, the filtered build scan if the
           // eager path just made one (a prescanned table is already counted)
-          let extra : Array[(String, Int64)] = [("collected FROM tables", base)]
+          let extra : Array[(String, Int64)] = [
+            ("collected FROM tables", alive_bytes(tables)),
+          ]
           extra.push(("probe input", batches_bytes(acc).to_int64()))
           // a scan the eager path did not pre-filter, and a predicate to apply,
           // means `right` is a fresh compacted copy; without the predicate
@@ -73,8 +67,45 @@ fn exec_joins(
         None => acc = join_or_spill(acc, right, step, opts, stats)
       }
     }
+    // The tables whose last step was this one have no reader left: the plan is
+    // left-deep, every table appears in the step that joins it, and nothing
+    // re-scans. Letting go of them here is what keeps a finished table out of
+    // the live set at the steps that come after — including the peak (§66).
+    for t in tables_finished_at(steps, i) {
+      tables[t] = []
+    }
   }
   filter_batches(acc, deferred)
+}
+
+///|
+/// The bytes of the tables still alive, for a census point.
+fn alive_bytes(tables : Array[Array[@types.DataBatch]]) -> Int64 {
+  let mut total = 0L
+  for t in tables {
+    total += batches_bytes(t).to_int64()
+  }
+  total
+}
+
+///|
+/// The table indexes whose last step is step `i`: after that step runs, nothing
+/// in the chain names them again. A table used by several steps (a self-join)
+/// is finished only by the last of them.
+fn tables_finished_at(steps : Array[JoinStep], i : Int32) -> Array[Int32] {
+  let out : Array[Int32] = []
+  for j, s in steps {
+    let mut last = j
+    for k, u in steps {
+      if u.table == s.table {
+        last = k
+      }
+    }
+    if last == i && !out.contains(s.table) {
+      out.push(s.table)
+    }
+  }
+  out
 }
 
 ///|

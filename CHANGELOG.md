@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A chain of joins lets go of a table as soon as its last step has run, instead of
+  holding every collected table until the query ends. On q21 at SF1 without a
+  budget the process high-water fell from 551.2 MB to 491.2 MB (median of three
+  interleaved runs each), q7 by 87.8 MB, and under a 16 MB budget q7 by 87.5 MB
+  and q21 by 93.6 MB, with every answer and wall time unchanged; the `--mem`
+  census now counts and names only the tables still alive at each point. Keeping
+  a table it had finished with is what one of these cost before: 61.0 MB of the
+  peak's live set on q21. Verification §66.
 - A chain of joins no longer copies each step's output into one batch before
   handing it to the next step: the collected batches are passed on, and only a
   consumer that needs one batch (a budgeted run's partitioner, the composed
