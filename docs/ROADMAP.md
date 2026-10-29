@@ -848,6 +848,14 @@ high-water that point does not name. If the largest sample is a declared point,
 the next clue is its composition; if no declared point reaches the high-water,
 the report says so and the unnamed memory is the finding.
 
+**Result (§63).** Built and measured. q21's high-water is set during the second
+chain step's collapse (599.1 MB, the same number the harness reports), where the
+named total is 497.5 MB: about 80 MB is unnamed at the peak and 92 MB less than
+the high-water itself. The semi/anti points, fifth and ninth by named bytes,
+hold 211 MB and 113 MB more than they name — freed heap the runtime has not
+returned. With §62 this says the peak responds to what a run allocates, not to
+how early a copy is released.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

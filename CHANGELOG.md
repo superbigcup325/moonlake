@@ -28,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   candidate against the binary before the change, with the single-step
   compositions kept in the matrix as invariants. The measurements are
   verification §51 and §52.
+- `exec --mem` now also reports where the peak is: at every census point it
+  records the process's resident and high-water KB (native, from `/proc`) and
+  the header names the point whose sample was the largest. On a target without
+  `/proc` the fields are absent rather than zero, so an absent readout never
+  passes for a small one. The measurement is verification §63.
 - `exec --mem`: a structure census that runs a query with the census on and
   prints one block per checkpoint label — the collected tables, a join step's
   collecting and collapsing output, a semi/anti join's inner copy and index —
