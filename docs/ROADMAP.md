@@ -558,6 +558,92 @@ does not pre-aggregate between steps. It changes neither the fold, nor the spill
 accounting, nor the row counters: `scan t` per table, `joins` for the rows the
 fold received, `aggregate`, `result`.
 
+### The build side swap contract (2026-10-29)
+
+Written before the code change, because these answers decide what the routing
+reads, which row order the fold sees and which counters may move.
+
+**The problem it answers.** A chain keeps the `FROM` order, so the last build
+side is whichever table was named last. q18 names `lineitem` last, joins it to
+nine orders, and holds all six million of its rows and their index to match
+them: that is what is left of its 326 MB once the aggregate (§54) and the index
+(§52, §56) are cheap. Hashing the nine rows and streaming `lineitem` past them
+holds the nine.
+
+**The shape.** What the chain composition already accepts, with two more
+conditions. The last step is INNER and its table is a lazy base table: LEFT and
+FULL stay out because their unmatched rows belong to the side that would become
+the hash side. The aggregate list holds neither `string_agg` nor
+`approx_quantile`, whose results depend on the order rows arrive in; every other
+kind is exact under reordering or, for float sums, averages and variances, equal
+to within the 1e-9 relative tolerance the golden comparison already applies. A
+query with OFFSET or LIMIT and no ORDER BY keeps the current path, because which
+groups a window over unsorted groups keeps would change. Everything else runs the
+chain as it does today.
+
+**The decision is taken at run time, from rows.** There are no statistics to
+read, so a prefix answers it. The chain of every step but the last is pulled (its
+builds scanned and checked against the budget as now, the last step's probe
+filter applied) and its output is collected up to a cap of 65,536 rows and, under
+a budget, a quarter of the budget in bytes, whichever is smaller. There are
+three outcomes:
+
+- The prefix ends inside the cap: swap. Its rows are the hash side.
+- The prefix is empty: swap, with an empty hash side.
+- The prefix passes the cap: no swap. The batches collected so far are replayed
+  ahead of the rest of the pull, the last table is scanned and sized as today,
+  and the chain runs unchanged. A budget those sides do not fit sends the query
+  to the eager path, which reads the probe table a second time; the discarded
+  attempt reports nothing, so the counters are the eager ones.
+
+The cap is a promise rather than a ratio: the swapped side is resident, so the
+swap never holds more than a fixed small amount, and under a budget it is the
+same kind of bound the fit check gives the other sides.
+
+**What the swap does.** One cursor, built next to `JoinCursor` and sharing its
+`IntKeyIndex` and its string-key fallback. The prefix rows are the build side;
+the last table arrives as the probe through `table_input_pull`, with the step's
+build filter as its scan filter; keys come from `keys_l` on the prefix and
+`keys_r` on the table's batches; the residual is checked per candidate pair; and
+the output is the step's combined layout, prefix columns then the table's, in
+batches of at most `JOIN_OUT_BATCH`. NULL keys never match. The fold's
+expressions stay bound to that layout, so nothing between the join and the fold
+changes.
+
+**What it changes, on purpose.** Rows reach the fold in the table's order
+instead of the prefix's, and for one probe row its prefix matches arrive in
+ascending order. That moves the first-seen order of groups, the tie order under
+an ORDER BY, the order float sums accumulate in, and the point at which an
+integer sum's checked add first overflows. None of those is a promise the engine
+makes; they are written here so that a changed row is read as this and not as a
+defect. A query whose ORDER BY is a total order answers as before.
+
+**Counters.** The five row counters read what the collected path reads: `scan
+<table>` for the streamed table is the rows its build filter kept, counted as the
+pull delivers them, and it is counted even when the hash side is empty, because
+the table is still streamed to its end; `joins` is the rows that reached the
+fold.
+
+**Exhaustion, early close, failure.** The stage owns no run file. The cursor
+returns `None` once, when the table's stream ends; an early stop is a failure,
+as it is for the chain, and the budgeted fold's own cleanup is unchanged.
+
+**Where it goes.** The scan of the last build moves out of `join_agg_scans` when
+the shape allows a swap, `run_pipeline` runs the prefix before it asks the fit
+check, and `run_join_agg_pull` takes the swapped cursor as the last link of
+`chain_pull`. The eager hand-off already accepts a shorter list of scans.
+
+**What it must show.** Answers equal to the unswapped chain for duplicate keys on
+both sides, NULL keys, an empty prefix, an empty table, a residual, a probe filter
+on the last step and a build filter on its table; the cap boundary at exactly the
+cap and one row past it; every exclusion above answering through the current path
+(LEFT, FULL, a derived table, `string_agg`, `approx_quantile`, LIMIT without ORDER
+BY); the golden comparisons and the five counters unchanged. The measurement is
+q18 at SF1, with and without a budget, against the build before the change, with
+the other TPC-H chains kept in the matrix as invariants: q3, q5 and q10 are
+expected to pass the cap and take no swap, so their peaks must not move. Expected
+and not yet claimed: q18 falling to about the peak of its `IN` subquery, 147 MB.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
