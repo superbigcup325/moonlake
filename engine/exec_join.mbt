@@ -269,6 +269,99 @@ fn IntKeyIndex::build(
 }
 
 ///|
+/// `IntKeyIndex::build` for a single `Int32` key column read in place. Widening
+/// the column to `Int64` first costs eight bytes a row for as long as the index
+/// is being built, which on a six million row side is 48 MB that exists only to
+/// be read once; this reads the narrow column and writes the same index.
+fn IntKeyIndex::build_i32(
+  bd : FixedArray[Int32],
+  bv : FixedArray[Bool],
+  n : Int32,
+) -> IntKeyIndex {
+  let slots : Map[Int64, Int32] = Map([])
+  let counts : Array[Int32] = []
+  let mut lo = 0L
+  let mut hi = 0L
+  let mut valid_rows = 0
+  for r in 0..<n {
+    if bv[r] {
+      let k = bd[r].to_int64()
+      if valid_rows == 0 {
+        lo = k
+        hi = k
+      } else {
+        if k < lo {
+          lo = k
+        }
+        if k > hi {
+          hi = k
+        }
+      }
+      valid_rows += 1
+    }
+  }
+  let span = hi - lo
+  let use_dense = valid_rows > 0 &&
+    span >= 0L &&
+    span < 16777216L &&
+    span + 1L <= 4L * valid_rows.to_int64() + 1024L
+  let dense : FixedArray[Int32] = if use_dense {
+    FixedArray::make((span + 1L).to_int(), -1)
+  } else {
+    FixedArray::make(0, 0)
+  }
+  for r in 0..<n {
+    if bv[r] {
+      let k = bd[r].to_int64()
+      if use_dense {
+        let off = (k - lo).to_int()
+        let slot = dense[off]
+        if slot >= 0 {
+          counts[slot] = counts[slot] + 1
+        } else {
+          dense[off] = counts.length()
+          counts.push(1)
+        }
+      } else {
+        match slots.get(k) {
+          Some(slot) => counts[slot] = counts[slot] + 1
+          None => {
+            slots[k] = counts.length()
+            counts.push(1)
+          }
+        }
+      }
+    }
+  }
+  let m = counts.length()
+  let starts : FixedArray[Int32] = FixedArray::make(m + 1, 0)
+  let mut total = 0
+  for slot in 0..<m {
+    starts[slot] = total
+    total += counts[slot]
+  }
+  starts[m] = total
+  let ids : FixedArray[Int32] = FixedArray::make(total, 0)
+  let cursor : Array[Int32] = []
+  for slot in 0..<m {
+    cursor.push(starts[slot])
+  }
+  for r in 0..<n {
+    if bv[r] {
+      let k = bd[r].to_int64()
+      let slot = if use_dense {
+        dense[(k - lo).to_int()]
+      } else {
+        slots.get(k).unwrap()
+      }
+      ids[cursor[slot]] = r
+      cursor[slot] = cursor[slot] + 1
+    }
+  }
+  { lo, dense, slots, starts, ids, }
+}
+
+///|
 /// One hash join as a cursor. The build side is resident — a probe row has to
 /// find its matches — but the probe side arrives a batch at a time and the
 /// output leaves in batches of at most `JOIN_OUT_BATCH` rows, so a caller never
@@ -338,6 +431,24 @@ fn JoinCursor::prime(
   left_keys : Array[@types.ColumnVector],
 ) -> Unit {
   let n_build = self.build.row_count()
+  let narrow : (FixedArray[Int32], FixedArray[Bool])? = match self.build_keys {
+    [@types.I32(d, v)] =>
+      if int_key_vecs(left_keys) is Some(_) {
+        Some((d, v))
+      } else {
+        None
+      }
+    _ => None
+  }
+  match narrow {
+    Some((d, v)) => {
+      self.fast = true
+      self.int_index = IntKeyIndex::build_i32(d, v, n_build)
+      self.primed = true
+      return
+    }
+    None => ()
+  }
   match int_key_cols(self.build_keys, left_keys) {
     Some((bd, bv, _, _)) => {
       self.fast = true
@@ -1072,20 +1183,12 @@ fn join_semi(
   let single_int = step.keys_r.length() == 1 &&
     inner_keys[0] is (@types.I32(_, _) | @types.I64(_, _))
   if single_int {
-    let d : FixedArray[Int64] = match inner_keys[0] {
-      @types.I32(d, _) => {
-        let od : FixedArray[Int64] = FixedArray::make(n_inner, 0L)
-        for i in 0..<n_inner {
-          od[i] = d[i].to_int64()
-        }
-        od
-      }
-      @types.I64(d, _) => d
+    // NULL inner keys match nothing, and the index skips them
+    int_index = match inner_keys[0] {
+      @types.I32(d, valid) => IntKeyIndex::build_i32(d, valid, n_inner)
+      @types.I64(d, valid) => IntKeyIndex::build(d, valid, n_inner)
       _ => abort("unreachable: single_int checked above")
     }
-    let valid = v_validity(inner_keys[0])
-    // NULL inner keys match nothing, and the index skips them
-    int_index = IntKeyIndex::build(d, valid, n_inner)
   } else {
     for r in 0..<n_inner {
       let kv : Array[@types.Scalar] = []

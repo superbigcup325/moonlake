@@ -4461,3 +4461,38 @@ making a second copy of the scan before the side exists, and indexing 32-bit key
 without widening them first. Neither is taken here. The first changes how a
 decorrelated subquery is executed, the second the signature of the key index and
 its callers, and each needs its own measurement.
+
+## 59. An Int32 key is indexed in place (2026-10-29)
+
+**What changed.** §58 named the widening of an `Int32` key column to `Int64`
+before indexing as one of two costs on the inner side of q21. The index builder
+now has `IntKeyIndex::build_i32`, which reads a single `Int32` key column as it
+is and produces the same index (same compact-range rule, same slots, starts and
+ids). The hash join cursor and the semi and anti side use it when the build key is
+one `Int32` column; `Int64` keys, pairs of keys and the string path are as before.
+The probe side was already read batch by batch and is unchanged.
+
+**What it is worth.** Three interleaved rounds against the build of §57, quiet
+load under 2, answers identical byte for byte. Peak RSS in MB, wall seconds level
+in every row:
+
+| query | no budget | 16 MB |
+| --- | --- | --- |
+| q21 | 605.9 → 603.2 | 679.3 → 678.5 |
+| q3 | 329.0 → 306.7 | 261.6 → 263.0 |
+| q5 | 524.9 → 476.9 | 445.5 → 443.7 |
+| q9 | 700.4 → 692.2 | 664.3 → 663.9 |
+| q18 | 145.3 → 145.2 | 69.2 → 75.3 |
+| q20 | 99.3 → 99.2 | 87.0 → 87.2 |
+
+q3 and q5 fall by 22 and 48 MB without a budget, which is the temporary `Int64`
+column of their large build sides. **q21 does not move.** The widened column is
+not what sets its peak: the 48 MB the §58 estimate gave it was a transient that
+does not coincide with the maximum. That leaves the second term of §58, the inner
+side existing twice, as the remaining lever, and this measurement supports it only
+by elimination. The 16 MB rows are inside the spread (q18's 6 MB is the spread).
+
+**The gates hold.** One test builds the same indexes from the narrow and the
+widened column for a compact set with a repeat and a NULL and for a wide set with
+extreme keys. `moon test` passes on wasm-gc (399) and native (412), the 33 golden
+comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass unchanged.

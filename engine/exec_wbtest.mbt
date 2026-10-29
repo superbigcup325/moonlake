@@ -146,3 +146,34 @@ test "a compact key range is looked up by offset and a wide one by hash" {
   assert_eq(neg.starts[m2 + 1] - neg.starts[m2], 2)
   assert_eq(neg.slot(1L), -1)
 }
+
+///|
+test "an Int32 key index built in place is the one the widened column builds" {
+  // a compact range with a repeat and a NULL, and a wide set with a negative key
+  let compact : FixedArray[Int32] = [7, 7, 9, 0, 11, 9]
+  let wide : FixedArray[Int32] = [5, -2147483647, 5, 2147483647, 100000000]
+  let cv : FixedArray[Bool] = [true, true, true, false, true, true]
+  let wv : FixedArray[Bool] = [true, true, true, true, true]
+  for pair in [(compact, cv, 6), (wide, wv, 5)] {
+    let (d, v, n) = pair
+    let widened : FixedArray[Int64] = FixedArray::make(n, 0L)
+    for i in 0..<n {
+      widened[i] = d[i].to_int64()
+    }
+    let a = IntKeyIndex::build(widened, v, n)
+    let b = IntKeyIndex::build_i32(d, v, n)
+    assert_eq(a.dense.length(), b.dense.length())
+    assert_eq(a.starts.length(), b.starts.length())
+    assert_eq(a.ids.length(), b.ids.length())
+    for i in 0..<a.ids.length() {
+      assert_eq(a.ids[i], b.ids[i])
+    }
+    for i in 0..<a.starts.length() {
+      assert_eq(a.starts[i], b.starts[i])
+    }
+    for i in 0..<n {
+      assert_eq(a.slot(widened[i]), b.slot(widened[i]))
+    }
+    assert_eq(a.slot(1L), b.slot(1L))
+  }
+}

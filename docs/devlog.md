@@ -2454,3 +2454,8 @@ The plan question was last: a chain holds whichever table was named last, and
 q18 names its largest. With a contract written first, the last step now hashes
 the few rows before it and streams the big table past them, and q18 fell from
 325 MB to 145 MB, the peak of its own subquery (verification §57).
+
+q21 was supposed to gain from indexing 32-bit keys without widening them. It did
+not: q3 and q5 fell by 22 and 48 MB and q21 stayed at 603 MB, so the estimate in
+the previous record was a transient and not the peak (verification §59). What is
+left there is the inner side held twice.

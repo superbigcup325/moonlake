@@ -62,6 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   no longer held whole. q18 at SF1 drops from 325 MB to 145 MB without a budget
   and from 227 MB to 71 MB under 16 MB. Rows reach the fold in a different order,
   so the order of groups without a total ORDER BY can differ (verification §57).
+- A hash join over one `Int32` key indexes the key column in place instead of
+  widening it to `Int64` first. Without a budget q3 holds 22 MB less and q5 48 MB,
+  with identical answers (verification §59).
 - A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
   batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
   both `FROM` items are lazy base tables, the key lists are non-empty, and there
