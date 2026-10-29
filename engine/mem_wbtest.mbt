@@ -152,8 +152,11 @@ test "a join point names the scanned tables at their own size" {
   assert_true(text.contains("# collected FROM tables: \{expected} bytes"))
   assert_true(text.contains("scan big: "))
   assert_true(text.contains("scan small: "))
-  // the step's own copies and index make its point larger than the tables'
-  assert_true(text.contains("# hash join collapsed its output (step 1): "))
+  // the step's own copies and index make its point larger than the tables',
+  // and the collected output is the last point of a step: there is no collapse
+  // to name any more
+  assert_true(text.contains("# hash join collected its output (step 1): "))
+  assert_true(!text.contains("collapsed"))
 }
 
 ///|

@@ -59,20 +59,18 @@ fn exec_joins(
           if !prescanned[step.table] && step.build_filter is Some(_) {
             extra.push(("filtered build scan", batches_bytes(right).to_int64()))
           }
-          acc = [
-            join_or_spill(
-              acc,
-              right,
-              step,
-              opts,
-              stats,
-              census=Some(c),
-              extra~,
-              tag="step \{i}",
-            ),
-          ]
+          acc = join_or_spill(
+            acc,
+            right,
+            step,
+            opts,
+            stats,
+            census=Some(c),
+            extra~,
+            tag="step \{i}",
+          )
         }
-        None => acc = [join_or_spill(acc, right, step, opts, stats)]
+        None => acc = join_or_spill(acc, right, step, opts, stats)
       }
     }
   }
@@ -92,13 +90,19 @@ fn join_or_spill(
   census~ : MemCensus? = None,
   extra~ : Array[(String, Int64)] = [],
   tag~ : String = "",
-) -> @types.DataBatch raise @types.SqlError {
+) -> Array[@types.DataBatch] raise @types.SqlError {
   if opts.budget <= 0 {
+    // no budget: nothing downstream will partition this output, so the step's
+    // collected batches are handed on as they are (§65)
     return join_step(acc, right, step, census~, extra~, tag~)
   }
+  // With a budget the eager path hands the next step (or the partitioner) one
+  // batch a side, as it always did: a chain of many small batches costs a
+  // partitioner a copy per batch per partition, and holding the handover's
+  // batch and its copy at once measured worse than not collapsing (§65).
   let total = batches_bytes(acc) + batches_bytes(right)
   if total <= opts.budget {
-    return join_step(acc, right, step, census~, extra~, tag~)
+    return join_step(acc, right, step, census~, extra~, tag~, collapse=true)
   }
   match opts.spill {
     Some(store) => {
@@ -107,12 +111,30 @@ fn join_or_spill(
           "cross join input exceeds the memory budget (\{total} bytes > \{opts.budget}); a cross join has no keys to partition on",
         )
       }
-      grace_join(acc, right, step, opts.budget, store, stats)
+      collapse_handed(
+        grace_join(acc, right, step, opts.budget, store, stats),
+        step,
+      )
     }
     None =>
       raise @types.SqlError::Execute(
         "join input exceeds the memory budget (\{total} bytes > \{opts.budget}); provide a spill store (--spill-dir) or raise the budget (--memory)",
       )
+  }
+}
+
+///|
+/// Collapse a spilled step's output to the one batch the eager path handed on
+/// before, for a budgeted run: the next step partitions it, and a partitioner
+/// slices every input batch into every partition (§65).
+fn collapse_handed(
+  batches : Array[@types.DataBatch],
+  step : JoinStep,
+) -> Array[@types.DataBatch] {
+  if batches.length() <= 1 {
+    batches
+  } else {
+    [concat_batches(batches, step.out_dtypes)]
   }
 }
 
@@ -145,7 +167,8 @@ fn join_step(
   census~ : MemCensus? = None,
   extra~ : Array[(String, Int64)] = [],
   tag~ : String = "",
-) -> @types.DataBatch raise @types.SqlError {
+  collapse~ : Bool = false,
+) -> Array[@types.DataBatch] raise @types.SqlError {
   if step.kind is Right {
     return join_swapped(acc, right, step)
   }
@@ -186,14 +209,20 @@ fn join_step(
     }
     None => ()
   }
+  // The collected output is handed on as it is: the next step's probe side and
+  // every reader past the chain take batches, so collapsing it into one would
+  // allocate a second copy of the whole step's output for nobody (contract:
+  // docs/ROADMAP.md, measurement §65). A budgeted run keeps the one batch it
+  // handed on before, because the partitioner slices every input batch into
+  // every partition and measured 4.4x slower with many (§65).
+  if !collapse {
+    return out
+  }
   let result = concat_batches(out, step.out_dtypes)
   match census {
     Some(c) => {
-      // the collapse: the collected output and the single batch it becomes are
-      // live together until the collected one lets go. Only what is still alive
-      // here is named: the cursor (and with it the index and the build copy) was
-      // released before the concatenation started, and naming it would both
-      // overstate the point and keep it alive for the census run alone.
+      // the collapse, where a budgeted run still makes one: only what is alive
+      // here is named, and the cursor was released before the copy started
       let entries = extra.copy()
       entries.push(("collected output", batches_bytes(out).to_int64()))
       entries.push(
@@ -203,7 +232,7 @@ fn join_step(
     }
     None => ()
   }
-  result
+  [result]
 }
 
 ///|
@@ -1280,7 +1309,7 @@ fn join_semi(
   census~ : MemCensus? = None,
   extra~ : Array[(String, Int64)] = [],
   tag~ : String = "",
-) -> @types.DataBatch raise @types.SqlError {
+) -> Array[@types.DataBatch] raise @types.SqlError {
   let anti = step.kind is Anti || step.kind is AntiLoose
   let null_key_excludes = step.kind is Anti
   let inner_batch = concat_batches(inner, [])
@@ -1421,7 +1450,7 @@ fn join_semi(
     let right_ids : Array[Int32] = Array::make(left_ids.length(), -1)
     columns.push(gather(inner_batch.columns()[c], right_ids))
   }
-  @types.DataBatch::new(columns, left_ids.length())
+  [@types.DataBatch::new(columns, left_ids.length())]
 }
 
 ///|
@@ -1434,7 +1463,7 @@ fn join_swapped(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,
-) -> @types.DataBatch raise @types.SqlError {
+) -> Array[@types.DataBatch] raise @types.SqlError {
   let right_width = step.right_width
   let left_width = step.out_dtypes.length() - right_width
   // build: the accumulated (optional) side; keys are the Flat left keys
@@ -1535,5 +1564,5 @@ fn join_swapped(
   for c in 0..<right_width {
     columns.push(gather(probe.columns()[c], right_ids))
   }
-  @types.DataBatch::new(columns, acc_ids.length())
+  [@types.DataBatch::new(columns, acc_ids.length())]
 }

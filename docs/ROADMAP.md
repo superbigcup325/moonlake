@@ -873,6 +873,23 @@ three runs each with the medians and the spread printed, at SF1 and with the
 high-water falls beyond the spread and no invariant moves beyond it; a negative
 result reverts the code and keeps this record (§60, §62).
 
+**Result (§65).** Confirmed on the shape the contract named, and it stops
+exactly where the contract said a collapse is still required. Without a budget
+no step copies its collected output: q21's high-water fell from 604.9 to 546.7
+MB (median of three interleaved runs each, −9.6%) into the predicted
+540–560 MB, its census names six points instead of nine, and the largest is
+"hash join collected its output (step 2)" at 430.2 MB — the point and the size
+predicted. q7 fell 112.0 MB, q20 5.1 MB, and the invariants (q1, q6, q12, q18,
+q20) stayed inside the 15% spread with every wall time and every answer
+unchanged. Under the 16 MB budget the collapse is still made, now at the
+producer rather than by the shape of a variable, because a partitioner slices
+each input batch into every partition: without it q7 ran 4.4x slower (35.6 s
+against 8.0 s, 2122 MB peak), collapsing both sides inside the partitioner cost
+q3 +86 MB and q5 +160 MB, and collapsing only the handover there cost q21 +98 MB
+— the caller still holds the batches while the copy exists. So a budgeted run
+hands on one batch a side as it always did, and that is now measured rather than
+accidental.
+
 ### The high-water readout contract (2026-10-29)
 
 Written because §62 falsified the assumption behind the census's presentation:

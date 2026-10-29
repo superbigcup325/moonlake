@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- A chain of joins no longer copies each step's output into one batch before
+  handing it to the next step: the collected batches are passed on, and only a
+  consumer that needs one batch (a budgeted run's partitioner, the composed
+  fold's build side, the grace merge) collapses. On q21 at SF1 without a budget
+  the process high-water fell from 604.9 MB to 546.7 MB (median of three
+  interleaved runs each) and q7 by 112.0 MB, with every answer, counter and wall
+  time unchanged; the `--mem` census now names six points instead of nine,
+  because a step no longer declares a collapse it does not make. Under a memory
+  budget the collapse is kept, as it was: a partitioner slices each input batch
+  into every partition, and handing it many small batches measured 4.4x slower.
+  Verification §65.
+
 ## [0.6.0] - 2026-10-29
 
 Everything since 0.5.1 is in this version, and each entry carries the

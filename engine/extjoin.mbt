@@ -47,9 +47,11 @@ fn grace_join(
   budget : Int32,
   store : SpillStore,
   stats : Array[(String, Int64)],
-) -> @types.DataBatch raise @types.SqlError {
-  let out = join_partitions(acc, right, step, budget, store, stats, 0)
-  concat_batches(out, step.out_dtypes)
+) -> Array[@types.DataBatch] raise @types.SqlError {
+  // a partition's replay is a step's own batches, handed on as they are: the
+  // caller collapses them once when the next step (or the eager path's own
+  // bookkeeping) wants one batch a side (§65)
+  join_partitions(acc, right, step, budget, store, stats, 0)
 }
 
 ///|
@@ -96,7 +98,9 @@ fn join_partitions(
     let lb = batches_bytes(left_p)
     let bb = batches_bytes(build_p)
     if lb <= budget && bb <= budget {
-      out.push(join_step(left_p, build_p, step))
+      for b in join_step(left_p, build_p, step) {
+        out.push(b)
+      }
     } else if depth < JOIN_MAX_DEPTH {
       let sub = join_partitions(
         left_p,
