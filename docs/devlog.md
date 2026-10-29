@@ -2427,3 +2427,8 @@ The lesson is the one this arc keeps teaching: a routing rule measured against a
 slow implementation records the implementation, not the shape. The right response
 to "this shape costs 32 MB more" turned out not to be a narrower predicate but a
 better index, and the record now says which of the two it was.
+
+The follow-up was the other half of that index: the semi, anti and right joins
+still kept a list per key. They take the range index now, and the measurement
+said it changes nothing, which retires the lever the previous entry named. The
+code is simpler for it and the record says so (verification §53).

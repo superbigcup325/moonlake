@@ -513,8 +513,8 @@ records the rest of what it decided, with §52 superseding its budget-only rule.
 were before, and E6c measures them; the chain makes the first of them larger, one
 side per step, which is why the fit check sums them. §52 cut what a resident side
 costs to index, and since `join_step` builds its hash join on the same cursor
-that win reached the eager path too; the `RIGHT` and `SEMI`/`ANTI` forms still
-index their side as a list per key.
+that win reached the eager path too; the `RIGHT` and `SEMI`/`ANTI` forms take
+the same index on their integer path, and measured neutral (verification §53).
 
 ### The chain composition contract (2026-10-28)
 
