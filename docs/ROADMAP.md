@@ -769,6 +769,44 @@ and 263.5 MB, so §58's inner-side reading was aimed at the wrong copy. About
 88 MB of the peak is outside the contract, as are the grace path (a budgeted run
 names only its tables) and the pulled shapes (nothing).
 
+### The collapse single copy contract (2026-10-29)
+
+Written after §61 named the peak, because the census says where the bytes are
+and this is the smallest change that takes one of the two copies away.
+
+**Why this is not §60 again.** §60 copied a collected result's columns one at a
+time and released each one, in `drain_scan`, where the batches belong to a
+source: releasing them leaves the source's shells behind and the source's data
+resident, and q21 did not move. A join step's collected output is different.
+`JoinCursor::slice` builds every output batch with `gather`, so a step owns its
+collected output outright, and nothing else holds those columns. §61's largest
+point was exactly this pair — the collected output and the batch it becomes,
+100.6 MB each on top of a 174.5 MB probe input and 146.0 MB of collected tables.
+
+**What changes.** `concat_batches_releasing`, used by `join_step` for its output
+collapse only: the collapsed batch is built one column at a time and each source
+column is dropped from its batch as soon as it has been copied, so the
+destination grows while the collected output shrinks and the two are never both
+at full width. The batches must be the caller's own; the function drops
+references and never writes a source column's contents. The build-side concat
+keeps the plain function: `right` may be a catalog table's own batches
+(`prescanned`), and releasing those would empty the catalog.
+
+**What it must not change.** The answer, row by row; the five row counters, the
+spill counters and the plan; the answer to a query whose collected output is a
+single batch (already returned as is, never copied). A column a step shares with
+its build or probe side keeps its bytes where they are: dropping a reference is
+sound, freeing is not promised.
+
+**Prediction.** q21 at SF1 without a budget: the largest census point falls from
+521.7 MB to about 421.1 MB (the collapse's two 100.6 MB copies become one), and
+peak RSS from about 610 MB toward about 510 MB. The other chain queries
+(q3, q5, q7, q8, q9, q10, q11, q12) are expected to improve where their peak is
+a collapse; q1 and q6, which have no join step, and q18 and q20, whose peaks are
+pulled, are invariants and must not move. If a collected column is shared with
+its build side, less memory leaves than predicted; that is a result, not a
+failure of the measurement.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
