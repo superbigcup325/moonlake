@@ -641,8 +641,9 @@ cap and one row past it; every exclusion above answering through the current pat
 BY); the golden comparisons and the five counters unchanged. The measurement is
 q18 at SF1, with and without a budget, against the build before the change, with
 the other TPC-H chains kept in the matrix as invariants: q3, q5 and q10 are
-expected to pass the cap and take no swap, so their peaks must not move. Expected
-and not yet claimed: q18 falling to about the peak of its `IN` subquery, 147 MB.
+expected to pass the cap and take no swap, so their peaks must not move. Result
+(§57): q18 fell from 325 MB to 145 MB without a budget and from 227 MB to 71 MB
+at 16 MB, and the other chains did not move.
 
 ## Known limits, and what closing each one means
 

@@ -56,6 +56,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   a compact range (the TPC-H surrogate keys), instead of a hash map entry per
   distinct key. With no budget q3 holds 28 MB less, q5 62 MB and q18 63 MB, with
   identical answers (verification §56).
+- The last step of a join chain under a `GROUP BY` runs with its sides swapped
+  when the earlier steps produce few rows (at most 65,536): those rows become the
+  hash side and the last table streams past them, so a large table named last is
+  no longer held whole. q18 at SF1 drops from 325 MB to 145 MB without a budget
+  and from 227 MB to 71 MB under 16 MB. Rows reach the fold in a different order,
+  so the order of groups without a total ORDER BY can differ (verification §57).
 - A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
   batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
   both `FROM` items are lazy base tables, the key lists are non-empty, and there

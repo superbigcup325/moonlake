@@ -2449,3 +2449,8 @@ The last index change was the lookup itself: surrogate keys are dense, so a
 build side that maps keys to slots through a hash map can use an array instead.
 q3, q5 and q18 fell by 28 to 63 MB without a budget (verification §56). What is
 left in q18 is the resident lineitem build side, which is a planning question.
+
+The plan question was last: a chain holds whichever table was named last, and
+q18 names its largest. With a contract written first, the last step now hashes
+the few rows before it and streams the big table past them, and q18 fell from
+325 MB to 145 MB, the peak of its own subquery (verification §57).
