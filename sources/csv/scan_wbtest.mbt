@@ -104,11 +104,25 @@ test "a large scan reads ranges, not the file" {
   assert_true(largest_read(h) <= PREFIX_BYTES)
   assert_true(bytes_read(h) <= PREFIX_BYTES.to_int64())
   let batches = drain(entry)
-  // 100,000 data rows, 4096 per batch, and the ranges stay whole batches
-  assert_eq(batches.length(), 25)
+  // 100,000 data rows, BATCH_SIZE per batch, and the ranges stay whole batches
+  let full = 100000 / BATCH_SIZE
+  let remainder = 100000 - full * BATCH_SIZE
+  let expect = if remainder == 0 { full } else { full + 1 }
+  assert_eq(batches.length(), expect)
   assert_eq(batches[0].row_count(), BATCH_SIZE)
-  assert_eq(batches[24].row_count(), 100000 - 24 * BATCH_SIZE)
-  assert_eq(batches[24].columns()[0].get(1695), @types.Scalar::Int32(1))
+  let last = batches[batches.length() - 1]
+  assert_eq(
+    last.row_count(),
+    if remainder == 0 {
+      BATCH_SIZE
+    } else {
+      remainder
+    },
+  )
+  assert_eq(
+    last.columns()[0].get(last.row_count() - 1),
+    @types.Scalar::Int32(1),
+  )
   // no read ever asked for the whole file, and the reads were range sized
   assert_eq(largest_read(h), CHUNK_BYTES)
   assert_true(
