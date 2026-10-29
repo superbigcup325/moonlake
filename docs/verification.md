@@ -4423,3 +4423,41 @@ with the unswapped chain for a residual, a probe filter and a build filter, an
 empty prefix that still reads the last table to its end, and duplicate and NULL
 keys. `moon test` passes on wasm-gc (398) and native (411), `check_cli.sh` and
 `spill_accept.sh` pass unchanged.
+
+## 58. Where the semi and anti side of q21 spends its memory (2026-10-29)
+
+This is a measurement, not a change. §54 left q21 at about 615 MB without a
+budget and could only say that the `lineitem` side of its `EXISTS` and `NOT
+EXISTS` held it. The probes below separate the two costs that side has, using
+the build of §57 and the same harness runner, three rounds each, quiet host.
+Peak RSS in MB, over a base of 35.3 MB for a streamed scan:
+
+| probe | RSS |
+| --- | --- |
+| `lineitem` as a derived table, 2 integer columns | 157.7 |
+| the same with 3 integer columns | 218.8 |
+| the same with 2 integer and 2 date columns | 279.1 |
+| `EXISTS` over 2 integer columns, left side under 1,000 orders | 240.0 |
+| `IN` over 1 integer column, left side under 1,000 orders | 184.1 |
+
+**Holding the rows.** Each extra integer or date column adds about 61 MB for six
+million rows, 10 bytes a cell, against the 5 bytes a cell the column itself needs
+(four for the value, one for its validity flag). That is two copies: the inner
+query runs as an ordinary query, so its scan batches and the one result batch it
+concatenates into exist together at the peak.
+
+**Indexing the rows.** The `EXISTS` probe is 82 MB above the derived table of the
+same two columns, and the `IN` probe is about 88 MB above its one-column
+equivalent. That is the semi join's key conversion and index. The key column is
+widened to an `Int64` array first (48 MB for six million rows), then the index
+adds its row-id array (24 MB) and its slot and start tables. These two terms
+explain the figure; the split between them is estimated from the array sizes and
+was not read from a counter.
+
+**What q21 holds.** Two such sides at once, one for `EXISTS` over two columns and
+one for `NOT EXISTS` over its date-filtered rows, plus the probe pipeline and the
+`orders` side, which is the 615 MB. So the lever is on the inner side: not
+making a second copy of the scan before the side exists, and indexing 32-bit keys
+without widening them first. Neither is taken here. The first changes how a
+decorrelated subquery is executed, the second the signature of the key index and
+its callers, and each needs its own measurement.
