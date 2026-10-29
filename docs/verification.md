@@ -4848,7 +4848,13 @@ collapse now happens after the grace path returns instead of inside the step,
 which holds the partition outputs and the merged batch at once for a moment.
 
 **What is left.** The peak is still unnamed for about 109 MB (539.0 MB resident
-against 430.2 MB named), and the largest named member of the peak's point is the
-probe input (174.5 MB) — a table's narrowed copy alive while its scan's batches
-are. That is the next lever, and it is a different contract: what a scan keeps
-when it narrows, not what the chain passes on.
+against 430.2 MB named) — more than any single structure the census declares, so
+attributing it is the next contract's first question. Of the named parts, the
+two largest are the previous step's output arriving as the probe input (174.5 MB,
+a materialized intermediate the eager path needs) and the tables themselves
+(`collected FROM tables`, 145.9 MB), which §61's rule keeps alive for the whole
+chain: 61.0 MB of them — lineitem's narrowed copy (60.7) and supplier's (0.3) —
+belong to tables whose last step has already run by that point. That lifetime is
+what the next contract is about. What a scan keeps while it narrows is already
+answerable from the code and was checked: a lazy source decodes only the
+projected columns, so a scan holds one batch's working set, not a table's.
