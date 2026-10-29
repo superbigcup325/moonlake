@@ -658,7 +658,7 @@ fn build_column(
   let rows_data = raw.rows.data
   let starts_data = raw.starts.data
   let ends_data = raw.ends.data
-  let quoted_data = raw.quoted.data
+
   match dtype {
     Int32 => {
       let d : FixedArray[Int32] = FixedArray::make(n, 0)
@@ -667,7 +667,7 @@ fn build_column(
         let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           let w = r - start
           match @types.parse_i32_bytes(buf, s, e) {
             Some(v) => {
@@ -690,7 +690,7 @@ fn build_column(
         let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           let w = r - start
           match @types.parse_i64_bytes(buf, s, e) {
             Some(v) => {
@@ -713,7 +713,7 @@ fn build_column(
         let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           let w = r - start
           match @types.parse_f64_bytes(buf, s, e) {
             Some(v) => {
@@ -736,7 +736,7 @@ fn build_column(
         let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           let w = r - start
           match @types.parse_bool_bytes(buf, s, e) {
             Some(v) => {
@@ -759,7 +759,7 @@ fn build_column(
         let i = rows_data.unsafe_get(skip + r) + c
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           let w = r - start
           match @types.parse_date_bytes(buf, s, e) {
             Some(v) => {
@@ -783,7 +783,7 @@ fn build_column(
         let w = r - start
         let s = starts_data.unsafe_get(i)
         let e = ends_data.unsafe_get(i)
-        if !(s == e || (quoted_data.unsafe_get(i) && e - s == 2)) {
+        if !(s == e || (e - s == 2 && raw.is_quoted(i))) {
           d.unsafe_set(w, raw.decode(i))
           valid.unsafe_set(w, true)
         }
