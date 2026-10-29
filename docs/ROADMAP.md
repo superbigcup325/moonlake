@@ -890,6 +890,60 @@ q3 +86 MB and q5 +160 MB, and collapsing only the handover there cost q21 +98 MB
 hands on one batch a side as it always did, and that is now measured rather than
 accidental.
 
+### The table lifetime contract (2026-10-29)
+
+Written before the change, because these answers decide when a table may be let
+go, who may still be reading it, and what the measurement is allowed to claim.
+
+**The problem it answers.** §61's census rule is that only structures alive at a
+point are named, and the executor keeps every collected table alive for the whole
+chain (`tables`, and the comment in `exec_joins` says so out loud). §65 then put
+the process peak at the second chain step's collected output, where the census
+names `collected FROM tables` at 145.9 MB of a 430.2 MB named total: 61.0 MB of
+that is lineitem's narrowed copy (60.7) and supplier's (0.3), whose only step —
+the chain's first — had already run by then. Nothing reads them again: the plan
+is left-deep, each table appears in the step that joins it, and no re-scan
+exists.
+
+**What changes.** When a step completes, every table whose last step is that one
+is released: its slot in `tables` is replaced with an empty array, so the batches
+it held have no reader left. Releases happen step by step, not at the end of the
+chain, because the point of the change is the peak that comes later. A table
+named by several steps (a self-join) is released after the later of them, and the
+leftmost table — the chain's initial `acc`, replaced by the first step's output —
+is released after that step, like any other.
+
+**What it must not change.** Answers and counters: the release runs after the
+step's batches have been consumed, so no reader sees it, and a row order or count
+that moves is a bug, not a trade. The plan, the spill path (`right` and `acc` are
+read inside the step; a grace join partitions copies of them, and the release
+waits for that to finish), and a table a later step still names. The census
+follows §61: a released table stops being named from the next point on, the
+`collected FROM tables` total is what is still alive, and a label with nothing
+alive is not declared rather than declared as zero. The release may never be
+skipped to name a table, and a point may never keep one alive.
+
+**Prediction.** q21 at SF1 without a budget: at the peak, `collected FROM tables`
+falls from 145.9 to 84.9 MB and the named total from 430.2 to 369.2 MB; the
+resident sample from 539.0 toward 478 MB if the allocator reuses the released
+blocks, and the high-water from 547.2 toward 490–547 MB if it does. §62 measured a
+release *after* the peak and it did not move the high-water; this release happens
+*before* the allocation that sets it, which is the open question and the reason
+the change is worth a measurement rather than an assumption. Nothing else is
+predicted to move: q1 and q12 compose one step, so there is nothing to release
+before their only peak, and q3, q5, q7, q9, q10, q18 and q20 may fall by the size
+of their own finished tables or not at all.
+
+**How it is measured.** verification §66: `harness/bench_join_chain.py` against
+the `a56517e` binary (`--budgets none,16M`, three rounds, the spread printed),
+`--mem` on q21 as three interleaved runs each, and the per-point census table
+before and after. It counts as success if q21's high-water falls beyond the 15%
+spread with q1, q6, q12 unchanged and every answer byte-identical; if the named
+total falls and the high-water does not, the release is withdrawn (§60, §62) and
+the result says so — that would leave allocating less as the only lever, which
+means composing q21's chain rather than materializing its intermediates, and that
+is a different contract.
+
 ### The high-water readout contract (2026-10-29)
 
 Written because §62 falsified the assumption behind the census's presentation:
