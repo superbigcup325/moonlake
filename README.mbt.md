@@ -126,10 +126,12 @@ moon add superbigcup325/moonlake
 > with or without a budget, and the column-wise group state that makes a million
 > groups of a `sum` peak at 117 MB instead of 323 MB, with the measurements in
 > [verification.md](docs/verification.md) §52, §54 and §55. Everything since
-> 0.5.1 is in it. On `main` since then, a chain of joins hands each step's
-> output to the next step without copying it into one batch: q21 at SF1 peaks
-> 58 MB lower (verification §65). The next release carries that and no version
-> is claimed for it yet.
+> 0.5.1 is in it. On `main` since then, two changes to how a chain of joins
+> holds memory: each step hands its output to the next without copying it into
+> one batch (q21 at SF1 peaks 58 MB lower, verification §65), and a step lets go
+> of the tables it has finished with instead of holding them to the end (another
+> 60 MB, §66). The next release carries both and no version is claimed for it
+> yet.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.3`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
