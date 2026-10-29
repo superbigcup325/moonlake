@@ -829,4 +829,37 @@ else in the corpus at 16 MB, where it drops from 99.4 to 25.4 MB and stops
 spilling (13 run files, 22.4 MB before). Every other case reports the same spill
 trace as the control, and the 4 MB q12 shows at 16 MB is the recorded spread on a
 case that composes in both binaries. Without a budget every chain takes the eager
-path, so those rows are the control's own shape.
+path, so those rows are the control's own shape. The next section supersedes this
+routing rule by making the index cheaper.
+
+## A cheaper index over a build side (2026-10-29)
+
+`harness/baseline/2026-10-29-chain-index.json`, from
+`harness/bench_join_chain.py --budgets none,16M --rounds 3` against the pre-chain
+control, quiet load 1.45, worst spread 11%, no answer disagreed. Peak RSS in MB,
+control → candidate, with wall seconds behind it:
+
+| query | shape | no budget | 16 MB | wall s, no budget / 16 MB |
+| --- | --- | --- | --- | --- |
+| q3 | three tables | 356.8 → 356.6 | 261.4 → 262.4 | 2.72 → 2.79 / 3.63 → 3.56 |
+| q5 | six tables | 657.4 → 587.0 | 446.5 → 445.3 | 2.99 → 3.06 / 4.75 → 4.74 |
+| q7 | derived table | 527.2 → 527.0 | 568.2 → 567.7 | 3.78 → 3.80 / 7.64 → 7.60 |
+| q8 | derived table | 470.6 → 469.2 | 503.1 → 501.3 | 2.44 → 2.38 / 4.77 → 4.78 |
+| q9 | derived table | 742.9 → 701.0 | 663.8 → 663.8 | 4.14 → 4.32 / 7.63 → 7.60 |
+| q10 | four tables | 282.7 → 239.1 | 245.2 → 245.1 | 2.84 → 2.83 / 4.38 → 4.35 |
+| q11 | three tables | 99.2 → 35.3 | 99.4 → 25.5 | 0.43 → 0.44 / 0.73 → 0.41 |
+| q18 | three tables, `IN` | 469.4 → 469.1 | 227.3 → 227.4 | 5.15 → 5.28 / 5.85 → 5.93 |
+| q20 | five tables, `IN` | 259.0 → 259.1 | 98.8 → 87.1 | 3.03 → 3.04 / 3.13 → 3.18 |
+| q21 | four tables, `NOT EXISTS` | 612.0 → 616.6 | 682.2 → 684.0 | 8.08 → 8.03 / 13.67 → 13.77 |
+| q1 | one table, invariant | 35.4 → 35.3 | 73.4 → 75.4 | 2.97 → 3.00 / 5.54 → 5.52 |
+| q12 | one step, invariant | 35.3 → 35.2 | 35.5 → 35.5 | 2.94 → 2.91 / 2.92 → 2.92 |
+
+Two changes are in the candidate: the index over a build side is one row-id
+range instead of a list per key, and a chain of joins composes without a budget.
+The first moves every keyed hash join (q9 without a budget, q20 under 16 MB); the
+second is what takes q10 to 239 MB and q11 to 35.3. Verification §52 separates
+the two by measuring a build of the same tree with the old gate restored: with
+the cheap index alone the rows read 329.3 (q3), 584.5 (q5), 701.1 (q9), 262.9
+(q10), 95.2 (q11) and 87.5 (q20 at 16 MB), so composition on q3 gives back the
+index saving it gained (its chain holds `orders` and `lineitem` resident) and
+costs q5 2.5 MB, while q10 gains 24 and q11 60.

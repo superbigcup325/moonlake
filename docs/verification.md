@@ -4041,7 +4041,8 @@ magnitude from a sum of them. The check runs on the bytes of the scans before
 the layout copies exist, so a chain that keeps the eager path pays for no copy
 (the copies alone were 13 MB on q18) and the scans it read are handed to the
 eager path, which reuses them, so no table is read twice and the counters stay
-the eager ones.
+the eager ones. §52 later removed this gate by making the index over a build side
+cheaper; the rule above is the one the code held before that change.
 
 ### What is measured
 
@@ -4107,3 +4108,87 @@ cross join and a `FROM` item that is not a lazy base table still keep the eager
 path, and a grouped result stays unbounded. The record is the native CLI over
 CSV input at SF1, as §49 and §50 were; wasm-gc, js and the packaged consumer are
 unchanged by this and still ride §46–48.
+
+## 52. A cheaper index over a build side, and the chain gate it removed (2026-10-29)
+
+**What §51 left.** §51 composed a chain of joins only under a budget its build
+sides fit, because the ungated version measured q3 holding 32 MB more than
+collecting the joined rows. The measurement was honest and the rule it produced
+was one data structure out of date.
+
+**What changed.** A build side's fast-path index was `Map[Int64, Array[Int32]]`,
+a list per distinct key. That is right for a small dimension table and wrong for
+a primary key over millions of rows, because then every key has one row and the
+index pays an allocated list for it. It is now `IntKeyIndex`: two passes over the
+build keys, the first numbering each key's slot and counting it, the second
+writing every row id into its slot's range. The ids are one `FixedArray[Int32]`
+of exactly four bytes per row, each distinct key costs a slot in the map and a
+start in the table, and a unique key allocates nothing beyond its own id.
+
+`join_step` builds its hash join on the same cursor, so this is not a
+composition-specific win: every keyed INNER, LEFT and FULL hash join is cheaper,
+whether it folds into an aggregate or collects its rows.
+
+**What that is worth, and what composition then adds.** Three binaries of the
+same tree, interleaved, three rounds, quiet host: the control (before the chain,
+§51's own base), the same tree with the cheap index but §51's gate restored, and
+the final tree. Peak RSS in MB:
+
+| case | budget | control | cheap index, gate kept | cheap index, chain composed |
+| --- | --- | --- | --- | --- |
+| q3 | none | 356.7 | 329.3 | 356.8 |
+| q5 | none | 650.6 | 584.5 | 587.0 |
+| q9 | none | 742.9 | 701.1 | 700.9 |
+| q10 | none | 282.8 | 262.9 | 238.8 |
+| q11 | none | 99.2 | 95.2 | 35.2 |
+| q20 | 16 MB | 99.1 | 87.5 | 87.2 |
+
+The index alone takes 27 MB off q3, 66 off q5, 42 off q9, 20 off q10 and 12 off
+q20 at 16 MB. Composition, on top of it, gives q10 24 MB more and q11 60 MB
+more, costs q5 2.5 MB, and on q3 hands its index saving back: q3's chain holds
+`orders` and `lineitem` resident, which is the whole cost §51 measured, and the
+cheaper index cancels it rather than removing it.
+
+**So the gate goes.** Against the tree a query used to run on, no composed chain
+measures worse: q3 is level, q5 64 MB lower, q10 44 MB lower, q11 64 MB lower.
+A chain now composes whenever there is no budget to violate, or when its sides
+fit the one there is, and §51's routing rule is superseded by this paragraph.
+The fit check stays, because a budget is still a promise the residency has to
+keep, and the scans it runs on are still handed to the eager path so no table is
+read twice. A single step composes on the terms it always had.
+
+**The full matrix.** `harness/bench_join_chain.py` against the pre-chain control,
+`harness/baseline/2026-10-29-chain-index.json` (quiet load 1.45, worst spread
+11%, three rounds, no answer disagreed). Peak RSS in MB with wall seconds beside
+it, no budget:
+
+| query | shape | control | candidate | wall s |
+| --- | --- | --- | --- | --- |
+| q3 | three tables | 356.8 | 356.6 | 2.72 → 2.79 |
+| q5 | six tables | 657.4 | 587.0 | 2.99 → 3.06 |
+| q7 | derived table | 527.2 | 527.0 | 3.78 → 3.80 |
+| q8 | derived table | 470.6 | 469.2 | 2.44 → 2.38 |
+| q9 | derived table | 742.9 | 701.0 | 4.14 → 4.32 |
+| q10 | four tables | 282.7 | 239.1 | 2.84 → 2.83 |
+| q11 | three tables | 99.2 | 35.3 | 0.43 → 0.44 |
+| q18 | `IN` subquery | 469.4 | 469.1 | 5.15 → 5.28 |
+| q20 | `IN` subqueries | 259.0 | 259.1 | 3.03 → 3.04 |
+| q21 | `NOT EXISTS` | 612.0 | 616.6 | 8.08 → 8.03 |
+| q1 | one table, invariant | 35.4 | 35.3 | 2.97 → 3.00 |
+| q12 | one step, invariant | 35.3 | 35.2 | 2.94 → 2.91 |
+
+At 16 MB only q11 fits its sides and gains the composition on top of the index
+(99.4 → 25.5 MB, wall 0.73 → 0.41 s); q20's 98.8 → 87.1 MB there is the index
+alone, on a plan that is not a chain, and every other case sits within the
+recorded spread.
+
+**Costs.** Priming an index walks the build keys twice instead of once. The wall
+columns above are the price: a few percent on the queries that changed path,
+inside the spread on the ones that did not. Nothing else about the arc moved:
+the chain is still the `FROM` order, there is no pre-aggregation between steps,
+and DISTINCT, a window, RIGHT, SEMI/ANTI, a keyless cross join and a non-lazy
+`FROM` item still keep the eager path.
+
+**The gates hold.** `moon test` is 384 tests green (two pin the index: one id per
+valid row, contiguous slots, NULL keys absent), the 33 golden comparisons pass,
+and `check_cli.sh` and `spill_accept.sh` pass unchanged.

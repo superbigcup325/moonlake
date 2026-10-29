@@ -448,12 +448,16 @@ collecting them. The cases are again the TPC-H texts from a `--data` directory:
 q3, q5, q7, q8, q9, q10, q11, q18, q20 and q21 carry an aggregate over two or
 more steps, and q1 and q12 are in the matrix as invariants, because they compose
 one step and their peaks must not move. The cost of the chain is the build sides
-it holds, one per step, so the rule the measurement supports is that a chain
-composes only under a budget its sides fit (verification section 51): the same
-cases are run with no budget and with one, and outside a budget the candidate
-takes the eager path the control takes. Each case reports the median peak RSS
-and wall time over interleaved rounds, the worst round-to-round spread, and a
-byte-for-byte comparison of the two binaries' output.
+it holds, one per step, which is why the same cases are run with no budget and
+with one: a budget bounds what those sides may hold, and without one they are
+the peak. Verification section 51 gated composition on that trade; section 52
+made the index a build side holds cheaper and measured the trade again, so both
+runs compose and the matrix reports each case's peaks. Because the hash join and
+the chain share one cursor, the index win also shows on the cases that never
+compose (q9, and q20 under a budget). Each case reports
+the median peak RSS and wall time over interleaved rounds, the worst
+round-to-round spread, and a byte-for-byte comparison of the two binaries'
+output.
 
 ```bash
 python3 harness/bench_join_chain.py --candidate <candidate main.exe> --control <control main.exe>

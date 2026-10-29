@@ -326,7 +326,7 @@ fn run_pipeline(
     Some(src) => {
       let scans = join_agg_scans(src, launch)
       let sides = join_agg_sides_bytes(scans)
-      if join_agg_composes(bq.steps.length(), sides, opts) {
+      if join_agg_composes(sides, opts) {
         return run_join_agg_pull(
           src,
           scans,

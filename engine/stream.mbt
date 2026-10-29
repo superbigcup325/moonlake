@@ -451,29 +451,16 @@ fn JoinFoldPull::next(
 }
 
 ///|
-/// Whether a query may compose a join into an aggregate: the build side has to
-/// stay whole for the join, so a budget smaller than it keeps the eager path,
-/// which can partition the join instead. No budget means no bound at all, and
-/// the fold above the join is bounded separately by the same budget.
-fn join_agg_fits(sides_bytes : Int32, opts : ExecOptions) -> Bool {
+/// Whether a query composes a join into an aggregate. The build side has to stay
+/// whole for the join, so a budget smaller than the sides it holds keeps the
+/// eager path, which can partition each join instead; with no budget there is no
+/// bound to violate and the fold above it is unbounded with it. A chain keeps one
+/// side and its key index per step, so those sides are the price of composing it,
+/// and measurement put that price at or below what the eager path holds for every
+/// TPC-H chain at SF1 once each side was indexed as one row-id range instead of a
+/// list per key (verification §52).
+fn join_agg_composes(sides_bytes : Int32, opts : ExecOptions) -> Bool {
   opts.budget <= 0 || sides_bytes <= opts.budget
-}
-
-///|
-/// Whether the query takes the composed path. A single step composes with or
-/// without a budget; a chain composes only under a budget its sides fit, because
-/// every step's build side and the index over it stay resident at once and,
-/// without a budget to bound them, that can cost more than collecting the joined
-/// rows (verification §51 measures both sides of that trade).
-fn join_agg_composes(
-  steps : Int32,
-  sides_bytes : Int32,
-  opts : ExecOptions,
-) -> Bool {
-  if steps > 2 && opts.budget <= 0 {
-    return false
-  }
-  join_agg_fits(sides_bytes, opts)
 }
 
 ///|

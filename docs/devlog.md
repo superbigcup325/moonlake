@@ -2399,3 +2399,31 @@ side a bad trade, and shrinking them would move the no-budget numbers without
 touching the fold. That is a separate change, and the roadmap's limits row now
 says a chain is composed when its sides fit a budget rather than claiming the
 shape outright.
+
+### The index was the gate (2026-10-29)
+
+The chain of joins was done and gated: it composed only under a budget its build
+sides fit, because measuring the ungated version said composition cost q3 32 MB
+more than collecting the joined rows. The gate was the right call for the code
+that existed, and the wrong thing to leave alone, because the reason for the
+cost was one data structure.
+
+A build side's fast-path index was a map from key to an allocated list of row
+ids. That is fine for a small dimension table and wasteful for a primary key over
+millions of rows: every distinct key paid for an object and a right-sized data
+array, and `orders` has one row per key. Grouping the ids by key into one
+contiguous array with a starts table costs a slot and four bytes per row, so
+indexing stops being the dominant term.
+
+That changed the answer the gate was based on. Ungated, the chain now measures at
+or below the eager path on every chain in the corpus: q3 is flat, q5 holds 69 MB
+less, q10 44 MB less, q11 60 MB less. So the gate is gone: a chain composes when
+there is no budget to violate, or when its sides fit the one there is. The price
+is two passes over the build keys instead of one, and the wall numbers say it is
+a few percent on the multi-step queries, which is what a fold that removes a
+materialized intermediate should cost.
+
+The lesson is the one this arc keeps teaching: a routing rule measured against a
+slow implementation records the implementation, not the shape. The right response
+to "this shape costs 32 MB more" turned out not to be a narrower predicate but a
+better index, and the record now says which of the two it was.

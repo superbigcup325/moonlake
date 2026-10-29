@@ -21,15 +21,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the TPC-H queries that carry an `ORDER BY` over an aggregate, the ordered
   one-table and one-join shapes against a control binary, with the two-join
   shapes kept in the matrix as invariants. The measurement is verification §50.
-- `harness/bench_join_chain.py` and its baseline
-  `harness/baseline/2026-10-28-chain-agg.json`: peak RSS and wall time for the
+- `harness/bench_join_chain.py` and its baselines
+  `harness/baseline/2026-10-28-chain-agg.json` and
+  `harness/baseline/2026-10-29-chain-index.json`: peak RSS and wall time for the
   TPC-H queries that carry an aggregate over two or more join steps, the
   candidate against the binary before the change, with the single-step
-  compositions kept in the matrix as invariants. The measurement is
-  verification §51.
+  compositions kept in the matrix as invariants. The measurements are
+  verification §51 and §52.
 
 ### Changed
 
+- The index a hash join holds over its build side is one contiguous row-id range
+  with a start per distinct key, not an allocated list per key, so a primary key
+  over millions of rows costs four bytes a row instead of an object each. Every
+  keyed INNER, LEFT and FULL hash join is smaller for it (q3 27 MB, q5 66 MB,
+  q9 42 MB, q10 20 MB, q20 12 MB at 16 MB). That also removed the reason a chain
+  of joins needed a budget: with the cheaper index no composed chain measures
+  worse than the tree it replaced (q3 level, q5 64 MB lower, q10 44 MB lower,
+  q11 64 MB lower), so a chain of join steps above a `GROUP BY` now composes
+  with or without a budget and only a budget it does not fit sends it to the
+  eager path. Answers are unchanged and the wall cost is two passes over the
+  build keys where there was one (verification §52).
 - A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
   batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
   both `FROM` items are lazy base tables, the key lists are non-empty, and there

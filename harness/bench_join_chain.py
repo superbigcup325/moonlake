@@ -10,10 +10,12 @@
 # That trade is not free, and this script is how it was decided rather than
 # assumed. A chain of joins over TPC-H holds the joining tables whole, and when
 # one of them is a large table the resident index can cost more than collecting
-# the joined rows the eager path would have held. At SF1 that is what happens to
-# q3, which is why a chain composes only under a budget its sides fit (the
-# `join_agg_composes` rule, verification §51) and the shapes below are also
-# measured with no budget, where the composed path is the control's own.
+# the joined rows the eager path would have held: at SF1 that was q3, which is
+# why verification §51 gated composition on a budget the sides fit. §52 made the
+# index over a build side cheaper and measured the trade again, so both runs
+# below compose; the no-budget rows are the ones that show what a resident chain
+# costs. That index is the hash join's own, so a case that never composes still
+# moves (q9, q20 under a budget).
 #
 # The queries are the TPC-H texts the golden corpus already runs, read from a
 # `--data` directory of CSVs, so the evidence is over the shapes the gate covers:
