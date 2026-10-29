@@ -137,7 +137,9 @@ const JOIN_OUT_BATCH : Int32 = 4096
 /// unique key costs its slot and one id, not an allocated list, which matters
 /// when the build side is a primary key over millions of rows.
 priv struct IntKeyIndex {
-  slots : Map[Int64, Int32] // key -> slot, dense in 0..<slot count
+  lo : Int64 // dense lookup: the smallest key
+  dense : FixedArray[Int32] // key - lo -> slot, -1 for none; empty when hashed
+  slots : Map[Int64, Int32] // hashed lookup: key -> slot; empty when dense
   starts : FixedArray[Int32] // start of each slot's ids, plus one sentinel
   ids : FixedArray[Int32] // build row numbers, grouped by slot
 }
@@ -145,6 +147,8 @@ priv struct IntKeyIndex {
 ///|
 fn IntKeyIndex::empty() -> IntKeyIndex {
   {
+    lo: 0L,
+    dense: FixedArray::make(0, 0),
     slots: Map([]),
     starts: FixedArray::make(1, 0),
     ids: FixedArray::make(0, 0),
@@ -152,10 +156,31 @@ fn IntKeyIndex::empty() -> IntKeyIndex {
 }
 
 ///|
+/// The slot of a key, or -1 when no build row has it.
+fn IntKeyIndex::slot(self : IntKeyIndex, k : Int64) -> Int32 {
+  if self.dense.length() > 0 {
+    let off = k - self.lo
+    if off >= 0L && off < self.dense.length().to_int64() {
+      self.dense[off.to_int()]
+    } else {
+      -1
+    }
+  } else {
+    match self.slots.get(k) {
+      Some(slot) => slot
+      None => -1
+    }
+  }
+}
+
+///|
 /// Group the valid build keys by value. Two passes over the keys: the first
 /// numbers the slots and counts them, the second writes each row id into its
 /// slot's range, so the ids array is exactly `4 * rows` bytes and no per-key
-/// list is ever allocated.
+/// list is ever allocated. When the keys sit in a range no wider than four times
+/// the row count (and 2^24), the key-to-slot lookup is one array indexed by
+/// `key - lowest`, which costs four bytes a cell where a hash map costs an entry
+/// per distinct key; any other key set keeps the map.
 fn IntKeyIndex::build(
   bd : FixedArray[Int64],
   bv : FixedArray[Bool],
@@ -163,14 +188,55 @@ fn IntKeyIndex::build(
 ) -> IntKeyIndex {
   let slots : Map[Int64, Int32] = Map([])
   let counts : Array[Int32] = []
+  let mut lo = 0L
+  let mut hi = 0L
+  let mut valid_rows = 0
   for r in 0..<n {
     if bv[r] {
       let k = bd[r]
-      match slots.get(k) {
-        Some(slot) => counts[slot] = counts[slot] + 1
-        None => {
-          slots[k] = counts.length()
+      if valid_rows == 0 {
+        lo = k
+        hi = k
+      } else {
+        if k < lo {
+          lo = k
+        }
+        if k > hi {
+          hi = k
+        }
+      }
+      valid_rows += 1
+    }
+  }
+  let span = hi - lo // negative only if the true span overflowed Int64
+  let use_dense = valid_rows > 0 &&
+    span >= 0L &&
+    span < 16777216L &&
+    span + 1L <= 4L * valid_rows.to_int64() + 1024L
+  let dense : FixedArray[Int32] = if use_dense {
+    FixedArray::make((span + 1L).to_int(), -1)
+  } else {
+    FixedArray::make(0, 0)
+  }
+  for r in 0..<n {
+    if bv[r] {
+      let k = bd[r]
+      if use_dense {
+        let off = (k - lo).to_int()
+        let slot = dense[off]
+        if slot >= 0 {
+          counts[slot] = counts[slot] + 1
+        } else {
+          dense[off] = counts.length()
           counts.push(1)
+        }
+      } else {
+        match slots.get(k) {
+          Some(slot) => counts[slot] = counts[slot] + 1
+          None => {
+            slots[k] = counts.length()
+            counts.push(1)
+          }
         }
       }
     }
@@ -190,12 +256,16 @@ fn IntKeyIndex::build(
   }
   for r in 0..<n {
     if bv[r] {
-      let slot = slots.get(bd[r]).unwrap()
+      let slot = if use_dense {
+        dense[(bd[r] - lo).to_int()]
+      } else {
+        slots.get(bd[r]).unwrap()
+      }
       ids[cursor[slot]] = r
       cursor[slot] = cursor[slot] + 1
     }
   }
-  { slots, starts, ids, }
+  { lo, dense, slots, starts, ids, }
 }
 
 ///|
@@ -312,20 +382,18 @@ fn JoinCursor::match_batch(
     for r in 0..<n_left {
       let mut hit = false
       if lv[r] {
-        match self.int_index.slots.get(ld[r]) {
-          Some(slot) => {
-            let stops = self.int_index.starts
-            for j in stops[slot]..<stops[slot + 1] {
-              let id = self.int_index.ids[j]
-              if residual_ok(rstate, left, r, self.build, id) {
-                self.out_l.push(r)
-                self.out_r.push(id)
-                self.matched[id] = true
-                hit = true
-              }
+        let slot = self.int_index.slot(ld[r])
+        if slot >= 0 {
+          let stops = self.int_index.starts
+          for j in stops[slot]..<stops[slot + 1] {
+            let id = self.int_index.ids[j]
+            if residual_ok(rstate, left, r, self.build, id) {
+              self.out_l.push(r)
+              self.out_r.push(id)
+              self.matched[id] = true
+              hit = true
             }
           }
-          None => ()
         }
       }
       if !hit && keep_unmatched {
@@ -1067,15 +1135,14 @@ fn join_semi(
           @types.Int64(v) => v
           _ => 0L
         }
-        match int_index.slots.get(k) {
-          Some(slot) =>
-            for j in int_index.starts[slot]..<int_index.starts[slot + 1] {
-              let id = int_index.ids[j]
-              if residual_ok(rstate, left, r, inner_batch, id) {
-                matched = true
-              }
+        let slot = int_index.slot(k)
+        if slot >= 0 {
+          for j in int_index.starts[slot]..<int_index.starts[slot + 1] {
+            let id = int_index.ids[j]
+            if residual_ok(rstate, left, r, inner_batch, id) {
+              matched = true
             }
-          None => ()
+          }
         }
       } else {
         let key = canonical_key(kv)
@@ -1172,17 +1239,16 @@ fn join_swapped(
       for r in 0..<n_probe {
         let mut matched = false
         if pv[r] {
-          match index.slots.get(pd[r]) {
-            Some(slot) =>
-              for j in index.starts[slot]..<index.starts[slot + 1] {
-                let id = index.ids[j]
-                if residual_ok(rstate, build, id, probe, r) {
-                  acc_ids.push(id)
-                  right_ids.push(r)
-                  matched = true
-                }
+          let slot = index.slot(pd[r])
+          if slot >= 0 {
+            for j in index.starts[slot]..<index.starts[slot + 1] {
+              let id = index.ids[j]
+              if residual_ok(rstate, build, id, probe, r) {
+                acc_ids.push(id)
+                right_ids.push(r)
+                matched = true
               }
-            None => ()
+            }
           }
         }
         if !matched {

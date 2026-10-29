@@ -2444,3 +2444,8 @@ The same fold took a pair of Int32 keys next, packed into one Int64 with NULL
 patterns on a side map. q20's single aggregate was most of its peak, so it fell
 from 259 MB to 99 MB (verification §55). What is left in the corpus is not group
 state: q18's resident `lineitem` build side and q21's semi and anti sides.
+
+The last index change was the lookup itself: surrogate keys are dense, so a
+build side that maps keys to slots through a hash map can use an array instead.
+q3, q5 and q18 fell by 28 to 63 MB without a budget (verification §56). What is
+left in q18 is the resident lineitem build side, which is a planning question.
