@@ -37,32 +37,22 @@ fn GrowI::truncate(self : GrowI, n : Int32) -> Unit {
 }
 
 ///|
-priv struct GrowB {
-  mut data : FixedArray[Bool]
-  mut len : Int32
-}
 
 ///|
-fn GrowB::new() -> GrowB {
-  { data: FixedArray::make(65536, false), len: 0, }
-}
-
-///|
-fn GrowB::push(self : GrowB, v : Bool) -> Unit {
-  if self.len == self.data.length() {
-    let grown : FixedArray[Bool] = FixedArray::make(self.len * 2, false)
-    for i in 0..<self.len {
-      grown[i] = self.data[i]
+/// Drop the entries that are `>= threshold`: the caller cut the cells those
+/// entries describe, so they are no longer part of the index.
+fn GrowI::truncate_from(self : GrowI, threshold : Int32) -> Unit {
+  let mut lo = 0
+  let mut hi = self.len
+  while lo < hi {
+    let mid = (lo + hi) >> 1
+    if self.data.unsafe_get(mid) < threshold {
+      lo = mid + 1
+    } else {
+      hi = mid
     }
-    self.data = grown
   }
-  self.data.unsafe_set(self.len, v)
-  self.len += 1
-}
-
-///|
-fn GrowB::truncate(self : GrowB, n : Int32) -> Unit {
-  self.len = n
+  self.len = lo
 }
 
 ///|
@@ -79,22 +69,15 @@ fn GrowI::trim(self : GrowI) -> Unit {
 }
 
 ///|
-fn GrowB::trim(self : GrowB) -> Unit {
-  if self.len != self.data.length() {
-    let exact : FixedArray[Bool] = FixedArray::make(self.len, false)
-    for i in 0..<self.len {
-      exact[i] = self.data[i]
-    }
-    self.data = exact
-  }
-}
-
-///|
 priv struct RawCsv {
   buf : Bytes
   starts : GrowI // cell start offset, row-major
   ends : GrowI // cell end offset, exclusive
-  quoted : GrowB // cell was quoted (escape decoding applies)
+  // the cells that were quoted, ascending: escape decoding applies to those
+  // and only those. A list rather than a flag per cell because most CSV
+  // fields are unquoted, and the flag array cost a write on every cell of
+  // every file to answer a question almost always answered "no".
+  quoted : GrowI
   rows : GrowI // cell index each row starts at, plus end sentinel
 }
 
@@ -111,11 +94,31 @@ fn RawCsv::row_start(self : RawCsv, r : Int32) -> Int32 {
 }
 
 ///|
+/// Was cell `i` quoted? The list is ascending and usually empty, so this is a
+/// binary search over zero entries in the common case.
+fn RawCsv::is_quoted(self : RawCsv, i : Int32) -> Bool {
+  let q = self.quoted.data
+  let n = self.quoted.len
+  let mut lo = 0
+  let mut hi = n
+  while lo < hi {
+    let mid = (lo + hi) >> 1
+    if q.unsafe_get(mid) < i {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  lo < n && q.unsafe_get(lo) == i
+}
+
+///|
 /// The cell carries no value: an unquoted empty field or a bare ""
 /// (both decode to the empty string, both read back as NULL).
 fn RawCsv::is_empty_cell(self : RawCsv, i : Int32) -> Bool {
-  self.starts.data[i] == self.ends.data[i] ||
-  (self.quoted.data[i] && self.ends.data[i] - self.starts.data[i] == 2)
+  let s = self.starts.data[i]
+  let e = self.ends.data[i]
+  s == e || (e - s == 2 && self.is_quoted(i))
 }
 
 ///|
@@ -153,7 +156,7 @@ fn RawCsv::cut_rows(self : RawCsv, n : Int32) -> Int32 {
   let offset = self.starts.data[cell]
   self.starts.truncate(cell)
   self.ends.truncate(cell)
-  self.quoted.truncate(cell)
+  self.quoted.truncate_from(cell)
   self.rows.truncate(n + 1)
   offset
 }
@@ -165,7 +168,7 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
   let n = buf.length()
   let starts = GrowI::new()
   let ends = GrowI::new()
-  let quoted = GrowB::new()
+  let quoted = GrowI::new() // cell indexes, ascending
   let rows = GrowI::new()
   rows.push(0)
   let mut pos = 0
@@ -221,9 +224,11 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
           field_end -= 1
         }
       }
+      if is_quoted {
+        quoted.push(starts.len)
+      }
       starts.push(field_start)
       ends.push(field_end)
-      quoted.push(is_quoted)
       // field separator or row terminator
       if pos < n {
         if buf[pos].to_int() == 44 {
@@ -240,12 +245,11 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
     // skip blank lines (single unquoted empty cell), matching the
     // previous parser's skip_empty_lines behavior
     let blank = starts.len == row_cells_start + 1 &&
-      !quoted.data[row_cells_start] &&
       starts.data[row_cells_start] == ends.data[row_cells_start]
     if blank {
       starts.truncate(row_cells_start)
       ends.truncate(row_cells_start)
-      quoted.truncate(row_cells_start)
+      quoted.truncate_from(row_cells_start)
       if ended_at_newline {
         complete = pos
       }
@@ -270,7 +274,7 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
       let cells = rows.data[rows.len - 1]
       starts.truncate(cells)
       ends.truncate(cells)
-      quoted.truncate(cells)
+      quoted.truncate_from(cells)
       consumed = complete
     } else if rows.len == 1 {
       consumed = 0
@@ -289,7 +293,7 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
 fn RawCsv::decode(self : RawCsv, i : Int32) -> String {
   let s = self.starts.data[i]
   let e = self.ends.data[i]
-  if !self.quoted.data[i] {
+  if !self.is_quoted(i) {
     return @utf8.decode_lossy(self.buf[s:e])
   }
   // quoted: strip the opening quote, fold "" into ", drop the closing
