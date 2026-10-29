@@ -818,6 +818,61 @@ high-water *is* at that collapse (599.1 MB, where 497.5 MB is named): what did
 not move was the process peak, because the copy's real cost there was about
 57 MB against the 100.6 MB the census names.
 
+### The chain without a collapse contract (2026-10-29)
+
+Written after §63 put the peak at the second chain step's collapse and said the
+peak follows what a run allocates and retains. §62 tried to release one of the
+two copies there and moved nothing; this is the other way to have one copy —
+never make it.
+
+**What the collapse is for.** Nothing that a consumer needs. `join_step` collects
+a cursor's batches and then `concat_batches`es them into one batch only because
+the chain's state between steps is one batch (`acc = [join_or_spill(...)]` in
+`exec_joins`). The next step's probe side already takes an array
+(`join_step(acc : Array[DataBatch], ...)`), the filter above the chain takes an
+array, and the aggregate and result paths consume batches. The collapse exists
+for the shape of a variable, not for a reader.
+
+**What changes.** `join_step`, `join_semi`, `join_swapped` and `join_or_spill`
+return `Array[DataBatch]`; a step's collected output is handed to the next step
+unchanged, and the chain collapses only where a consumer asks for one batch. The
+semi/anti and swapped-right forms already build their output directly, so they
+return a one-element array. The collected batches come from `JoinCursor::slice`
+through `gather`, are already in `step.out_dtypes` order, and preserve row order,
+so no re-layout is involved: this removes a copy, it does not move one.
+
+**What it must not change.** Answers row by row, and every counter, in the same
+order: batches are a transport here, and the joined row count is what it was.
+The budget path and its partitioning: `batches_bytes` already takes arrays, and
+the grace path keeps its own merge, which collapses a partition's sorted runs
+into one batch — a different question from this one, kept as it is. A query
+where the collected output is already one batch behaves as it does today.
+
+**Where a collapse is still required.** A consumer that needs a single batch,
+which today means the sites that call `concat_batches` on a step's output
+(`engine.mbt` for the composed fold's build side, `extjoin.mbt` for the merge).
+The census follows §61's rule and names only what is alive: the "hash join
+collapsed its output" point disappears where no collapse happens, and a point
+must not name a batch it has handed on. A label with no live structure is not
+declared rather than declared as zero.
+
+**Prediction.** q21 at SF1 without a budget: the second step's collapse copy
+(100.6 MB named, about 57 MB real per §63's two neighbouring samples) is never
+allocated, so the process high-water falls from 599.1 MB toward 540–560 MB, and
+the census's largest point becomes "hash join collected its output (step 2)" at
+430.1 MB. The other chain queries are expected to move by the size of their own
+intermediates at most, and these are invariants that must not move: q1, q6, q12
+(no multi-step chain), q18 and q20 (pulled shapes). Wall time must not grow by
+more than the run-to-run spread; if it does, the collapse was buying locality
+that many small batches lose, and that is a result to record.
+
+**How it is measured.** verification §65: `harness/bench_join_chain.py` against
+the 0.6.0 binary, plus `--mem` on q21 for the named peak and the high-water,
+three runs each with the medians and the spread printed, at SF1 and with the
+16 MB budget on the shapes that gate on it. It counts as success if q21's
+high-water falls beyond the spread and no invariant moves beyond it; a negative
+result reverts the code and keeps this record (§60, §62).
+
 ### The high-water readout contract (2026-10-29)
 
 Written because §62 falsified the assumption behind the census's presentation:
