@@ -138,6 +138,42 @@ fn scan_csv_prefix(buf : Bytes, max_rows : Int32) -> RawCsv {
 }
 
 ///|
+/// The offset of the first `,` or newline at or after `from`, or the length of
+/// `buf` when it holds neither. Unquoted field bodies end exactly there.
+///
+/// Eight bytes per iteration: `(w ^ sep) - 1` borrows out of a byte that
+/// matches `sep`, and `~b` keeps only bytes that were not 0x01, so the high bit
+/// of a matching byte is set in the mask. A byte above a match can also show a
+/// high bit, which is harmless here: the lowest set bit is a real match, and
+/// that is the one the caller wants.
+fn find_sep(buf : Bytes, from : Int32) -> Int32 {
+  let n = buf.length()
+  let ones = 0x0101010101010101UL
+  let highs = 0x8080808080808080UL
+  let commask = 0x2C2C2C2C2C2C2C2CUL
+  let nl = 0x0A0A0A0A0A0A0A0AUL
+  let mut p = from
+  while p + 8 <= n {
+    let w = buf.unsafe_read_uint64_le(p)
+    let a = w ^ commask
+    let b = w ^ nl
+    let mask = ((a - ones) & a.lnot() & highs) | ((b - ones) & b.lnot() & highs)
+    if mask != 0UL {
+      return p + (mask.ctz() >> 3)
+    }
+    p += 8
+  }
+  while p < n {
+    let c = buf.unsafe_get(p).to_int()
+    if c == 44 || c == 10 {
+      return p
+    }
+    p += 1
+  }
+  n
+}
+
+///|
 /// Scan one chunk of a larger file and report where the last complete record
 /// ends. A record ends at a newline outside quotes, so a chunk can end inside
 /// one: unless `at_eof`, that trailing fragment is left out of the index and
@@ -209,14 +245,10 @@ fn scan_rows(buf : Bytes, limit : Int32?, at_eof : Bool) -> (RawCsv, Int32) {
         }
         field_end = pos
       } else {
-        // read each byte once: the field body touches it a single time
-        while pos < n {
-          let b = buf.unsafe_get(pos).to_int()
-          if b == 44 || b == 10 {
-            break
-          }
-          pos += 1
-        }
+        // the field body ends at the first ',' or '\n': eight bytes a word,
+        // because a per-byte loop over the whole file was the scan's largest
+        // cost and a word is the same bytes for an eighth of the loop
+        pos = find_sep(buf, pos)
         field_end = pos
         // CRLF: the \r belongs to the terminator, not the field
         if field_end > field_start &&
