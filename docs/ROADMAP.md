@@ -695,6 +695,10 @@ of §59 with q3, q5, q9, q18 and q20 as invariants, plus the derived-table probe
 figure is not predicted beyond that: its two sides are resident one after the
 other, so what falls is the larger transient, not both.
 
+**Result (§60).** Measured and not kept: the releasing concatenation left the
+derived-table probes and q21 where they were, so the two-copy reading of §58 is
+unsupported and the lever is withdrawn.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
