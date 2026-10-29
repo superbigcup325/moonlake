@@ -4496,3 +4496,39 @@ by elimination. The 16 MB rows are inside the spread (q18's 6 MB is the spread).
 widened column for a compact set with a repeat and a NULL and for a wide set with
 extreme keys. `moon test` passes on wasm-gc (399) and native (412), the 33 golden
 comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass unchanged.
+
+## 60. Releasing the scan batches during collection does not move q21 (2026-10-29)
+
+This is a negative result. The contract in the roadmap ("The single-copy inner
+side contract") predicted that concatenating a collected single-table result one
+column at a time, and letting go of each chunk's column once copied, would take
+the second copy off the inner side of q21 and off the derived-table probes of
+§58. It was implemented (a releasing concatenation over shells that
+`drain_scan` owns, so no vector a source shares was ever written to), passed the
+gates, and was measured against the build of §59: three interleaved rounds, quiet
+load under 2, answers identical byte for byte. Peak RSS in MB:
+
+| case | budget | before | after |
+| --- | --- | --- | --- |
+| q21 | none | 617.8 | 613.0 |
+| q21 | 16 MB | 682.9 | 684.5 |
+| derived table, 2 integer columns | none | 153.2 | 153.3 |
+| derived table, 3 integer columns | none | 220.7 | 220.2 |
+| derived table, 2 integer and 2 date columns | none | 284.8 | 284.6 |
+| q3, q5, q9, q18, q1 | none | unchanged | within 0.2 MB |
+| q20 | none | 99.1 | 93.3 |
+
+The derived-table probes were the direct test, and they did not move, so the
+change was reverted and nothing from it is kept. q20's 6 MB at no budget is a
+single row against an unchanged 16 MB row of 87.1 and 87.2, and is not claimed.
+
+**What this does and does not say.** §58 inferred two copies from 10 bytes a cell
+against the 5 a column needs. That inference is now unsupported, not refuted: it
+could be that the inner side is not held twice at its peak, or that it is held
+twice somewhere other than the collection (the outer query's scan of the derived
+table, the key column an operator evaluates, the result a projection builds), or
+that memory freed during the collection is not returned to the process before the
+later maximum. This measurement cannot tell these apart, and no counter inside
+the engine reads the live bytes by structure. Until one exists the inner side of
+q21 is a measured quantity (about 603 MB without a budget) with an unexplained
+composition, and the next step is that counter, not another lever.
