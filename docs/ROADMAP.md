@@ -699,6 +699,61 @@ other, so what falls is the larger transient, not both.
 derived-table probes and q21 where they were, so the two-copy reading of §58 is
 unsupported and the lever is withdrawn.
 
+### The structure census contract (2026-10-29)
+
+Written before the change, because what is counted, where it reports and what
+the number may be compared against decide whether the result answers the
+question §60 left open.
+
+**The problem it answers.** §60 left q21's inner side at about 603 MB with an
+unexplained composition. RSS subtraction cannot split structures that are
+resident at the same time, and the derived-table probes vary one axis at a
+time. No counter in the engine reads bytes by structure, so every explanation
+so far is an inference.
+
+**What the counter is.** A per-query census, enabled only by a profiling run. At
+declared points the executor records the byte size of the structures that are
+alive at that point, sized from the structures themselves, and keeps the point
+with the largest total. It is not an allocator hook and not a GC counter: the
+census does not see strings, boxing or garbage the runtime has not collected, so
+its total is a lower bound on the process's RSS at that point, to be compared
+with the RSS a benchmark measures.
+
+**What a checkpoint counts.** Each one is a named set of roots the engine holds
+there:
+
+- every collected `FROM` table's scan batches, by table name, at the sizes
+  `estimate_batch_bytes` reports (the same estimate the budget uses);
+- the batches a step is handed, the filtered copy of a side the eager path makes
+  for it, and the concatenated side or output copy an operator builds on top;
+- a hash index's arrays: the dense slot array, the starts and the id range, four
+  bytes a cell, plus the hashed map at an estimate for its entries;
+- nothing else yet: a source's decoder and file buffers, the spill store's
+  pages, a grace join's partitions, the swap prefix and the group state of a
+  fold stay outside this contract, so a query whose peak is one of those shows a
+  census below its RSS and the gap is reported as a gap.
+
+**Scope by shape.** The checkpoints are declared in the eager join path
+(`exec_joins`, its hash joins and its semi/anti sides), which is the path q21
+runs on. The pulled shapes stay uncounted until a measurement needs them.
+
+**Where it reports.** `moonlake exec --mem` runs the query with a census and
+prints a `-- resident by structure` block: the largest checkpoint's label, its
+total and its entries, largest first. The flag is off by default; without it no
+census is built and nothing is paid.
+
+**Answers and counters.** Unchanged: the census reads structures that already
+exist, so the answer, the five row counters, the spill bytes and the result of a
+`--mem` run equal the plain run's. A `--mem` run is not a benchmark: measuring
+allocates and takes time.
+
+**What it must show.** For q21 at SF1 without a budget, a largest checkpoint that
+names the structures §58 and §60 could not split, its total compared with the
+603 MB the harness reports and the gap stated. For a fixture whose side is small
+enough to size by hand, the checkpoint equals the sizes the test computes. A
+query run without the flag builds no census, and the gate suite's answers,
+counters and timings do not move.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
