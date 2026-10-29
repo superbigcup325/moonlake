@@ -52,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   A pair of `Int32` keys takes the same fold: q20 at SF1 drops from 259 MB to
   99 MB, and 800,000 groups of `(l_partkey, l_suppkey)` from 354 MB to 109 MB
   (verification §55).
+- A hash join's key index looks a key up in one array when the build keys sit in
+  a compact range (the TPC-H surrogate keys), instead of a hash map entry per
+  distinct key. With no budget q3 holds 28 MB less, q5 62 MB and q18 63 MB, with
+  identical answers (verification §56).
 - A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
   batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
   both `FROM` items are lazy base tables, the key lists are non-empty, and there

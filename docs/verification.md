@@ -4329,3 +4329,44 @@ each NULL pattern stay separate groups) and the plan test now pins which key
 shapes take the fold. `moon test` passes on wasm-gc (391) and native (404), the
 33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
 unchanged.
+
+## 56. A compact key range is looked up by offset (2026-10-29)
+
+**What changed.** The index over a build side (§52) mapped each key to its slot
+through a hash map, which costs an entry per distinct key and a hash per probe
+row. When the valid build keys sit in a range no wider than four times the row
+count plus 1,024 (and under 2^24 cells), the lookup is now one `Int32` array
+indexed by `key - lowest`, four bytes a cell and no hashing; any other key set,
+including a span that overflows `Int64`, keeps the map. The slot ranges and row
+ids are unchanged, so the semi, anti, right and cursor paths all take it through
+one `slot` method. TPC-H surrogate keys are the compact case: `orders` has 1.5M
+keys over a span of 6M.
+
+**What it is worth.** `harness/bench_join_chain.py` against the build of the
+previous commit (the pair-key fold), `harness/baseline/2026-10-29-dense-index.json`,
+three rounds, quiet load 1.87, worst peak-RSS spread 11%, no answer disagreed.
+Peak RSS in MB with wall seconds, no budget:
+
+| query | RSS | wall s |
+| --- | --- | --- |
+| q3 | 353.1 → 325.1 | 2.77 → 2.37 |
+| q5 | 587.0 → 524.6 | 3.07 → 2.45 |
+| q18 | 389.0 → 326.3 | 5.02 → 4.36 |
+| q7 | 527.2 → 527.9 | 3.76 → 2.99 |
+| q9 | 701.0 → 701.0 | 4.20 → 3.07 |
+| q21 | 617.9 → 613.4 | 8.26 → 7.03 |
+| q10 | 238.8 → 236.8 | 2.80 → 2.75 |
+| q8, q11, q20, q1, q12 | within 2 MB | within 0.1 |
+
+The three queries that hold a large keyed build side fall by 28, 62 and 63 MB,
+which is the map entries the array replaces. The wall columns fall on the
+queries that probe millions of rows, as a lookup that no longer hashes should;
+the spread was recorded for RSS only, so those are reported, not claimed beyond
+that. Under 16 MB every row is within the spread (q11 25.5 → 23.5 MB, the rest
+within 3 MB), because there the joins partition and the sides are small.
+
+**The gates hold.** One test pins the lookup: a compact range, a wide set, a
+span that overflows `Int64`, negative keys, and keys below, inside and above the
+range that are absent. `moon test` passes on wasm-gc (392) and native (405), the
+33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
+unchanged.
