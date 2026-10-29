@@ -121,14 +121,12 @@ moon add superbigcup325/moonlake
 ```
 
 > This README and the browser playground track `main`. `moon add` gives you the
-> latest published release from mooncakes (0.5.0), which includes the session
-> playground, the Parquet writer and the spill/JSON fixes recorded in
-> [CHANGELOG.md](CHANGELOG.md).
-> The next release is 0.5.1: every change since 0.5.0 and the whole
-> [delivery plan](docs/ROADMAP.md#051-delivery-plan) passed, and the final
-> candidate — reader fix, the two approximate aggregates and the colenc 0.1.3
-> dependency — passed the same list again (`verification.md` §§36, 40 and 44). It
-> is unreleased, so `moon add` still gives you 0.5.0.
+> latest published release from mooncakes (0.6.0): the build-side index that is
+> one row-id range instead of a list per key, the chain of joins that composes
+> with or without a budget, and the column-wise group state that makes a million
+> groups of a `sum` peak at 117 MB instead of 323 MB, with the measurements in
+> [verification.md](docs/verification.md) §52, §54 and §55. Everything since
+> 0.5.1 is in it; the next release has no scope yet.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.3`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:

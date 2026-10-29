@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-29
+
+Everything since 0.5.1 is in this version, and each entry carries the
+verification section it was decided by: two of them — the cheaper build-side
+index and the composed chain — were gated on a budget until the measurements
+let the gate go, and two attempts at memory are recorded as negative results
+rather than shipped (§60, §62).
+
 ### Added
 
 - `harness/bench_join_agg.py`: resource evidence for a two-table keyed join that
