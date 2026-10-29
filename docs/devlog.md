@@ -2432,3 +2432,10 @@ The follow-up was the other half of that index: the semi, anti and right joins
 still kept a list per key. They take the range index now, and the measurement
 said it changes nothing, which retires the lever the previous entry named. The
 code is simpler for it and the record says so (verification §53).
+
+The probes after that said the peaks of q18 and q20 were group state, at 288 and
+410 bytes a group, and a key and a sum need about a dozen. One integer key over
+sums and counts now keeps that state as arrays by group id, and a million groups
+fell from 323 MB to 117 MB. q18 fell by less than the probe line promised
+because its other half is a build side, which the measurement then named: the
+aggregate was never the whole peak (verification §54).

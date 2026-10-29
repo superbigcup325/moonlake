@@ -4224,3 +4224,67 @@ cleanup and is recorded as one, not as a saving.
 
 **The gates hold.** `moon test` is 384 tests green, the 33 golden comparisons
 pass, and `check_cli.sh` and `spill_accept.sh` pass unchanged.
+
+## 54. The group state of one integer key, held column-wise (2026-10-29)
+
+**What the probes said.** Before this change the peak of q18 and q20 was the
+state of their `GROUP BY`, and the cost was per group, not per byte of input: a
+single `Int32` key with one `sum` fitted 288 bytes a group (35 MB base plus 288
+MB per million groups, residual 5 MB), two integer keys fitted 410, and the
+split at one million groups put about 240 bytes of that in the group before any
+aggregate was added (a key row of boxed scalars, an accumulator row, and one
+object per accumulator). A key and a running sum need about a dozen.
+
+**What changed.** `aggregate_seq` takes a column-wise fold when the key is one
+`Int32` or `Int64` column and every aggregate is a `sum` (integer or float
+output), a `count` of an input or `count(*)`. The state is a slot map from key
+to group id, one `Int64` array of keys, and per aggregate one array (two flags
+and a sum for a `sum`), all indexed by group id, and the result columns are
+built straight from those arrays. Group order (first seen), the one shared NULL
+key group, sums folded in row order (so float sums are bit-identical), NULL
+inputs skipped, the integer overflow check and its error all follow the general
+fold. Every other shape, a second key, a string or date key, `min`/`max`,
+`avg`, `distinct` and the rest, takes the general fold unchanged. The grace and
+join-fold callers reach the same `aggregate_seq`, so they take it too.
+
+**What it is worth.** Three interleaved rounds against the binary of the
+previous commit, quiet host (load under 2), answers identical byte for byte.
+Peak RSS in MB, wall seconds beside it:
+
+| case | budget | before | after | wall s |
+| --- | --- | --- | --- | --- |
+| one key, `sum`, 1.0M groups | none | 323.3 | 117.3 | 2.12 → 1.97 |
+| one key, `sum`, 1.0M groups | 16 MB | 69.5 | 51.4 | 2.38 → 2.21 |
+| one key, `sum` + `count(*)` | none | 354.6 | 125.0 | 2.25 → 2.08 |
+| same plus `max` (general fold) | none | 416.3 | 415.9 | 2.31 → 2.35 |
+| q18 | none | 477.4 | 388.9 | 5.11 → 4.77 |
+| q18 | 16 MB | 227.2 | 227.3 | 5.62 → 5.44 |
+| q20 | none | 258.9 | 258.8 | 3.01 → 2.95 |
+| q20 | 16 MB | 87.4 | 87.0 | 3.19 → 3.13 |
+| q21 | none | 616.9 | 613.1 | 8.22 → 8.25 |
+| q3 | none | 357.2 | 356.9 | 2.76 → 2.78 |
+| q1 | none | 35.3 | 35.3 | 2.92 → 2.97 |
+
+A group of this shape now costs about 82 bytes over the base (from 288) with one
+`sum`, and the control row with a `max` shows the general fold is untouched. What
+is left of the 82 is mostly the slot map entry and array growth; it was not
+split further.
+
+**What it does not do, and what the q18 numbers say.** q18 fell 88 MB, not the
+roughly 370 the probe line promised, because its aggregate was only part of the
+peak. The `IN` subquery alone now peaks at 147 MB, and the outer query with the
+subquery replaced by nine literal keys peaks at 388.7 MB, the same as the whole
+of q18. So what remains is the outer join, in which `lineitem`, six million rows,
+is the last build side and is held whole with its index, to answer nine orders.
+That is a join order question (probe `lineitem` against a small hash of
+`orders` instead of building it), not an index or an aggregate one, and this
+change does not touch it. q20 groups by two integer keys and q21's weight is its
+`lineitem` semi and anti sides, so neither moved, as the table shows.
+
+**The gates hold.** Five tests pin the fold: it is chosen only for one integer
+key over the four aggregate kinds, it agrees cell for cell with the general fold
+on batches with NULL keys, NULL inputs and keys spanning batches, an all-NULL
+sum stays NULL on an `Int64` key, an int64 sum overflow still raises, and an
+empty input has no groups. `moon test` passes on wasm-gc (389) and native (402),
+the 33 golden comparisons pass, and `check_cli.sh` and `spill_accept.sh` pass
+unchanged.

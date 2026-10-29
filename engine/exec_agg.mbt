@@ -572,6 +572,9 @@ fn aggregate_seq(
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
 ) -> @types.DataBatch raise @types.SqlError {
+  if col_agg_plan(group_types, aggs) is Some(kinds) {
+    return aggregate_cols(seq, group_exprs, group_types, kinds, aggs)
+  }
   let g = group_exprs.length()
   let m = aggs.length()
   let grouper : Grouper = if g == 0 {
@@ -843,6 +846,283 @@ fn aggregate_seq(
       vec.set(r, acc_finish(acc_rows[r][i], aggs[i]))
     }
     columns.push(vec)
+  }
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+/// The aggregates the column-wise fold keeps as plain arrays: a sum over an
+/// integer or a float input, a count of non-null inputs, and `count(*)`.
+priv enum ColAggKind {
+  SumInt
+  SumFlt
+  CountVals
+  CountAll
+}
+
+///|
+/// One aggregate's state for every group, as arrays indexed by group id instead
+/// of an accumulator object per group. `flags` carries bit 0 (a non-null input
+/// was seen) and bit 1 (an integer sum overflowed) for the two sums.
+priv struct ColAgg {
+  kind : ColAggKind
+  ints : Array[Int64]
+  dbls : Array[Double]
+  flags : Array[Int32]
+}
+
+///|
+/// Make room for one new group.
+fn ColAgg::open(self : ColAgg) -> Unit {
+  match self.kind {
+    SumInt => {
+      self.ints.push(0L)
+      self.flags.push(0)
+    }
+    SumFlt => {
+      self.dbls.push(0.0)
+      self.flags.push(0)
+    }
+    CountVals | CountAll => self.ints.push(0L)
+  }
+}
+
+///|
+/// The checked add `acc_step_num` makes: an int64 sum overflows when the
+/// operands share a sign that the result does not.
+fn ColAgg::add_int(self : ColAgg, gi : Int32, x : Int64) -> Unit {
+  let sum = self.ints[gi] + x
+  let mut f = self.flags[gi] | 1
+  if ((self.ints[gi] ^ sum) & (x ^ sum)) < 0L {
+    f = f | 2
+  }
+  self.ints[gi] = sum
+  self.flags[gi] = f
+}
+
+///|
+fn ColAgg::add_flt(self : ColAgg, gi : Int32, x : Double) -> Unit {
+  self.dbls[gi] = self.dbls[gi] + x
+  self.flags[gi] = self.flags[gi] | 1
+}
+
+///|
+fn col_agg_kind(spec : AggSpec) -> ColAggKind? {
+  match spec.kind {
+    Sum =>
+      if spec.input is Some(_) {
+        match spec.out_type {
+          @types.Int64 => Some(SumInt)
+          @types.Float64 => Some(SumFlt)
+          _ => None
+        }
+      } else {
+        None
+      }
+    Count => if spec.input is Some(_) { Some(CountVals) } else { None }
+    CountStar => Some(CountAll)
+    _ => None
+  }
+}
+
+///|
+/// The column-wise fold applies to one Int32 or Int64 group key over aggregates
+/// that are all of the kinds above; any other shape keeps the general fold.
+fn col_agg_plan(
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+) -> Array[ColAggKind]? {
+  if group_types.length() != 1 || aggs.length() == 0 {
+    return None
+  }
+  match group_types[0] {
+    @types.Int32 | @types.Int64 => ()
+    _ => return None
+  }
+  let kinds : Array[ColAggKind] = []
+  for spec in aggs {
+    match col_agg_kind(spec) {
+      Some(k) => kinds.push(k)
+      None => return None
+    }
+  }
+  Some(kinds)
+}
+
+///|
+/// Hash aggregation for one integer key, with the group state held column-wise:
+/// the key of each group is a slot in one `Int64` array and every aggregate is
+/// one array (two for a sum), so a group costs its map slot and a few bytes
+/// rather than a key row, an accumulator row and an object per aggregate. Group
+/// order, NULL handling (one shared null-key group, opened where the first
+/// null-keyed row arrives), sums in row order and the overflow error are the
+/// general fold's.
+fn aggregate_cols(
+  seq : BatchSeq,
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  kinds : Array[ColAggKind],
+  aggs : Array[AggSpec],
+) -> @types.DataBatch raise @types.SqlError {
+  let m = aggs.length()
+  let slots : Map[Int64, Int32] = Map([])
+  let keys : Array[Int64] = []
+  let cols : Array[ColAgg] = []
+  for k in kinds {
+    cols.push({ kind: k, ints: [], dbls: [], flags: [], })
+  }
+  let mut null_gi = -1
+  while (seq.next)() is Some(batch) {
+    let rows = batch.row_count()
+    let key_col = eval_vec(group_exprs[0], batch)
+    let valid = v_validity(key_col)
+    let kd : FixedArray[Int64] = match key_col {
+      @types.I32(d, _) => {
+        let o : FixedArray[Int64] = FixedArray::make(rows, 0L)
+        for i in 0..<rows {
+          o[i] = d[i].to_int64()
+        }
+        o
+      }
+      @types.I64(d, _) => d
+      _ =>
+        raise @types.SqlError::Execute("internal: group key dtype drift (int)")
+    }
+    let ins : Array[FastInput] = []
+    for spec in aggs {
+      match spec.input {
+        Some(e) => ins.push(fast_input_of(eval_vec(e, batch), spec))
+        None => ins.push(FBoxed(@types.ColumnVector::make(@types.Int32, 0)))
+      }
+    }
+    for r in 0..<rows {
+      let gi = if valid[r] {
+        let k = kd[r]
+        match slots.get(k) {
+          Some(i) => i
+          None => {
+            let i = keys.length()
+            slots[k] = i
+            keys.push(k)
+            for c in cols {
+              c.open()
+            }
+            i
+          }
+        }
+      } else {
+        if null_gi < 0 {
+          null_gi = keys.length()
+          keys.push(0L)
+          for c in cols {
+            c.open()
+          }
+        }
+        null_gi
+      }
+      for i in 0..<m {
+        let c = cols[i]
+        match c.kind {
+          CountAll => c.ints[gi] = c.ints[gi] + 1L
+          CountVals => {
+            let present = match ins[i] {
+              FI32(_, v) => v[r]
+              FI64(_, v) => v[r]
+              FF64(_, v) => v[r]
+              FBoxed(col) => v_validity(col)[r]
+            }
+            if present {
+              c.ints[gi] = c.ints[gi] + 1L
+            }
+          }
+          SumInt =>
+            match ins[i] {
+              FI32(d, v) => if v[r] { c.add_int(gi, d[r].to_int64()) }
+              FI64(d, v) => if v[r] { c.add_int(gi, d[r]) }
+              FBoxed(col) =>
+                match col.get(r) {
+                  @types.Int32(x) => c.add_int(gi, x.to_int64())
+                  @types.Int64(x) => c.add_int(gi, x)
+                  _ => ()
+                }
+              FF64(_, _) => ()
+            }
+          SumFlt =>
+            match ins[i] {
+              FI32(d, v) => if v[r] { c.add_flt(gi, d[r].to_double()) }
+              FI64(d, v) => if v[r] { c.add_flt(gi, d[r].to_double()) }
+              FF64(d, v) => if v[r] { c.add_flt(gi, d[r]) }
+              FBoxed(col) =>
+                match as_double(col.get(r)) {
+                  Some(x) => c.add_flt(gi, x)
+                  None => ()
+                }
+            }
+        }
+      }
+    }
+  }
+  let n = keys.length()
+  let key_valid : FixedArray[Bool] = FixedArray::make(n, true)
+  if null_gi >= 0 {
+    key_valid[null_gi] = false
+  }
+  let columns : Array[@types.ColumnVector] = []
+  match group_types[0] {
+    @types.Int32 => {
+      let d : FixedArray[Int32] = FixedArray::make(n, 0)
+      for i in 0..<n {
+        d[i] = keys[i].to_int()
+      }
+      columns.push(@types.I32(d, key_valid))
+    }
+    _ => {
+      let d : FixedArray[Int64] = FixedArray::make(n, 0L)
+      for i in 0..<n {
+        d[i] = keys[i]
+      }
+      columns.push(@types.I64(d, key_valid))
+    }
+  }
+  for c in cols {
+    let v : FixedArray[Bool] = FixedArray::make(n, true)
+    match c.kind {
+      SumInt => {
+        let d : FixedArray[Int64] = FixedArray::make(n, 0L)
+        for gi in 0..<n {
+          let f = c.flags[gi]
+          if (f & 2) != 0 {
+            raise @types.SqlError::Execute(
+              "sum() overflows int64; widen the input or filter values",
+            )
+          }
+          if (f & 1) != 0 {
+            d[gi] = c.ints[gi]
+          } else {
+            v[gi] = false
+          }
+        }
+        columns.push(@types.I64(d, v))
+      }
+      SumFlt => {
+        let d : FixedArray[Double] = FixedArray::make(n, 0.0)
+        for gi in 0..<n {
+          if (c.flags[gi] & 1) != 0 {
+            d[gi] = c.dbls[gi]
+          } else {
+            v[gi] = false
+          }
+        }
+        columns.push(@types.F64(d, v))
+      }
+      CountVals | CountAll => {
+        let d : FixedArray[Int64] = FixedArray::make(n, 0L)
+        for gi in 0..<n {
+          d[gi] = c.ints[gi]
+        }
+        columns.push(@types.I64(d, v))
+      }
+    }
   }
   @types.DataBatch::new(columns, n)
 }

@@ -42,6 +42,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   with or without a budget and only a budget it does not fit sends it to the
   eager path. Answers are unchanged and the wall cost is two passes over the
   build keys where there was one (verification §52).
+- A `GROUP BY` over one `Int32` or `Int64` key whose aggregates are all `sum`,
+  `count(expr)` or `count(*)` keeps its group state as arrays indexed by group id
+  instead of a key row and an accumulator row per group, so a group costs about
+  82 bytes where it cost 288: one million groups of a `sum` peak at 117 MB, not
+  323 MB, and q18 at SF1 drops from 477 MB to 389 MB. Answers are unchanged, and
+  any other key or aggregate takes the general fold as before (verification
+  §54).
 - A two-table keyed join that feeds a `GROUP BY` is folded from the join's own
   batches instead of collecting them first, when the kind is INNER, LEFT or FULL,
   both `FROM` items are lazy base tables, the key lists are non-empty, and there
