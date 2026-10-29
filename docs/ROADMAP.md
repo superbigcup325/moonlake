@@ -815,6 +815,39 @@ checkpoint declares, or the runtime keeps freed blocks resident. The next step
 is to measure the high-water itself, and to name the unnamed 82.6 MB of resident
 memory, not to shrink this copy again.
 
+### The high-water readout contract (2026-10-29)
+
+Written because §62 falsified the assumption behind the census's presentation:
+its largest declared point is not the process's peak, so a report that only
+names structures cannot say where the peak is.
+
+**What it reports.** At each declared point, in addition to the named total, the
+census records the process's current resident bytes and its high-water mark, and
+the report carries both: per point, its residency and the high-water at that
+moment; in the header, the process's high-water and the label whose sample was
+the largest. A point is where the peak happened if its residency sample is the
+largest, and the difference between the high-water and that sample is memory
+held at a moment no checkpoint declares.
+
+**How it reads them.** On native, `/proc/self/statm` gives the resident pages
+and `/proc/self/status`'s `VmHWM` the high-water; a page is taken as 4096 bytes.
+On a target without `/proc` (wasm-gc, js, and a native platform without it) the
+readout is absent rather than zero: the report prints no resident fields and the
+named totals are exactly what they are today, so an absent readout never passes
+for a small one.
+
+**The rules the readout keeps.** It reads the process, never the engine: it may
+not keep any structure alive, and it may not be the thing a measurement measures.
+The read is a file read on the already-slowed path of a census run, and the
+report says so. A residency sample is the process's, not the query's: it includes
+the allocator's free lists, the runtime, and anything the host is doing.
+
+**What it must show.** For q21 at SF1 without a budget, the point at which the
+process's residency is highest, the named total there, and how much of the
+high-water that point does not name. If the largest sample is a declared point,
+the next clue is its composition; if no declared point reaches the high-water,
+the report says so and the unnamed memory is the finding.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
