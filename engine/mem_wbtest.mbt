@@ -68,6 +68,17 @@ fn mw_catalog() -> @catalog.Catalog {
     mw_entry("big", [("k", @types.Int32), ("s", @types.Str)], big_batches),
   )
   cat.register(
+    mw_entry("tiny", [("k", @types.Int32), ("z", @types.Int32)], [
+      @types.DataBatch::new(
+        [
+          mw_col(@types.Int32, [@types.Int32(1), @types.Int32(2)]),
+          mw_col(@types.Int32, [@types.Int32(10), @types.Int32(20)]),
+        ],
+        2,
+      ),
+    ]),
+  )
+  cat.register(
     mw_entry("small", [("k", @types.Int32), ("w", @types.Int32)], [
       @types.DataBatch::new(
         [
@@ -175,6 +186,73 @@ test "a semi side is its own point" {
   let text = census.render()
   assert_true(text.contains("# semi/anti join's inner side (step 2)"))
   assert_true(text.contains("probe copy: "))
+}
+
+///|
+test "a step releases the tables whose last step it was" {
+  let cat = mw_catalog()
+  let census = MemCensus::new()
+  // every column of every table is read, so a narrowed table is its own size
+  let sql = "SELECT big.k, big.s, small.k, small.w, tiny.k, tiny.z FROM big, small, tiny WHERE big.k = small.k AND big.k = tiny.k"
+  let with_census = run_parsed(
+    @sql.parse_select(sql),
+    cat,
+    [],
+    ExecOptions::in_memory(),
+    census=Some(census),
+  )
+  let big = cat.lookup("big").unwrap().batches
+  let small = cat.lookup("small").unwrap().batches
+  let tiny = cat.lookup("tiny").unwrap().batches
+  let all = (batches_bytes(big) + batches_bytes(small) + batches_bytes(tiny)).to_int64()
+  let text = census.render()
+  // step 2 stands on no table but its own: step 1 finished big and small
+  assert_true(text.contains("collected FROM tables: \{all}"))
+  assert_true(
+    text.contains("collected FROM tables: \{batches_bytes(tiny).to_int64()}"),
+  )
+  // and letting go of them answers what holding them answered
+  let plain = run_select(sql, mw_catalog())
+  assert_eq(with_census.row_count(), plain.row_count())
+  for r in 0..<plain.row_count() {
+    for c in 0..<plain.batch.columns().length() {
+      assert_eq(with_census.get(r, c).to_string(), plain.get(r, c).to_string())
+    }
+  }
+}
+
+///|
+test "a table named by two steps is released after the later one" {
+  let steps : Array[JoinStep] = [
+    step_of_table(0),
+    step_of_table(1),
+    step_of_table(0),
+  ]
+  assert_eq(tables_finished_at(steps, 0).length(), 0)
+  assert_eq(tables_finished_at(steps, 1).length(), 1)
+  assert_eq(tables_finished_at(steps, 1)[0], 1)
+  assert_eq(tables_finished_at(steps, 2).length(), 1)
+  assert_eq(tables_finished_at(steps, 2)[0], 0)
+  let chain : Array[JoinStep] = [step_of_table(0), step_of_table(1)]
+  assert_eq(tables_finished_at(chain, 0)[0], 0)
+  assert_eq(tables_finished_at(chain, 1)[0], 1)
+}
+
+///|
+/// A join step that names only a table: enough for the lifetime rule.
+fn step_of_table(table : Int32) -> JoinStep {
+  {
+    table,
+    kind: @sql.JoinKind::Inner,
+    keys_l: [],
+    keys_r: [],
+    build_filter: None,
+    probe_filter: None,
+    residual: None,
+    right_offset: 0,
+    right_width: 0,
+    out_dtypes: [],
+  }
 }
 
 ///|
