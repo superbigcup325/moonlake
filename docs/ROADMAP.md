@@ -1001,6 +1001,48 @@ hold 211 MB and 113 MB more than they name — freed heap the runtime has not
 returned. With §62 this says the peak responds to what a run allocates, not to
 how early a copy is released.
 
+### The scan's per-cell cost contract (2026-10-30)
+
+The first round whose subject is wall time rather than memory. Written before
+the change because each of the three costs lives in an inner loop that allocates
+nothing of size — the census cannot see any of them — and each carries a rule a
+later reader could break without a test failing.
+
+**What the code must keep.** A field's end is the first `,` or newline, found a
+word at a time; the *lowest* set bit of the mask is authoritative, because a byte
+above a match can also show a high bit (a 0x01 byte whose borrow came out of a
+lower zero byte), so a caller that ever trusted a higher bit would read a wrong
+field end. A quoted cell lives in an ascending list and is found by binary
+search, so the list stays sorted and holds only cells that were actually quoted.
+A batch is `SCAN_BATCH_ROWS` rows except the last, and a range never straddles a
+batch: `--mem`'s per-batch accounting and the spill partitioner's slicing both
+depend on it.
+
+**The knob.** `SCAN_BATCH_ROWS` is public and was 4096 when the reader was
+written. The sweep says the batch size is a cache question, not a call-overhead
+one: 16384 rows a batch cost 19-35% on every query measured, and 1024 against
+4096 is worth 14-25% the other way. The setting is 1024.
+
+**How it is measured.** `harness/bench_join_chain.py --budgets none --rounds 3`
+with control and candidate interleaved; the wall-time column is read as a ratio
+when the host is not quiet (the harness prints the load it settled for), peak RSS
+must stay inside the spread, and an answer that changes is a failure regardless of
+the clock. Success is every case improving beyond the spread.
+
+**Result (§67).** Kept. Without a budget the harness reports q1 9.64 → 8.31 s
+(−13.8%), q7 8.15 → 7.02 s (−13.9%), q9 9.41 → 7.78 s (−17.3%) and q21 19.58 →
+16.68 s (−14.8%) against `b3d3ae0`, every answer byte-identical and peak RSS
+inside the 6% spread (two cases unmoved, q9 +18 MB, q21 −9 MB). The host load
+was 3.13, so the absolute times are inflated about 2.7x and only the ratios are
+read. The sweep also settled the neighbouring question: 16384 rows a batch is
+recorded above as a 19-35% loss, so that nobody adopts it later as an obvious win
+— the batch size is a cache question and the curve turns up hard.
+
+What this leaves is a per-row width check the scan could count as it goes, a second offset
+per cell that is derivable when a chunk has no CRLF, and the three separate
+lineitem scans q21 makes — the last worth about as much as this round, and a
+planner question rather than a reader one.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
