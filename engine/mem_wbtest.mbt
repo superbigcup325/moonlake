@@ -106,6 +106,27 @@ test "the census keeps the largest point at each label" {
 }
 
 ///|
+test "a census with a sampler says where the peak was" {
+  let census = MemCensus::new(sample=Some({ read: fn() { (1000, 2000) }, }))
+  census.observe("small", [("a", 10L)])
+  census.observe("big", [("b", 20L)])
+  let out = census.render()
+  // both samples report the same residency, so the first point seen holds the peak
+  assert_true(out.contains(", high 2000 KB, peak at small"))
+  assert_true(out.contains("# big: 20 bytes (rss 1000 KB, high 2000 KB)"))
+}
+
+///|
+test "a census without a sampler prints no residency" {
+  let census = MemCensus::new()
+  census.observe("only", [("a", 10L)])
+  let out = census.render()
+  assert_true(out.contains("# only: 10 bytes"))
+  assert_true(!out.contains("rss"))
+  assert_true(!out.contains("high"))
+}
+
+///|
 test "an empty census renders nothing" {
   assert_eq(MemCensus::new().render(), "")
 }

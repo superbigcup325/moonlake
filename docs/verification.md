@@ -4677,3 +4677,64 @@ census can report the process peak beside the named total instead of implying
 that its largest declared point is that peak), and what the 82.6 MB of unnamed
 resident memory is (object overhead the batch estimate does not count — it sizes
 a string as four bytes plus its characters — is the first candidate).
+
+## 63. The high-water readout puts the peak at the collapse, and shows what the names miss (2026-10-29)
+
+The contract ("The high-water readout contract", roadmap) was written first and
+committed alone. Every census point now also records the process's resident KB
+and its high-water KB, read from `/proc/self/statm` and `VmHWM` on native; the
+report carries them per point and names the point whose sample was largest. On a
+target without `/proc` the fields are absent rather than zero, and a `--mem` run
+of q18 (no declared point) still prints nothing.
+
+**q21 at SF1, no budget.** Nine points, in the order the executor reached them:
+
+| point | named MB | resident MB | high-water MB |
+| --- | --- | --- | --- |
+| collected FROM tables | 139.2 | 228.3 | 231.7 |
+| collected its output (step 1) | 378.4 | 442.7 | 487.2 |
+| collapsed its output (step 1) | 472.3 | 530.7 | 536.5 |
+| collected its output (step 2) | 430.1 | 522.0 | 545.4 |
+| collapsed its output (step 2) | 497.5 | 577.4 | 599.1 |
+| semi/anti join's inner side (step 4) | 247.3 | 458.2 | 599.1 |
+| collapsed its output (step 3) | 246.0 | 493.1 | 599.1 |
+| collected its output (step 3) | 240.6 | 489.5 | 599.1 |
+| semi/anti join's inner side (step 5) | 222.3 | 335.0 | 599.1 |
+
+The header names it: `high 613508 KB, peak at hash join collapsed its output
+(step 2)`. That high-water is the same number the harness measures as peak RSS
+for the run, so the two instruments agree, arrived at independently.
+
+**What it says.**
+
+- The peak is at the second chain step's collapse, as §61 said, and it is the
+  point where the process's own high-water was set (536.5 → 599.1 MB across that
+  point, and no later point raises it).
+- The named total at that instant is 497.5 MB against 577.4 MB resident: about
+  80 MB is not named by any checkpoint, and 92 MB less than the high-water,
+  which was reached slightly before the sample (the copy or the last of the
+  drain). The contract's "the total is a lower bound" holds, and this is what
+  the bound is worth at the peak.
+- Residency and named totals do not rank the same. The two semi/anti points are
+  fifth and ninth by named bytes but hold 458.2 and 335.0 MB — 211 MB and 113 MB
+  more than their names. Whatever retains those bytes is freed heap the runtime
+  has not returned, or structures no checkpoint declares.
+- Across §62's release, the named peak there fell 70 MB and the high-water did
+  not move. Together the two measurements say the process peak is driven by what
+  the run allocates and retains, not by the size of a particular live pair at a
+  declared point: freeing a copy earlier does not lower a high-water that the
+  allocator has already reached.
+
+**One outlier.** One of five runs of the releasing build (§62) peaked at
+497.2 MB, far below its other four (584–591 MB); the current build's five runs
+were 589.9–606.5 MB. A single run is not evidence, and the medians are 585.9 and
+598.0 MB, so the §62 conclusion stands, but the outlier says the allocator can
+sometimes hand the released blocks straight back, and that is worth knowing
+before the next lever is chosen.
+
+**Next.** Not another release of this copy, and not another count: what the peak
+responds to is the total the query allocates. The first shape to try is the
+chain's intermediate collapse itself — `join_step` returns one batch, so a step's
+collected output is always copied into a second allocation before the next step
+probes it, and passing the batches through instead would remove the copy rather
+than free it early. That needs its own contract and its own measurement.

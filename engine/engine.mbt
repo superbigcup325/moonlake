@@ -613,13 +613,16 @@ pub fn explain_analyze_with(
 /// docs/ROADMAP.md. The answer is dropped, because this is a measurement rather
 /// than a result API; the text is empty when the query reached no declared
 /// point. A census run takes slightly longer than the plain run (it sizes every
-/// structure it names), so it is not a benchmark.
+/// structure it names). A caller that can read the process's residency (native
+/// `/proc`) passes a sampler and the report names where the peak was, instead of
+/// implying that its largest named point is that peak (§62).
 pub fn mem_report_with(
   sql : String,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
+  sample~ : Residency? = None,
 ) -> String raise @types.SqlError {
-  let census = MemCensus::new()
+  let census = MemCensus::new(sample~)
   let stats : Array[(String, Int64)] = []
   let _ = run_parsed(
     @sql.parse_select(sql),

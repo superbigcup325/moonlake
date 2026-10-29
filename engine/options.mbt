@@ -84,10 +84,24 @@ fn SpillMeter::report(
 ///|
 /// One declared point in a profiling run: the label, the structures that were
 /// alive there, and their sum.
+
+///|
+/// The residency reader a profiling run may inject: it returns the process's
+/// resident KB right now and its high-water KB. The native CLI supplies one
+/// that reads `/proc`; a target without it supplies none, and the report then
+/// prints no resident fields at all rather than a zero that would pass for a
+/// small residency (contract: docs/ROADMAP.md).
+pub(all) struct Residency {
+  read : () -> (Int32, Int32)
+}
+
+///|
 priv struct MemPoint {
   label : String
   entries : Array[(String, Int64)]
   total : Int64
+  rss : Int32 // resident KB sampled when this point was kept, 0 = not sampled
+  high : Int32 // process high-water KB at that moment, 0 = not sampled
 }
 
 ///|
@@ -100,11 +114,12 @@ priv struct MemPoint {
 priv struct MemCensus {
   points : Array[MemPoint] // one per label: the largest point there
   mut seen : Int32
+  sample : Residency? // residency reader, injected by the caller
 }
 
 ///|
-fn MemCensus::new() -> MemCensus {
-  { points: [], seen: 0, }
+fn MemCensus::new(sample~ : Residency? = None) -> MemCensus {
+  { points: [], seen: 0, sample, }
 }
 
 ///|
@@ -121,15 +136,21 @@ fn MemCensus::observe(
     total += e.1
   }
   self.seen += 1
+  // the process's own residency, read here and never from an engine root: the
+  // readout may not keep anything alive (contract: docs/ROADMAP.md)
+  let (rss, high) = match self.sample {
+    Some(r) => (r.read)()
+    None => (0, 0)
+  }
   for i, p in self.points {
     if p.label == label {
       if total > p.total {
-        self.points[i] = { label, entries, total, }
+        self.points[i] = { label, entries, total, rss, high, }
       }
       return
     }
   }
-  self.points.push({ label, entries, total, })
+  self.points.push({ label, entries, total, rss, high, })
 }
 
 ///|
@@ -141,9 +162,27 @@ fn MemCensus::render(self : MemCensus) -> String {
   if self.points.length() == 0 {
     return sb.to_string()
   }
+  // the high-water and the point whose sample was the largest: the named totals
+  // alone cannot say where the process peaked (§62)
+  let mut high = 0
+  let mut peak_label = ""
+  let mut peak_rss = 0
+  for p in self.points {
+    if p.high > high {
+      high = p.high
+    }
+    if p.rss > peak_rss {
+      peak_rss = p.rss
+      peak_label = p.label
+    }
+  }
   sb.write_string(
-    "-- resident by structure (largest point of each of \{self.points.length()} labels, \{self.seen} points seen)",
+    "-- resident by structure (largest point of each of \{self.points.length()} labels, \{self.seen} points seen",
   )
+  if high > 0 {
+    sb.write_string(", high \{high} KB, peak at \{peak_label}")
+  }
+  sb.write_string(")")
   let sorted = self.points.copy()
   sorted.sort_by(fn(x, y) {
     if x.total > y.total {
@@ -156,6 +195,9 @@ fn MemCensus::render(self : MemCensus) -> String {
   })
   for p in sorted {
     sb.write_string("\n# \{p.label}: \{p.total} bytes")
+    if p.high > 0 {
+      sb.write_string(" (rss \{p.rss} KB, high \{p.high} KB)")
+    }
     let entries = p.entries.copy()
     entries.sort_by(fn(x, y) {
       if x.1 > y.1 {

@@ -505,10 +505,15 @@ fn mem_query(
   spill_dir : String?,
 ) -> String raise @types.SqlError {
   if memory <= 0 {
-    return @engine.mem_report_with(sql, cat, @engine.ExecOptions::in_memory())
+    return @engine.mem_report_with(
+      sql,
+      cat,
+      @engine.ExecOptions::in_memory(),
+      sample=Some({ read: rss_sample, }),
+    )
   }
   with_spill_run(spill_dir, memory, opts => {
-    @engine.mem_report_with(sql, cat, opts)
+    @engine.mem_report_with(sql, cat, opts, sample=Some({ read: rss_sample, }))
   })
 }
 
