@@ -638,6 +638,41 @@ test "in and not in subqueries fold to sets" {
 }
 
 ///|
+test "a semi join over an empty grace partition still answers" {
+  // Two thousand distinct keys on one side and four on the other, under a budget
+  // that splits both into a handful of partitions: most inner partitions end up
+  // with no rows at all. A zero-batch inner side used to reach the semi join as a
+  // batch with no columns, and probing it read past them (verification §77).
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<2000 {
+    sb.write_string("\{i},\{i * 7 % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("k\n3\n17\n999\n1500\n", "u") catch {
+      e => abort("\{e}")
+    },
+  )
+  let queries = [
+    "SELECT k FROM t WHERE k IN (SELECT k FROM u) ORDER BY k", "SELECT k FROM t WHERE k NOT IN (SELECT k FROM u) ORDER BY k",
+    "SELECT k FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.k = t.k) ORDER BY k",
+    "SELECT k FROM t WHERE NOT EXISTS (SELECT 1 FROM u WHERE u.k = t.k) ORDER BY k",
+  ]
+  for q in queries {
+    assert_same_result(
+      run(q, cat),
+      run_opts(q, cat, { budget: 2048, spill: Some(mem_store()), }),
+    )
+  }
+}
+
+///|
 test "scalar subquery folds to a constant" {
   let cat = @catalog.Catalog::new()
   cat.register(
