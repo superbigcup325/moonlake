@@ -5031,3 +5031,50 @@ counts against the header — one subtraction a row, so a cheap pass the clock
 probably cannot see — which the scan could count as it goes. And q21 scans lineitem three times — the outer
 chain plus the two decorrelated `EXISTS`/`NOT EXISTS` sides — which is a planner
 question worth about as much as everything in this round.
+
+## 68. A batch is 2048 rows, because 1024 cost the budget path its peak (2026-10-30)
+
+§67 landed 1024 rows a batch from a sweep that only ran without a budget, on a host
+that was not quiet. The first quiet-host matrix (load 1.5-1.7, bench harness, three
+interleaved rounds) caught what that sweep could not see.
+
+**The regression, isolated.** `main` against `63eafd3` (the same scan changes, 4096-row
+batches), 16 MB budget: q3 245.4 -> 275.3 MB, q5 439.2 -> 505.2, q8 503.3 -> 579.3, q9
+664.1 -> 765.1, with wall +8% to +18% on q3/q5/q8/q9; q7 and q10 unmoved; answers
+identical. Without a budget the same pair is 3-6% *faster*, so the batch change is
+the whole of it. The mechanism is the partitioner: `partition_side` and
+`PartitionPool::add` slice each input batch into up to 256 pieces with `take_rows`,
+and `estimate_batch_bytes` charges a piece 16 bytes plus 4 per column of overhead,
+so four times as many input batches make four times as many pieces whose real cost is
+not counted. That is inferred from the code and the isolation, not measured
+directly.
+
+**Two other prices.** Writing SF1 lineitem as Snappy Parquet takes one row group per
+batch, so the batch size is also the row-group size: 303.2 MB at 4096, 322.5 MB at
+1024 (+6.4%), 310.7 MB at 2048 (+2.5%); plain is +0.9% at 1024. Write time moved
+about 4%. The README and ROADMAP claim 4,096-row groups; they now describe the
+batch size.
+
+**2048 against 1024, quiet host, three rounds.**
+
+| case | 16 MB peak 1024 -> 2048 | 16 MB wall |
+| --- | --- | --- |
+| q3 | 275.3 -> 262.8 MB | 3.35 -> 3.12 s |
+| q5 | 505.2 -> 459.2 MB | 4.89 -> 4.35 s |
+| q8 | 579.2 -> 530.1 MB | 5.07 -> 4.49 s |
+| q9 | 765.2 -> 699.2 MB | 8.03 -> 7.29 s |
+| q21 | 600.1 -> 598.9 MB | 12.43 -> 12.12 s |
+
+Without a budget every case is within 2% either way (q21 5.51 vs 5.61 s, q9 2.45 vs
+2.49 s, q1 2.55 vs 2.61 s). Against 4096 the 16 MB path still pays something at 2048
+(q9 664 -> 699 MB, q5 +20 MB), which is the price of the no-budget gain.
+
+**The quiet-host numbers for the whole round (1024, control `b3d3ae0`, no budget):**
+q3 2.32 -> 1.90 s, q5 2.34 -> 1.95, q7 2.75 -> 2.37, q8 2.24 -> 1.86, q9 2.92 -> 2.51,
+q10 2.93 -> 2.63, q18 4.22 -> 3.44, q21 6.61 -> 5.61, q1 2.79 -> 2.59 s: 8-19%, so the
+loaded-host ratios in §67 held. 2048 sits within about 2% of those.
+
+**What is left.** The real fix is to count a partition piece's overhead, or to
+coalesce small batches before partitioning, so the batch size stops being a memory
+knob; the earlier no-collapse rounds say coalescing has its own cost, so it is a
+separate contract. The full no-budget memory matrix has not been re-baselined at 2048.

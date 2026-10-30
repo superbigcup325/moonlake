@@ -7,7 +7,7 @@ import {
 }
 
 // Values
-pub const SCAN_BATCH_ROWS : Int32 = 1024
+pub const SCAN_BATCH_ROWS : Int32 = 2048
 
 pub fn drain_stream(&BatchStream) -> Array[@types.DataBatch] raise @types.SqlError
 
