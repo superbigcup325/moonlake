@@ -1768,6 +1768,28 @@ instead of keeping them is the shape the fix would take, and the trigger is a co
 that says what an unbudgeted peak owes; until then the census names the bytes and the
 number is a choice the caller makes with `--memory`.
 
+### The spilled tee contract (2026-10-31)
+
+A table a query reads more than once is decoded once and kept (§71). A budget cannot
+afford the keeping — `--mem` puts q17's lineitem at 139 MB, 57% of its unbudgeted peak
+— so the sharing is switched off under a budget and the second reader decodes again.
+§87 measures what that costs: q21 +85%, q18 +54%, q17 +45% against a 2 GB budget where
+nothing spills, and nothing at all on the eleven cases that read each table once.
+
+The tee: under a budget, a table with more than one reader in the plan is decoded once
+and its batches written to the spill store, and every reader streams batches back from
+the store instead of from the source. The store is already injected, already deleted on
+every exit path, and already the thing the partitioner uses for exactly this reason; the
+tee's working set is one batch, so the budget holds. The first reader pays the write,
+the later ones pay a read each, and no reader ever holds the table.
+
+Bar: q21, q18 and q17 at 16 MB and 64 MB each at least 10% faster than today, every
+other case within 5% of its wall time and its peak, answers unchanged (the reordered
+ones checked as multisets), 33 goldens, 417 + 431 unit tests, the CLI and the spill
+acceptance gates green, and the store's files gone when the query ends.
+
+**Result:** the measurement and its record go in verification §88.
+
 ### The partition routing contract (2026-10-31)
 
 The grace join slices every input batch by key hash into one piece per partition, so
