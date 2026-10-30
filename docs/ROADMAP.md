@@ -1849,15 +1849,68 @@ Bar, measured against today's tree on SF1: q19 under a 16 MB budget back under 8
 5% worse, and no case's peak more than 5% higher. 33 goldens, 417 + 431 unit tests,
 the CLI and the spill acceptance gates unchanged.
 
-**Result (§85).** Measured and refused. The coalescing was built — each side grouped
-into chunks of `budget / 64`, concatenated, routed — and left q19 at 131 s where it
-was 127.6 s, so the cost is not the routing: the pieces and their contents are
+**Result (§85, reopened and closed by §92).** Measured and refused. The coalescing was
+built on the *replay* — each side grouped into chunks of `budget / 64`, concatenated,
+routed — and left q19 at 131 s where it was 127.6 s, so the cost is not the routing's
+piece count: the pieces and their contents are
 unchanged by construction, and halving the number of gathers with them made no
 difference. The same section's bisect puts the whole regression on the scan's batch
 size (4096 rows: 65.5 s, 2048: 127.6 s, at 16 MB only), and moving the scan back to
 4096 everywhere costs 2-7% on the unbudgeted cases, so the batch size should follow
 whether a query is spilling rather than a constant. That needs the budget plumbed into
 the source reader, and it is the next round's work; the coalescing is reverted.
+
+§92 then reopened it twice. The gather count *is* a real cost — but on the write side,
+which this contract never touched: grouping a side into `budget / 4` chunks before
+`partition_side` is worth 24% on q7 and 10% on q9 at 16 MB with peaks unmoved, so the
+routing is coalesced after all, at the size the partition count already uses. And q19 was
+never the batch size: the "at 16 MB only" row of §85 was misrecorded, the query was 128 s
+unbudgeted too, and the cause was the residual rebuilding the build side's masks per
+probe batch. With that fixed q19 is 3.7 s at every budget and the plan to plumb the budget
+into the scan is dropped — the case it was written for no longer exists, and the 2-7% it
+would have cost the unbudgeted set buys nothing.
+
+### The small-group aggregate contract (2026-10-31)
+
+q1 is the classic report: 5.9M rows of lineitem folded into **four** groups. Under a
+16 MB budget it writes 199,193,427 bytes into 160 spill files across 16 partitions and
+reads them all back, to fold those four groups one partition at a time — 5.12 s against
+2.6 s unbudgeted, and the peak is 1.4 GB either way, so the budget this machinery
+protects is not protected. Every row of the input is written and read so that a hash
+table of four entries can fit in 16 MB.
+
+The gate is the input's bytes (`batches_bytes(joined) <= budget` in
+`aggregate_within_budget`, and the buffer in `aggregate_pulled` for a pulled aggregate),
+which is the right question for a high-cardinality GROUP BY and the wrong one here. The
+state that has to fit is the *group table*, and the input that decides it is the number
+of distinct keys, which no batch metadata reports.
+
+Two answers were tried and refused before this contract was written:
+
+- **A dictionary bound.** A scan's string columns arrive dictionary-encoded, so a group
+  expression that evaluates to one can only take `d.length()` values *in that batch*.
+  Implemented as `group_state_fits` (product of the arms' dictionary sizes times a
+  per-group cost against `budget / 4`) and measured: no effect at all, because the pulled
+  path for a single-table aggregate never reaches that function, and because the bound is
+  per batch — later batches bring their own dictionaries, so it bounds nothing about the
+  total. A column with 200,000 distinct values spread over 49 batches has a small
+  dictionary in each.
+- **An early fold with a cap.** Fold until the table exceeds `budget / 4` and then
+  partition what is left, which needs the partial state to be mergeable with the rest.
+
+So the contract is the combine phase the code has been pointing at since the grace
+aggregation landed: partition the input by group-key hash as it arrives, but fold each
+partition's state as it fills, and when a partition's state overflows, spill *the state
+rows* (one row per group, in the same layout the grouped result has) rather than the raw
+input rows of a group that has already been folded. The final pass re-aggregates
+per-partition state rows, which is exactly `aggregate` over a much smaller input.
+
+Bar, measured against today's tree on SF1: q1 under a 16 MB budget under 3.2 s (5.12 s
+today, 2.6 s unbudgeted) with no spill file larger than the budget, the same for q6 and
+q3 if their shapes reach it, no case's peak higher than today's, every answer identical
+(1 row for q1's four groups and the 33 goldens), 418 + 432 unit tests, the CLI and the
+spill acceptance gates green, and the `spill files` / `spill bytes written` counters
+falling rather than rising.
 
 ### The early semi/anti contract (2026-10-31)
 
