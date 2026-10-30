@@ -595,7 +595,13 @@ pub fn explain_analyze_with(
     Some(store) => { budget: opts.budget, spill: Some(meter.wrap(store)), }
     None => opts
   }
-  let result = run_parsed(@sql.parse_select(sql), catalog, stats, run_opts)
+  let sel = @sql.parse_select(sql)
+  let result = run_parsed(
+    sel,
+    share_repeated_scans(sel, catalog, run_opts),
+    stats,
+    run_opts,
+  )
   meter.report(stats)
   let sb = StringBuilder()
   sb.write_string(explain(sql, catalog))
@@ -624,9 +630,10 @@ pub fn mem_report_with(
 ) -> String raise @types.SqlError {
   let census = MemCensus::new(sample~)
   let stats : Array[(String, Int64)] = []
+  let sel = @sql.parse_select(sql)
   let _ = run_parsed(
-    @sql.parse_select(sql),
-    catalog,
+    sel,
+    share_repeated_scans(sel, catalog, opts, census=Some(census)),
     stats,
     opts,
     census=Some(census),

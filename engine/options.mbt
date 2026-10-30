@@ -115,11 +115,16 @@ priv struct MemCensus {
   points : Array[MemPoint] // one per label: the largest point there
   mut seen : Int32
   sample : Residency? // residency reader, injected by the caller
+  // structures a query holds across several points, each asked for its bytes at
+  // the moment a point is kept: a root names itself at every point while it is
+  // alive and reads zero once it has been let go (contract: docs/ROADMAP.md, "The
+  // census names the shared scan cache contract")
+  roots : Array[(String, () -> Int64)]
 }
 
 ///|
 fn MemCensus::new(sample~ : Residency? = None) -> MemCensus {
-  { points: [], seen: 0, sample, }
+  { points: [], seen: 0, sample, roots: [], }
 }
 
 ///|
@@ -131,6 +136,15 @@ fn MemCensus::observe(
   label : String,
   entries : Array[(String, Int64)],
 ) -> Unit {
+  // the live roots are read now, so a cache is named exactly between its fill and
+  // its drop and nothing here keeps it alive
+  let entries = entries.copy()
+  for r in self.roots {
+    let bytes = (r.1)()
+    if bytes > 0L {
+      entries.push((r.0, bytes))
+    }
+  }
   let mut total = 0L
   for e in entries {
     total += e.1

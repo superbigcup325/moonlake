@@ -131,6 +131,11 @@ priv struct SharedScan {
   union : Array[Int32]
   mut opens_left : Int32
   mut cache : Array[@types.DataBatch]?
+  table : String
+  // a profiling run is told when the cache has just been filled: no other declared
+  // point falls inside the cache's life, so without this one the census could
+  // never name it
+  census : MemCensus?
 }
 
 ///|
@@ -185,6 +190,10 @@ impl @catalog.ScanSource for SharedScan with fn open(
         all.push(b)
       }
       self.cache = Some(all)
+      match self.census {
+        Some(c) => c.observe("shared scan cache filled (\{self.table})", [])
+        None => ()
+      }
       all
     }
   }
@@ -213,6 +222,7 @@ fn share_repeated_scans(
   sel : @sql.Select,
   catalog : @catalog.Catalog,
   opts : ExecOptions,
+  census~ : MemCensus? = None,
 ) -> @catalog.Catalog {
   if opts.budget > 0 {
     return catalog
@@ -242,16 +252,33 @@ fn share_repeated_scans(
               }
             }
             if union.length() > 0 && union.length() < width {
+              let scan : SharedScan = {
+                inner: src,
+                union,
+                opens_left: n,
+                cache: None,
+                table: name,
+                census,
+              }
+              match census {
+                Some(c) =>
+                  c.roots.push(
+                    (
+                      "shared scan cache (\{name})",
+                      fn() {
+                        match scan.cache {
+                          Some(b) => batches_bytes(b).to_int64()
+                          None => 0L
+                        }
+                      },
+                    ),
+                  )
+                None => ()
+              }
               shared.register(
                 @catalog.TableEntry::from_source(
                   entry.schema,
-                  (
-                    SharedScan::{
-                      inner: src,
-                      union,
-                      opens_left: n,
-                      cache: None,
-                    } : &@catalog.ScanSource),
+                  (scan : &@catalog.ScanSource),
                 ),
               )
               any = true
