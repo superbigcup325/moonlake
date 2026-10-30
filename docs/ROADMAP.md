@@ -1363,6 +1363,64 @@ subquery's, so the census high-water (236.9 MB) lands within 2.4% of the plain p
 a point that names only 90.9 MB. The unnamed remainder is the group state while the fold
 grows, which is what the contract said to build next.
 
+### The group state is sized while a fold grows contract (2026-10-30)
+
+Written before the change. §73 ended with a number it could not explain: q18's census
+names 90,858,996 bytes at its one point while the resident sample there is 236,820 KB,
+so about 146 MB of that moment belongs to the group state of the bind-time subquery
+(`SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING sum(l_quantity) > 300`,
+1,500,024 groups), and nothing sizes it. `group result` names the finished 18.0 MB batch,
+which exists only after the state has been dropped. This contract is the accessor §73
+said was owed.
+
+**What the fold actually holds.** `aggregate_seq` has two group states: the column-wise
+one (`aggregate_cols`: one `Map[Int64, Int32]` of group slots, an `Int64` key array, and
+per-aggregate `Int64`/`Double`/`Int32` arrays indexed by group), and the boxed one (two
+`Array`s per group, one of key scalars and one of accumulators). Both live between the
+first batch and the last, and neither is reachable from outside `aggregate_seq`.
+
+**What the change must do.** `aggregate_seq` takes an optional census, and, for each
+input batch, observes one point at the end of that batch's row loop, labelled
+`group state (fold)`, naming what is alive at that moment: `key slots (estimate)` at the
+join census's 24 bytes an entry, `group keys` and `accumulators` (the columnar arrays by
+their lengths, or the per-group arrays at an estimate), and `input batch` through
+`estimate_batch_bytes`. The label is fixed, not per group count: one label per count
+would make the point set grow without bound. Since the arrays only ever grow, the largest
+point at that label is the end of the fold, so the census reports the state at its
+largest without a second mechanism. Only the pulled folds pass a census
+(`fold_pulled`, from `run_agg_pull` and `run_join_agg_pull`); the eager folds keep
+passing none and are unchanged.
+
+**What it may not claim.** Map slots and the boxed per-group arrays are estimates, named
+as such. The key and accumulator arrays are counted by element size, which is exact for
+them. The point says where the group state was large, not what the process did.
+
+**What must not move.** Every answer, byte for byte, with and without a census. Every
+plain run: nothing here executes without a census, so plain peaks and wall times are
+unchanged by construction, and the goldens and the matrix are the evidence rather than
+the reasoning. Every existing point: `pulled fold finished` keeps naming `group result`,
+and q21's census stays byte-identical.
+
+**What is predicted.** q18's fold names about 36 MB of key slots (24 bytes over 1,500,024
+groups) plus 12 MB of key array and the accumulator arrays, so between 60 and 80 MB, and
+q18's named total at its largest point rises from 90.9 MB to roughly 150 MB, close to the
+236.8 MB the RSS sample reads. q1's fold names a few hundred bytes (four groups). A fold
+over 1.5 million groups costs one observe per batch, a few thousand times, which a
+`--mem` run can afford and a plain run never does.
+
+**How it is measured.** `--mem` on q18, q1, q11 and q21 before and after, read as named
+bytes and samples (the samples are not claims); a unit test that a census over a grouped
+pulled aggregate has a `group state (fold)` point naming key slots and accumulators; the
+goldens, the CLI and spill checks, and both unit suites; and the plain matrix against
+`b9ea01a` on the quiet host, which this change cannot move but which guards the claim
+that it does not. It counts as success if q18's named total at its largest point lands
+within 25% of the resident sample there, q21's census is unchanged to the byte, and the
+matrix is inside the spread.
+
+**Left open on purpose.** The swapped join-aggregate path (`run_join_agg_swap`), which
+still declares no point, the eager folds (no census reaches them), and the validity
+bytes in `estimate_batch_bytes`.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
