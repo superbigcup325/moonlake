@@ -5640,3 +5640,52 @@ time inside the 10% spread — the report moved, the engine did not.
 
 **What is left.** The eager folds and the swapped path's census points, the tee, and the
 allocator overhead that keeps totals lower bounds.
+
+## 79. A budgeted join now says where its peak is (2026-10-30)
+
+The contract ("The budgeted peak declares itself contract", roadmap) was written first
+and committed alone (`bdb9105`). The observation that prompted it: with SF1 and
+`--memory 16M`, q21 peaks at 598.5 MB and its no-budget peak is 504.9 MB, yet its census
+declared one point — `collected FROM tables`, 183.6 MB — and no point ever sampled above
+236 MB. (No `/usr/bin/time` on this host, so the 598.5 MB comes from a poller reading
+`VmHWM` from `/proc/<pid>/status` while the process runs.)
+
+**The change.** `join_partitions` declares a point per partition replay, naming the left
+partition it read back, the build partition, and the output accumulated so far. The census
+is threaded through `grace_join` from `join_or_spill`, which already had it. One observe
+per partition: q21's 16 MB run declares 106 points, the same order as the fold's per-batch
+points (§74), and only while a census runs.
+
+**What `--mem` says now:**
+
+| query (16 MB) | before | after |
+| --- | --- | --- |
+| q21 points declared | 1 | 106 |
+| q21 largest point | `collected FROM tables` 183,597,619 | `spill partition replayed` 207,922,735 (output accumulated 201,628,368) |
+| q21 resident sample at that point | 236,976 KB | 422,912 KB |
+| q9 largest point | `collected FROM tables` 284,772,830, sample 396,576 KB | unchanged (its peak is a scan, not a replay) |
+| q18 points | 1 | 1 (its budgeted plan partitions no join) |
+
+**Where the 598.5 MB actually is.** The replay point's own sample is 423 MB — 71% of the
+peak — and 97% of what it names is the accumulated output, which is the eager
+materialization this engine's shape rests on. The remaining ~175 MB comes *after* the
+replay: `collapse_handed` concatenates that whole output into one batch so the next step
+or the eager path can read it, so the peak is very nearly the output plus its copy. That
+is now attributable, which is what this round was for.
+
+**One prediction not met.** The contract said the named total at the peak would cover more
+than half of the 598.5 MB. It covers 34.7%: the point sees 423 MB of process and names
+207.9 MB of it, because `resident_batch_bytes` estimates a batch's bytes and the replay's
+batches are sized by capacity, not by live rows. The report's own rule — totals are lower
+bounds and the resident sample is the hint — is what keeps this honest, and it is now on
+the record with the number that missed.
+
+**Gates.** 415 wasm-gc and 429 native tests (one new: the grace path names its replay and
+the answer does not change), 33 goldens, `harness/check_cli.sh`,
+`harness/spill_accept.sh`. Plain matrix against `317243b` at no budget and 16 MB, three
+rounds on a host whose own round-to-round spread was 13% that evening: every answer
+identical, and no case's candidate-against-control peak or wall time moved by more than
+10% (the widest were q12's peak at 2 MB on 35 and q21's wall at 0.3%).
+
+**What is left.** Bounding the accumulated output itself — the streaming join — which the
+contract deliberately left out of scope; the eager folds' own points; and the tee.

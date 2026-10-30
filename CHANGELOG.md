@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` now declares a point for each partition a grace join replays, naming the
+  replayed left and build partitions and the output accumulated so far. Under a 16 MB
+  budget q21's census goes from one point to 106 and names its real peak: 207.9 MB of
+  accumulated output at 423 MB resident, with the rest of the 598.5 MB peak being that
+  output's collapse copy. Points exist only while a census runs. Verification §79.
 - `--mem` now reports each structure's resident bytes, including the validity array a
   column carries (one byte a cell), instead of counting only the cells. At SF1 q18's
   largest point rises to 204.9 MB and covers 86.5% of the resident sample there. Budgets

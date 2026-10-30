@@ -3680,6 +3680,45 @@ test "a composed join fold names its build sides and indexes at two points" {
 }
 
 ///|
+test "a budgeted join names the partition it replays" {
+  // A partitioned join allocates where nothing used to observe: the accumulated
+  // output plus the partition being replayed. Two thousand distinct keys against
+  // four under a small budget forces the grace path (§79).
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<2000 {
+    sb.write_string("\{i},\{i * 7 % 1000}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string("k\n3\n17\n999\n1500\n", "u") catch {
+      e => abort("\{e}")
+    },
+  )
+  let sql = "SELECT k FROM t WHERE k IN (SELECT k FROM u) ORDER BY k"
+  let report = @engine.mem_report_with(sql, cat, {
+    budget: 2048,
+    spill: Some(mem_store()),
+  }) catch {
+    e => abort("\{e}")
+  }
+  assert_true(report.contains("spill partition replayed"))
+  assert_true(report.contains("left partition (estimate)"))
+  assert_true(report.contains("build partition (estimate)"))
+  assert_true(report.contains("output accumulated (estimate)"))
+  // the answer is the same with the census as without
+  assert_same_result(
+    run(sql, cat),
+    run_opts(sql, cat, { budget: 2048, spill: Some(mem_store()), }),
+  )
+}
+
+///|
 test "a census sizes the group state while a pulled fold grows" {
   let cat = grace_join_catalog()
   let sql = "SELECT k, count(*) AS n FROM t1 GROUP BY k"

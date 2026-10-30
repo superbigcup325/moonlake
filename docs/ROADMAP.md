@@ -1698,6 +1698,15 @@ checks and the spill acceptance script; the plain matrix against `317243b`.
 output is the eager materialization this engine's whole shape rests on, and bounding it is
 the streaming join's problem, not this contract's.
 
+**Result (§79).** Declared. `join_partitions` now observes once per partition replay,
+naming the left partition, the build partition and the output accumulated so far; q21's
+16 MB census goes from 1 point to 106 and its largest becomes `spill partition replayed`
+at 207,922,735 bytes, sampled at 423 MB of the 598.5 MB peak. The rest of the peak is
+`collapse_handed`'s copy of that same output, which runs after the replay — so the peak is
+now attributable to the eager materialization rather than unknown. The contract predicted
+the named total would cover half the sample and it covers 34.7%, which the report's
+lower-bound rule already accounts for and which is recorded. Plain matrix unchanged.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
