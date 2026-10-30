@@ -630,6 +630,9 @@ priv struct JoinCursor {
   str_map : Map[String, Array[Int32]]
   mut fast : Bool // which index was built
   left_width : Int32
+  rplan : ResidualPlan? // the residual, with its build half already evaluated
+  rbuild_t : Array[FixedArray[Bool]]
+  rbuild_u : Array[FixedArray[Bool]]
   empty_left : @types.DataBatch // the layout to gather NULLs from
   matched : FixedArray[Bool] // FULL: which build rows matched
   next_left : () -> @types.DataBatch? raise @types.SqlError
@@ -652,6 +655,16 @@ fn JoinCursor::open(
     build_keys.push(eval_vec(e, build))
   }
   let left_width = step.out_dtypes.length() - step.right_width
+  // the build side does not change while the probe streams past it: its half of
+  // the residual is evaluated once here rather than once per probe batch (§92)
+  let rplan : ResidualPlan? = match step.residual {
+    Some(re) => Some(residual_plan(re, left_width, step.right_width))
+    None => None
+  }
+  let (rbuild_t, rbuild_u) = match rplan {
+    Some(plan) => residual_side_state(plan, build, false)
+    None => ([], [])
+  }
   {
     step,
     build,
@@ -660,6 +673,9 @@ fn JoinCursor::open(
     str_map: Map([]),
     fast: false,
     left_width,
+    rplan,
+    rbuild_t,
+    rbuild_u,
     empty_left: concat_batches([], head_dtypes(step.out_dtypes, left_width)),
     matched: FixedArray::make(build.row_count(), false),
     next_left,
@@ -850,15 +866,11 @@ fn JoinCursor::next(
         if !self.primed {
           self.prime(left_keys)
         }
-        let rstate : ResidualState? = match self.step.residual {
-          Some(re) =>
-            Some(
-              residual_state(
-                residual_plan(re, self.left_width, self.step.right_width),
-                left,
-                self.build,
-              ),
-            )
+        let rstate : ResidualState? = match self.rplan {
+          Some(plan) => {
+            let (lt, lu) = residual_side_state(plan, left, true)
+            Some({ plan, lt, lu, bt: self.rbuild_t, bu: self.rbuild_u, })
+          }
           None => None
         }
         self.left_now = Some(left)
@@ -1175,37 +1187,39 @@ fn residual_state(
   left : @types.DataBatch,
   build : @types.DataBatch,
 ) -> ResidualState raise @types.SqlError {
-  let nl = left.row_count()
-  let nb = build.row_count()
-  let lt : Array[FixedArray[Bool]] = []
-  let lu : Array[FixedArray[Bool]] = []
-  let bt : Array[FixedArray[Bool]] = []
-  let bu : Array[FixedArray[Bool]] = []
+  let (lt, lu) = residual_side_state(plan, left, true)
+  let (bt, bu) = residual_side_state(plan, build, false)
+  { plan, lt, lu, bt, bu, }
+}
+
+///|
+/// One side's half of a residual's state: a tri-state mask per arm, evaluated
+/// over that side alone. Split out because the swapped step's prefix does not
+/// change between table batches, and evaluating it once per batch over the whole
+/// prefix is what made q19's 16 MB run 127 s instead of 66 (§92).
+fn residual_side_state(
+  plan : ResidualPlan,
+  side : @types.DataBatch,
+  is_left : Bool,
+) -> (Array[FixedArray[Bool]], Array[FixedArray[Bool]]) raise @types.SqlError {
+  let n = side.row_count()
+  let t : Array[FixedArray[Bool]] = []
+  let u : Array[FixedArray[Bool]] = []
   for arm in plan.arms {
-    match arm.left {
+    let expr = if is_left { arm.left } else { arm.build }
+    match expr {
       Some(e) => {
-        let (t, u) = tri_state(e, left)
-        lt.push(t)
-        lu.push(u)
+        let (ts, us) = tri_state(e, side)
+        t.push(ts)
+        u.push(us)
       }
       None => {
-        lt.push(FixedArray::make(nl, true))
-        lu.push(FixedArray::make(nl, false))
-      }
-    }
-    match arm.build {
-      Some(e) => {
-        let (t, u) = tri_state(e, build)
-        bt.push(t)
-        bu.push(u)
-      }
-      None => {
-        bt.push(FixedArray::make(nb, true))
-        bu.push(FixedArray::make(nb, false))
+        t.push(FixedArray::make(n, true))
+        u.push(FixedArray::make(n, false))
       }
     }
   }
-  { plan, lt, lu, bt, bu, }
+  (t, u)
 }
 
 ///|

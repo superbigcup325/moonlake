@@ -6022,6 +6022,15 @@ the query carries a budget and 2048-row ones when it does not. That needs the bu
 plumbed into the source reader, which is the next round's work — the coalescing is
 reverted, and this section is what it stands on: the regression is real, it is one
 case, and its cause is a constant two commits away from where the effect shows.
+
+**Correction (§92).** The cause was not the batch size and this section's unbudgeted
+row is wrong. Re-measured on the 0.6.0 tag rebuilt from source and on the pre-fix tree:
+q19 unbudgeted is 65.8 s at 0.6.0 and 128.5 s today, so the 2x was never confined to
+16 MB — the same defect produced it at every budget and unbudgeted, and the sweep's
+"66.9 vs 66.4 s unbudgeted" row was misrecorded. The defect is the join cursor
+rebuilding both sides' residual masks per probe batch (§92); fixing it takes q19 to
+3.7 s at all three settings, which also explains why halving the batch halved the
+time: the masks were rebuilt once per batch.
 ## 86. What the shared decode costs, and why it is kept (2026-10-31)
 
 §85's sweep found five unbudgeted cases whose peak grew while their wall time halved.
@@ -6241,3 +6250,61 @@ wrongly is 71% on q9.
 collapse (the tie order §82 already verified as equal multisets, so the sweep's byte
 comparison flags them and the multiset check clears them). And q17/q18 do not move at all,
 which is itself a finding: whatever they spend their time on, it is not this.
+
+## 92. The residual re-evaluated the side that never moves, and the routing paid per batch (2026-10-31)
+
+§85 bisected q19's 16 MB time to the scan's batch size and §89/§91 could not attribute
+the rest of the budget path. This round found a defect that dwarfs both: `residual_state`
+was called once per probe batch with the **build side** among its arguments, and it
+evaluates every residual arm over the whole array it is handed. The build side does not
+change between probe batches — it is the thing being indexed once (§65) — so the same
+masks were rebuilt for every batch of the streaming side. q19 is the worst shape: `part`
+is the build side (200,000 rows), `lineitem` the probe side (2,930 batches), and its
+predicate is an OR of three arms, so one run evaluated 3 × 200,000 × 2,930 = 1.76 billion
+tri-states. That is the 128 s.
+
+`residual_state` split into `residual_side_state(plan, side, is_left)`, which is the same
+evaluation for one side; `JoinCursor::open` now evaluates the build half once and
+`SwapCursor::open` the prefix half once, and `next` only computes the half that changes.
+The masks, their order and every answer are identical by construction, which the goldens
+(33) and both unit suites (418 wasm-gc, 432 native) confirm.
+
+| case | none | 16 MB | 64 MB |
+| --- | --- | --- | --- |
+| q19 | 128.5 -> **3.8 s (−97.0%)** | 128.1 -> **3.7 s (−97.1%)** | 128.7 -> **3.7 s (−97.1%)** |
+| q2 | 1.6 -> 1.5 s (−2.4%) | 3.9 -> 3.4 s (−11.1%) | 2.0 -> 1.9 s (−5.6%) |
+| q13 | 1.2 -> 1.2 s (−4.5%) | 3.0 -> 2.9 s (−5.2%) | 2.9 -> 2.8 s (−5.9%) |
+| q7 | 2.3 -> 2.3 s | 4.1 -> 4.0 s (−3.5%) | 2.4 -> 2.4 s |
+| everything else in the 22 | within ±5% | within ±5% | within ±5% |
+
+Against the 0.6.0 tag rebuilt from source (`bin-060`) q19 is 65.8 -> 3.7 s, **17.8x**, and
+the budget no longer costs it anything: all three budgets are 3.7-3.8 s. That also corrects
+the record: §85 wrote that the regression was "only at 16 MB (66.4 s unbudgeted)". Today's
+pre-fix tree takes 128.5 s *unbudgeted* against 0.6.0's 65.8 s, so the 2x was never the
+budget's — the same defect produced both, and it was invisible while the budget ran.
+
+The second half of the round is smaller and was found the hard way. `partition_side` pays
+one `take_rows` gather per non-empty partition per **input batch**, and a side arriving in
+the scan's 2048-row batches therefore pays the number of rows divided by 2048 times the
+partition count in gathers — for q19's lineitem under a 16 MB budget, 151 partitions, that
+is 442,000 gathers. Grouping a side's batches into `budget / 4` chunks before routing takes
+that to 22,000. Rows, keys and partition numbers are unchanged, so no answer can move.
+
+| case (16 MB) | wall | peak |
+| --- | --- | --- |
+| q7 | 4.10 -> 3.10 s (−24.4%) | 438.8 -> 438.8 MB (−0.0%) |
+| q9 | 3.45 -> 3.10 s (−10.1%) | 389.2 -> 389.0 MB (−0.0%) |
+| q21 | 6.60 -> 6.40 s (−3.0%) | 543.8 -> 536.0 MB (−1.4%) |
+| q2 | 3.80 -> 3.80 s | 1424.3 -> 1424.5 MB (+0.0%) |
+| q19 | 3.7 -> 3.7 s | — |
+
+Two refutations paid for the second half. §85's coalescing attempt grouped batches in
+`join_partitions` — the *replay* — while the gathers are paid by the *write*, so it moved
+nothing (131.0 s against 127.6 s). This round first built the chunking on its own and
+measured q19 at 127.9 -> 128.1 s (+0.2%): q19's 16 MB run does not partition at all
+(`--analyze` reports `joins: 121` and no spill counters), so no change to routing could
+have touched it. The chunking's gains are on the cases that do partition, which is why it
+lands beside the residual fix rather than instead of it.
+
+Gates: `moon test` 418, `moon test --target native` 432, 33 goldens, `check_cli.sh`,
+`spill_accept.sh`, and every answer in the matrix byte-identical to 0.6.0's.

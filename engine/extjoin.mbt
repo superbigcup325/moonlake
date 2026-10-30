@@ -75,10 +75,15 @@ fn join_partitions(
     wl.push(RunWriter::partitioned(store, budget))
     wr.push(RunWriter::partitioned(store, budget))
   }
-  for batch in left {
+  // Routed in chunks, not in the scan's own batches: `partition_side` pays one
+  // gather per partition per input batch, which is 20x the gathers it needs when
+  // the scan's 2048-row batches are grouped into budget/4 chunks (§92). The rows,
+  // keys and partition numbers are untouched.
+  let target = routing_chunk_bytes(budget)
+  for batch in chunk_side(left, target) {
     partition_side(batch, step.keys_l, wl)
   }
-  for batch in build {
+  for batch in chunk_side(build, target) {
     partition_side(batch, step.keys_r, wr)
   }
   for k in 0..<p {
