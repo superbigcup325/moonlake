@@ -34,6 +34,12 @@ no plan-time signal to tell the two apart. A fourth measurement stands behind th
 setting any budget at all costs a query 45-88% even when nothing spills, and three
 attempts to attribute that (§89) did not find it.
 
+**Where a budget goes, measured rather than guessed.** An ablation of the spill machinery
+(§91) puts half of q2's and 40% of q7's time at 16 MB in the partitioner and the swap, for
+a peak change of 0.0% — and 71% of q9's peak at the same price, so the machinery does pay
+where the join sides are what grows. What separates the two is a prediction the engine
+cannot make yet.
+
 The [delivery after colenc 0.1.3](#next-delivery-after-colenc-013) is complete;
 H0, C3, E5 and R3 closed it as 0.5.1. What the next delivery is worth is now
 measured rather than guessed: the budget path's unexplained 2x (§89), q19's 62 s

@@ -6204,3 +6204,40 @@ budgets. q2 against the same binary: 14.69 -> 3.43 s at 16 MB (-76.7%), 13.94 ->
 §89's question is open by another 90% of the gap. The lesson it leaves is narrower and
 worth keeping: the estimator was measurable because it ran once per side per step, and
 the next section on this path should time its calls before reasoning about its branches.
+## 91. What a 16 MB budget buys on q2, q7, q9 and q21 (2026-10-31)
+
+§89 and §90 left the budget path's cost unattributed. This section answers the question
+with an ablation instead of a profiler: `join_or_spill` was compiled with `total = 0`, so
+every step takes the in-memory collapse and neither the partitioner nor the swap runs, and
+the same query was measured twice at 16 MB. The experiment binary is not a candidate — it
+is thrown away — but what the difference says about the machinery is the point.
+
+| case (16 MB) | wall | peak |
+| --- | --- | --- |
+| q2 | 3.45 -> 1.75 s (**−49.2%**) | 1425.2 -> 1425.1 MB (−0.0%) |
+| q7 | 3.98 -> 2.38 s (−40.2%) | 438.1 -> 437.5 MB (−0.1%) |
+| q9 | 3.39 -> 2.43 s (−28.3%) | 389.3 -> **666.9 MB (+71.3%)** |
+| q21 | 6.36 -> 5.46 s (−14.2%) | 542.9 -> 546.7 MB (+0.7%) |
+| q17 | 3.89 -> 3.90 s (+0.1%) | 205.1 -> 205.0 MB (−0.0%) |
+| q18 | 3.79 -> 3.77 s (−0.5%) | 79.4 -> 79.4 MB (+0.0%) |
+
+**q2 and q7 pay half their time for nothing measurable.** Both hold 1.4 GB and 438 MB at
+a 16 MB budget with or without the spill machinery, because their peak is not in the join
+sides at all — q2's is downstream of them (a 117,422-row deferred-filter helper and the
+ordered join output) and q7's is the same shape. The partitioner and the swap cannot make
+a structure smaller when they are not the structure that grows, and at 16 MB they cannot
+even reach the sides: `materialize_scan` has already read the table into an array before
+`join_or_spill` is asked, so the table is resident either way.
+
+**q9 is why this is not a rule yet.** Removing the machinery cost it 71% of its peak:
+389 -> 667 MB. So the machinery does work where the sides are the peak, and the
+difference between the two cases is a *predictive* question — which structure will dominate
+this query's peak — that the engine has no answer for. That is the cost-model entry in
+the roadmap, and this section is its first measured input: the payoff for answering it
+correctly is a two-fold speedup on q2/q7 at 16 MB, and the penalty for answering it
+wrongly is 71% on q9.
+
+**Two notes for whoever repeats this.** q7 and q9 emit rows in a different order under the
+collapse (the tie order §82 already verified as equal multisets, so the sweep's byte
+comparison flags them and the multiset check clears them). And q17/q18 do not move at all,
+which is itself a finding: whatever they spend their time on, it is not this.
