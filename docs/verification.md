@@ -6330,3 +6330,39 @@ never partition.
 
 Gates: `moon test` 418, `moon test --target native` 432, 33 goldens, `check_cli.sh`,
 `spill_accept.sh`, and every answer in the matrix byte-identical to 0.6.0's.
+
+## 93. What q1 at 16 MB writes and reads back to fold four groups (2026-10-31)
+
+§92's fix made the join side of the budget path fast enough that the aggregate side is
+now the largest single cost in the matrix. q1 under a 16 MB budget:
+
+```
+spill partitions: 16
+largest partition spilled (estimated): 136119252
+spill files: 160
+spill bytes written: 199193427
+spill bytes read: 199193427
+```
+
+199 MB written and read to fold 5,916,591 rows into **four** groups
+(`l_returnflag` x `l_linestatus`), and the peak is 1.4 GB with or without the budget — so
+the spill neither protects the budget nor pays for itself. 5.12 s against 2.6 s
+unbudgeted, and 5.3 s for every budget from 16 MB to 64 MB.
+
+The gate that sends it there is the input's bytes, in two places: `aggregate_within_budget`
+(`batches_bytes(joined) <= opts.budget`) on the collected path and the buffer loop in
+`aggregate_pulled` on the pulled one, which is the path a single-table aggregate takes. The
+question that decides whether partitioning is worth its write is the number of distinct
+group keys, and the engine has no way to ask it.
+
+A dictionary bound was built and measured before being refused: the scan hands string
+columns over dictionary-encoded, so `group_state_fits` took the product of the group arms'
+dictionary sizes (`d.length() + 1`, times a 96-byte per-group cost, against `budget / 4`).
+It is sound per batch and therefore unsound in general — the next batch brings its own
+dictionary, and a column with 200,000 distinct values over 49 batches has a small
+dictionary in each — and it fired nowhere for a single-table aggregate anyway, because
+`aggregate_pulled` does not call it. Reverted; the shape that closes this is the combine
+phase in the roadmap's small-group contract, which spills group state rather than input.
+
+The refutation is worth the record: it puts the cost at 199 MB of I/O for four groups, and
+it says the fix has to know the *total* group count, not a per-batch one.
