@@ -6,10 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-10-30
+## [0.6.1] - 2026-10-31
 
 The memory budget stops paying for partitions it does not need, and the census learns
-where a budgeted run's peak actually is.
+where a budgeted run's peak actually is. This is a patch release: the plan changes, the
+census output and the order of unordered rows are all visible, but no public signature
+moved and the previous behaviour was never promised.
 
 ### Changed
 

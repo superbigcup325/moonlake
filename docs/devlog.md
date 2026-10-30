@@ -2490,7 +2490,7 @@ the next lever has to allocate less — not free sooner.
 composes without a budget, the column-wise group state, and the census as an
 opt-in diagnostic. The two negative results ship as records only.
 
-## The budget stops paying for partitions it does not need (2026-10-30): E8, 0.7.0
+## The budget stops paying for partitions it does not need (2026-10-31): E8, 0.6.1
 
 The instrument built in E7 named the peak but not the cause, and the cause turned
 out to be the budget's own machinery. Two readings did the work. The first: q21
@@ -2522,6 +2522,6 @@ the accumulated output plus the copy that collapses it (§79). What is left is
 plan-time choice of the index side; q21's 6.67 s against 2.90 s with no budget is
 what it is still paying for.
 
-0.7.0 ships the arc: the split between the budget's unit and the census', the
+0.6.1 ships the arc: the split between the budget's unit and the census', the
 engine that keeps a fitting side out of the partitioner, and the crash fix. The
 refusals ship as records.
