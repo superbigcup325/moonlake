@@ -15,7 +15,7 @@ scan work the measurements below stand on.
 after: 61 of 66 cases are faster (§85) — q2 at 64 MB 13.77 -> 2.05 s, q8 at 16 MB
 4.32 -> 1.76 s with its peak 503 -> 290 MB, q9 -50% with the peak -41%, q21 at 16 MB
 12.34 -> 6.37 s. Three moved the other way and are recorded rather than smoothed
-over: q13 by 1-6.5%, q19 at 16 MB by 95% (the scan's batch size decides the
+over: q13 by 1-6.5% (now +2.9% unbudgeted and a win at both budgets, §90), q19 at 16 MB by 95% (the scan's batch size decides the
 partitioner's cost, and the batch size is chosen for the cache — §85), and five
 unbudgeted peaks grew as their queries got faster (q15 41 -> 239 MB for -55.7%,
 §86).
@@ -23,7 +23,8 @@ unbudgeted peaks grew as their queries got faster (q15 41 -> 239 MB for -55.7%,
 **The budget's byte count got 10% cheaper to ask.** `estimate_batch_bytes` summed a
 string column one `Scalar` at a time; it now reads the column's array (§90), which is
 worth 11% on q2 at both budgets and 5% on q13, with no fit decision changed and no peak
-moved.
+moved. The sweep's one regression against 0.6.0 was q13: it is now +2.9% unbudgeted and
+-3.1% / -5.3% at 16 MB and 64 MB.
 
 **Three directions were written as contracts and refused on their own measurements**
 in the same session: the early semi/anti reorder (§84), the coalescing partition
