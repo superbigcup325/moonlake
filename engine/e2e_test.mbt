@@ -3552,3 +3552,19 @@ test "a correlated NOT IN whose set may hold a NULL is refused, not guessed" {
   )
   assert_true(err.to_string().contains("cannot be decorrelated"))
 }
+
+///|
+test "a table named twice answers the same with and without shared scans" {
+  // t1 is named by the outer query and by the EXISTS side, and has a column
+  // (p) neither reads, so the repeated scans share their decoded columns;
+  // a budget turns the sharing off, which gives the answer to compare with
+  let cat = grace_join_catalog()
+  let q = "SELECT id FROM t1 WHERE EXISTS (SELECT * FROM t1 x WHERE x.k = t1.k AND x.id <> t1.id) ORDER BY id"
+  let anti = "SELECT id FROM t1 WHERE NOT EXISTS (SELECT * FROM t1 x WHERE x.k = t1.k AND x.id <> t1.id AND x.id > t1.id) ORDER BY id"
+  for sql in [q, anti] {
+    assert_same_result(
+      run(sql, cat),
+      run_opts(sql, cat, { budget: 1073741824, spill: Some(mem_store()), }),
+    )
+  }
+}

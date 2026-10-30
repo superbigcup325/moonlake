@@ -5183,3 +5183,66 @@ every column at every batch size; that is a per-row undercount that would move e
 spill threshold at once, so it stays a separate contract. The `--mem` census has not
 been regenerated at 2048 rows. And the 16 MB path still pays its larger gap on q21,
 which scans lineitem three times.
+
+## 71. A table named twice is decoded once (2026-10-30)
+
+The contract ("The shared table scan contract", roadmap) was written first and
+committed alone. Before the change, on a quiet host (load 1.60, best of three, SF1),
+q21 without its two subqueries took 3.23 s, with the EXISTS 4.30 s and in full
+5.78 s, and one bare `SELECT count(*)` over lineitem took 1.11 s: each repeated scan
+cost about what a bare scan costs, because each one indexed the same 773 MB again.
+
+**The change.** `share_repeated_scans` walks the statement once for the tables it
+names and the column names it mentions, and for a lazy table named at least twice
+whose mentioned columns are a strict subset of its width it registers a `SharedScan`
+source in a per-query catalog. The first open decodes the union of those columns
+for every row and keeps the batches; later opens project them. The catalog entry is
+not mutated, a second query starts empty, and a budgeted run shares nothing. An
+EXISTS select list is not walked (`select *` there names nothing), and a window or a
+bare `*` elsewhere turns sharing off for the statement.
+
+**What the first matrix found.** The first build moved q11, which the contract had
+not listed: wall 0.30 -> 0.40 s (+33%) and +18 MB. Taking each table alone cost
+nothing and only the q11 shape, one subquery joining all three tables, was slow. A
+trace of `SharedScan::open` showed partsupp being opened four times for two names:
+the engine opens a table more often than the statement names it, so once the
+expected opens were used up and the cache dropped, each further open refilled the
+cache, decoding the whole union and holding every batch for a reader that gained
+nothing. A further open is now passed straight through to the inner source. With
+that, q11 is 0.276 -> 0.268 s and the q11-shaped query 0.257 -> 0.257 s.
+
+**Full matrix, SF1, quiet host (load 1.24), three interleaved rounds, against
+`b62918b`, no budget:**
+
+| case | peak | wall |
+| --- | --- | --- |
+| q21 | 504.3 -> 503.8 MB | 5.30 -> 2.94 s (-44.5%) |
+| q18 | 149.4 -> 231.3 MB | 3.30 -> 2.15 s (-34.8%) |
+| q11 | 27.3 -> 45.3 MB | 0.28 -> 0.28 s |
+| q20 | 99.3 -> 92.9 MB | 2.02 -> 2.07 s |
+| q1, q3, q5, q7, q8, q9, q10, q12 | within the spread | within the spread |
+
+Under 16 MB every peak and wall time is inside the spread (the cache is off under a
+budget), and every answer is byte-identical. The contract predicted q21 at 3.7-4.2 s
+and a peak at most one cache higher; it landed at 2.94 s with no peak change at all,
+because the cache is let go after the last expected open, before the outer chain
+reaches its step-1 peak. The wall time came from skipping the index, not only the
+decode: the later scans now cost a projection of arrays that are already decoded.
+
+**The price is q18.** Its scalar subquery scans lineitem twice, so the decoded
+columns stay alive between the two scans: +81.9 MB of peak for -1.15 s. That is
+inside the contract's bound (the cache is at most 120 MB) and the contract said
+q18 would move, but it is a real memory cost bought for time, and q11 pays 18 MB the
+same way.
+
+**Gates.** 33 goldens, the external-sort / grace-join / grace-aggregation
+equivalence checks, `harness/check_cli.sh`, `harness/spill_accept.sh`, and 409
+wasm-gc and 423 native unit tests; the new one runs EXISTS and NOT EXISTS over a
+table named twice and compares the shared answer with the budgeted (unshared) one.
+
+**What is left.** The `--mem` census does not name the cache, so q18 and q11 hold
+memory it cannot see; the contract said it must, and that is owed. The semi sides
+still run before the outer query exists, so a tee that indexes each chunk once and
+delivers it to every scan would avoid the cache entirely; that is the contract the
+roadmap left open. The sharing is by column name and deliberately wide, so a table
+with a same-named column in two scans decodes it once for both.

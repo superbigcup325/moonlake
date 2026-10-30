@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A table a query names more than once is decoded once. The decorrelated EXISTS and
+  NOT EXISTS sides of q21 each scanned lineitem from the start, so q21 indexed the
+  same 773 MB three times; a lazy table named at least twice now shares its decoded
+  columns between those scans for the life of one query, and lets go after the last
+  of them. At SF1 without a budget q21 fell from 5.30 to 2.94 s with its peak
+  unchanged, q18 from 3.30 to 2.15 s at the cost of 82 MB, and nothing moved under a
+  budget (which shares nothing) or for a table named once, with every answer
+  unchanged. Verification §71.
 - A memory budget now counts what a small piece of a batch costs, not only its
   cells: `estimate_batch_bytes` adds about 160 bytes a batch and 64 a column,
   fitted from a probe of resident bytes. A partitioned join or aggregation cuts

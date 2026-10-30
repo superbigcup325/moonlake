@@ -55,7 +55,7 @@ pub fn run_select_opts(
   opts : ExecOptions,
 ) -> SelectResult raise @types.SqlError {
   let sel = @sql.parse_select(sql)
-  run_parsed(sel, catalog, [], opts)
+  run_parsed(sel, share_repeated_scans(sel, catalog, opts), [], opts)
 }
 
 ///|
@@ -121,7 +121,7 @@ pub fn run_select_stream_opts(
   opts : ExecOptions,
 ) -> ResultStream raise @types.SqlError {
   let sel = @sql.parse_select(sql)
-  match prepare_select(sel, catalog, opts) {
+  match prepare_select(sel, share_repeated_scans(sel, catalog, opts), opts) {
     Setop(result) => ResultStream::materialized(result)
     Ready(launch) =>
       // a two-table hash join hands out its output as it probes: the build side
