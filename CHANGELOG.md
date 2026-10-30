@@ -6,14 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-31
+
+The join's residual stops rebuilding the side that never moves, and the partitioner
+stops paying per scan batch. This is a patch release: a defect fix and two cost fixes,
+no public signature moved, and the answers are identical byte for byte.
+
 ### Fixed
 
 - The join's residual masks were rebuilt for both sides on every probe batch, although
   the build side does not change between them. q19's OR of three arms over a 200,000-row
   build side against 2,930 probe batches evaluated 1.76 billion tri-states per run: it
-  now takes 128.5 s → 3.8 s unbudgeted and 3.7 s at 16 MB and 64 MB, 17.8x against 0.6.1.
-  Each half of the state is evaluated once, the answers are identical, and the same fix
-  is worth 11% of q2 at 16 MB and 5% of q13. Verification §92.
+  now takes 128.5 s -> 3.8 s unbudgeted and 3.7 s at 16 MB and 64 MB, 17.8x against
+  0.6.1. Each half of the state is evaluated once, the answers are identical, and the
+  same fix is worth 11% of q2 at 16 MB and 5% of q13. Verification §92, with the whole
+  set against 0.6.1 at both budgets: 21 of 22 cases more than 5% faster at 16 MB
+  (q19 -94.4%, q2 -76.0%, q21 -49.3%) and 21 of 22 at 64 MB (q19 -94.5%, q2 -87.0%).
 
 ### Changed
 
