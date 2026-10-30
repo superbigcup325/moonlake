@@ -5548,3 +5548,45 @@ previous form; no code from this round is in the tree.
 semi join over an empty inner partition returns the left rows (and its anti twin), then
 re-attempt the validity bytes and re-measure; and the eager folds and the tee that §75
 left open.
+
+## 77. An empty grace partition no longer aborts the join (2026-10-30)
+
+The contract ("The empty partition contract", roadmap) was written first and committed
+alone (`c8a7028`). It was half of §76's finding: the validity-bytes change was rejected
+because q21 at 16 MB aborted, and the abort was a latent crash that a bigger partition
+count had simply made likely.
+
+**The cause, in one line.** `join_semi` built its inner side with
+`concat_batches(inner, [])`, and `concat_batches` only knows how wide to make an empty
+batch from the dtype list it is handed. A grace partition with no build rows arrives as
+zero batches, so the inner batch had no columns, and `eval_vec` — evaluating the step's
+key expressions against it — indexed column zero of nothing. Every other
+`concat_batches` call site in the engine passes a dtype list or is handed the single batch
+it returns, which is why this was the only place.
+
+**The fix.** One expression: the inner layout's dtypes,
+`tail_dtypes(step.out_dtypes, step.right_width)`, the same derivation the probe side and
+the residual state already use.
+
+**The reproduction.** Two thousand distinct keys on one side, four keys on the other,
+`--memory 512/1024/2048/4096`: the pre-fix build (`ffbbe7c`) aborts with `PanicError` at
+every budget, the fixed build answers in all four, and its 16 MB q21 answer over SF1
+compares equal to the unbudgeted one at `harness/compare.py`'s 1e-9 tolerance (100 rows).
+
+**The test.** `engine/e2e_test.mbt`, "a semi join over an empty grace partition still
+answers": the fixture above, four queries (IN, NOT IN, EXISTS, NOT EXISTS), each compared
+against its unbudgeted answer at a 2048-byte budget. Run against `ffbbe7c` the test fails
+(414 tests, 1 failed); on this change both suites pass — 414 wasm-gc and 428 native.
+
+**The contract's second prediction, checked.** With §76's estimate re-applied locally and
+uncommitted, q21 at 16 MB completes and returns the same 100 rows: the crash, not the
+estimate, was the blocker. The estimate is not in this change — it still owes its own
+measurement before it can land, and the peaks it raised are still on record.
+
+**Gates.** 33 goldens with the grace-join equivalence checks, `harness/check_cli.sh`,
+`harness/spill_accept.sh`, both unit suites. Plain matrix against `ffbbe7c` at no budget
+and 16 MB, three rounds, quiet host (load 2.16, the noisiest of the session): every answer
+identical, every peak and wall inside the 10% spread.
+
+**What is left.** Re-attempting the validity bytes (now unblocked), the eager folds and
+the swapped path's census points, and the tee.

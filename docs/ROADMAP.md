@@ -1594,6 +1594,15 @@ spill acceptance script; and the plain matrix, which must not move.
 **Left open on purpose.** Re-attempting the validity bytes afterwards, the eager folds and
 the swapped path's census points, and the tee.
 
+**Result (§77).** Fixed with one expression: `join_semi` now concatenates its inner side
+with `tail_dtypes(step.out_dtypes, step.right_width)`, so a zero-batch inner side becomes
+an empty batch of the right width instead of one with no columns. Two thousand distinct
+keys against four reproduced the abort at every one of 512/1024/2048/4096 bytes on
+`ffbbe7c` and none on this change; the new test fails on `ffbbe7c` and passes here, at
+414 wasm-gc and 428 native; the plain matrix is inside the spread with identical answers.
+With §76's estimate re-applied locally, q21 at 16 MB now completes and matches the
+unbudgeted answer, so the estimate is unblocked and owes only its own measurement.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

@@ -1354,7 +1354,13 @@ fn join_semi(
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   let anti = step.kind is Anti || step.kind is AntiLoose
   let null_key_excludes = step.kind is Anti
-  let inner_batch = concat_batches(inner, [])
+  // the inner layout, so a zero-batch inner side — a grace partition with no
+  // build rows — becomes an empty batch of the right width instead of a batch
+  // with no columns at all, which `eval_vec` below would index past
+  let inner_batch = concat_batches(
+    inner,
+    tail_dtypes(step.out_dtypes, step.right_width),
+  )
   let n_inner = inner_batch.row_count()
   let mut int_index = IntKeyIndex::empty()
   let str_map : Map[String, Array[Int32]] = Map([])

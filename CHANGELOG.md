@@ -497,6 +497,10 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 
 ### Fixed
 
+- A semi or anti join no longer aborts when grace partitioning leaves a partition with no
+  inner rows: the inner side is concatenated with its own layout, so an empty side is an
+  empty batch instead of a batch with no columns to probe. Two thousand distinct keys
+  against four aborted at every budget from 512 bytes to 4 KB before this. Verification §77.
 - A Parquet file whose footer understates a column chunk decodes again. Some
   writers leave the page headers out of `total_compressed_size`:
   apache/parquet-testing's `nation.dict-malformed.parquet` declares 2002 bytes
