@@ -1788,7 +1788,15 @@ other case within 5% of its wall time and its peak, answers unchanged (the reord
 ones checked as multisets), 33 goldens, 417 + 431 unit tests, the CLI and the spill
 acceptance gates green, and the store's files gone when the query ends.
 
-**Result:** the measurement and its record go in verification §88.
+**Result (§88).** Built and refused. The tee is 20% faster on q18 and 9-12% on q15,
+q21 and q17 — but 63-68% *slower* on q11, whose partsupp is cheap to parse and pays the
+two extra passes the tee adds, and the bar said nothing else more than 5% worse. The
+engine cannot tell the two tables apart before reading them: CSV's plan has `rows:
+None`, byte size does not separate them, and serialize-plus-deserialize is not cheaper
+per byte than parse in any ratio the code can name. An in-memory cap costs nothing and
+fits neither table, so it buys only q11's 0.2 s back. What reopens this is a plan-time
+signal the engine does not have — a source that reports its rows, or a per-format
+decode cost — and then the gate is one comparison instead of a constant.
 
 ### The partition routing contract (2026-10-31)
 
