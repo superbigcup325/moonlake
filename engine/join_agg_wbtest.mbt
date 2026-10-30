@@ -347,7 +347,12 @@ test "a budgeted composed join spills, answers the same rows and leaves no run" 
   let budgeted = ja_catalog(ja_probe_batches(), ja_build_batches())
   let (store, files) = ja_mem_store()
   let stats : Array[(String, Int64)] = []
-  let result = ja_run(sql, budgeted, { budget: 64, spill: Some(store), }, stats) catch {
+  let result = ja_run(
+    sql,
+    budgeted,
+    { budget: 512, spill: Some(store), },
+    stats,
+  ) catch {
     e => abort("\{e}")
   }
   assert_eq(ja_show(scalars_of([result.batch()])), want)
@@ -448,7 +453,7 @@ test "a composed plan with an over-budget fold spills after the join count" {
   let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
   let (store, files) = ja_mem_store()
   let stats : Array[(String, Int64)] = []
-  let result = ja_run(sql, cat, { budget: 64, spill: Some(store), }, stats) catch {
+  let result = ja_run(sql, cat, { budget: 512, spill: Some(store), }, stats) catch {
     e => abort("\{e}")
   }
   assert_eq(ja_show(scalars_of([result.batch()])), ["1|6", "2|2"])
@@ -498,7 +503,7 @@ test "an ORDER BY over the composed join sorts the finished groups" {
   assert_eq(by_key[1][0].to_string(), "1")
   // a budget spills the fold's input without changing what is ordered
   let (store, files) = ja_mem_store()
-  let budgeted = run(sql, { budget: 64, spill: Some(store), })
+  let budgeted = run(sql, { budget: 512, spill: Some(store), })
   assert_eq(budgeted[0][1].to_string(), "6")
   assert_eq(budgeted[1][1].to_string(), "2")
   assert_eq(files.length(), 0)

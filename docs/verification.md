@@ -5115,3 +5115,71 @@ partitioner count its pieces rather than for a smaller batch.
 
 **What is left.** The census (`--mem`) numbers per point have not been regenerated
 at 2048 rows; only the process peaks above were.
+
+## 70. A partition piece is counted at what it costs (2026-10-30)
+
+The contract ("The partition piece cost contract", roadmap) was written first and
+committed alone (`8c0c570`). §68 and §69 had left the 16 MB path paying for 2048-row
+batches (q9 +35 MB, q8 +29, q5 +20, q3 +16) with the mechanism inferred; the contract
+said to measure the per-piece cost before changing anything.
+
+**The probe.** Allocate many pieces of a few rows and columns, keep them alive, read
+resident bytes from `/proc/self/statm` before and after. One shape per process,
+because a first run that put every shape in one process reused freed pages and
+reported zero and negative overheads. Fixed cost beyond the cells and validity bytes
+(5 a cell on `Int32`):
+
+| rows | cols | bytes a piece | fixed overhead |
+| --- | --- | --- | --- |
+| 1 | 2 | 283 | 273 |
+| 8 | 2 | 377 | 297 |
+| 32 | 2 | 629 | 309 |
+| 1 | 6 | 535 | 505 |
+| 8 | 6 | 818 | 578 |
+| 32 | 6 | 1594 | 634 |
+
+Across these shapes that is about 157 bytes a piece and 58-70 a column (the
+overhead creeps up with rows because the allocator rounds), against the 16 and 4 the
+estimate charged. The hypothesis held: for a piece of a few dozen rows the uncounted
+part is the larger part.
+
+**The change.** `estimate_batch_bytes` starts at 160 and adds 64 a column, in two
+named constants whose comment records the fit. Nothing else moved: not the
+partition counts, the flush rule, the batch size or any coalescing.
+
+**Full matrix, SF1, quiet host (load 1.49), three interleaved rounds, against
+`156a03d` (2048 rows):**
+
+| case | 16 MB peak | 16 MB wall |
+| --- | --- | --- |
+| q3 | 262.9 -> 237.3 MB | 3.15 -> 3.12 s |
+| q5 | 459.2 -> 415.2 | 4.35 -> 4.31 |
+| q8 | 530.2 -> 471.1 | 4.50 -> 4.49 |
+| q9 | 699.2 -> 619.1 | 7.31 -> 7.30 |
+| q7 | 442.3 -> 443.0 | 7.01 -> 6.98 |
+| q10 | 176.7 -> 175.5 | 3.99 -> 4.02 |
+| q21 | 598.3 -> 597.3 | 12.25 -> 12.17 |
+| q1, q11, q12, q18, q20 | within the spread | within the spread |
+
+Without a budget every peak and wall time is inside the spread (worst peak spread
+across rounds 11%), because the estimate is only read by budgeted paths. Every
+answer is byte-identical. The contract predicted closing half of each §69 gap; the
+four named peaks closed all of it and went 20-80 MB past it, below the 4096-row
+figures (q9 663.8 MB then). One caveat on q10: an earlier run of the same pair put it
+at 175.9 -> 195.3 MB, and the 4096 build showed 195 MB while the 2048 builds showed
+176, so that case moves between two levels from run to run and is not read here.
+
+**Gates.** 33 goldens, the external-sort / grace-join / grace-aggregation
+equivalence checks, `harness/check_cli.sh`, `harness/spill_accept.sh`, and 408
+wasm-gc and 422 native unit tests. Four tests had to change, and why is the point:
+three composed-join tests ran at a 64-byte budget and the grace-join flavor test at
+2048, and once a piece is counted at its cost a 64-byte budget cannot hold one, so
+the grace join correctly refuses with its one-key-dominates error. A sweep found 512
+as the smallest budget at which all three composed-join tests still pass and still
+force the spill (768 stopped forcing it in one), and the flavor test uses 4096.
+
+**What is left.** The estimate still ignores the validity array, one byte a cell on
+every column at every batch size; that is a per-row undercount that would move every
+spill threshold at once, so it stays a separate contract. The `--mem` census has not
+been regenerated at 2048 rows. And the 16 MB path still pays its larger gap on q21,
+which scans lineitem three times.

@@ -1111,6 +1111,18 @@ row on every column) at every batch size; that is a per-row undercount unrelated
 the batch size and would change every spill threshold at once, so it is a separate
 contract if the piece fit shows it matters.
 
+**Result (§70).** Kept, and it did better than the contract predicted. The probe
+kept 50,000 to 200,000 small pieces alive in a native process, one shape per
+process so freed pages could not hide the growth, and read the resident bytes: a
+piece costs about 157 bytes before its first column and 58-70 bytes a column, where
+the estimate charged 16 and 4. With those constants (160 and 64) in
+`estimate_batch_bytes`, the 16 MB peaks at 2048 rows fell below the 4096 figures
+rather than to them: q9 699.2 -> 619.1 MB, q8 530.2 -> 471.1, q5 459.2 -> 415.2,
+q3 262.9 -> 237.3 (the contract asked for half the gap), with every wall time
+inside the spread and every answer byte-identical. Nothing without a budget moved,
+and q1, q7, q11, q12, q18, q20 and q21 stayed inside the spread. So the batch size
+is no longer a memory knob: the budget now sees what a piece costs.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
