@@ -143,7 +143,7 @@ fn join_or_spill(
         )
       }
       collapse_handed(
-        grace_join(acc, right, step, opts.budget, store, stats),
+        grace_join(acc, right, step, opts.budget, store, stats, census~),
         step,
       )
     }

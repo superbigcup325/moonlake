@@ -47,11 +47,12 @@ fn grace_join(
   budget : Int32,
   store : SpillStore,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   // a partition's replay is a step's own batches, handed on as they are: the
   // caller collapses them once when the next step (or the eager path's own
   // bookkeeping) wants one batch a side (§65)
-  join_partitions(acc, right, step, budget, store, stats, 0)
+  join_partitions(acc, right, step, budget, store, stats, 0, census~)
 }
 
 ///|
@@ -65,6 +66,7 @@ fn join_partitions(
   store : SpillStore,
   stats : Array[(String, Int64)],
   depth : Int32,
+  census~ : MemCensus? = None,
 ) -> Array[@types.DataBatch] raise @types.SqlError {
   let p = partitions_for(batches_bytes(left) + batches_bytes(build), budget)
   let wl : Array[RunWriter] = []
@@ -110,6 +112,7 @@ fn join_partitions(
         store,
         stats,
         depth + 1,
+        census~,
       )
       for b in sub {
         out.push(b)
@@ -118,6 +121,15 @@ fn join_partitions(
       raise @types.SqlError::Execute(
         "join partition \{k} exceeds the memory budget (left \{lb} + build \{bb} bytes > \{budget}) after \{depth} extra split level(s); one join-key value dominates a side, which no hash partitioning can split — raise the budget or filter that key",
       )
+    }
+    match census {
+      Some(c) =>
+        c.observe("spill partition replayed", [
+          ("left partition (estimate)", resident_batches_bytes(left_p)),
+          ("build partition (estimate)", resident_batches_bytes(build_p)),
+          ("output accumulated (estimate)", resident_batches_bytes(out)),
+        ])
+      None => ()
     }
   }
   remove_writer_sides(store, wl, wr)
