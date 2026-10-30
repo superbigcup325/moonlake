@@ -6080,3 +6080,44 @@ readers stream it back — and this measurement is what its bar is made of: for 
 16 MB, one decode (~1.5 s) plus a write and two reads against two decodes (~3 s) is a
 gain of about a second on 6.37 s, and it has to beat that without breaking the budget
 it exists to respect.
+## 88. The spilled tee, built and refused (2026-10-31)
+
+§87 left the budgeted repeated read with no way to share: the decoded columns are
+139 MB, no 16 MB or 64 MB budget holds them, so the second reader decodes again. The
+contract of the same date proposed the shape the roadmap already named — decode once,
+write the batches to the spill store, let every reader stream them back — and set a
+bar of 10% on q21, q18 and q17 at both budgets with nothing else 5% worse.
+
+It was built: a `TeeScan` beside the shared scan, a `TeeStream` that fills while the
+first reader consumes and serves from the store afterwards, the union projection
+stored once and projected per reader, chunked at `budget / 16` so the working set is
+one chunk. 417 unit tests green, and every answer byte-identical. Measured against the
+same tree, interleaved, two runs a case:
+
+| case | 16 MB | 64 MB |
+| --- | --- | --- |
+| q18 (IN + aggregate subquery) | 4.09 -> 3.25 s (-20.5%) | 3.83 -> 3.14 (-18.0%) |
+| q15 (revenue0 twice) | 3.20 -> 2.82 s (-11.9%) | — |
+| q21 (EXISTS + NOT EXISTS) | 6.75 -> 6.14 s (-9.0%) | 5.53 -> 5.05 (-8.6%) |
+| q17 (correlated avg) | 3.87 -> 3.53 s (-8.9%) | 4.11 -> 3.67 (-10.8%) |
+| **q11 (partsupp twice)** | **0.30 -> 0.50 s (+67.7%)** | **0.31 -> 0.50 (+62.7%)** |
+| thirteen others | within 2.6% | — |
+
+q18 is the win the contract wanted. q11 is why it is not landed: partsupp is 800k rows
+and cheap to parse, so the tee's two extra passes (serialize, then deserialize on
+every read) cost more than the decode it saves, and the peak rises 8-16% on top. The
+bar said nothing else more than 5% worse, and this is 63-68% worse on a query that
+takes a third of a second — the worst kind of regression to argue for, because the
+absolute number is small and the ratio is not.
+
+The barrier is that the engine cannot tell the two tables apart before reading them.
+CSV's plan reports `rows: None` (there is no row count without parsing), the file's
+byte size does not separate 118 MB of partsupp from 700 MB of lineitem either, and a
+*write* pass is not cheaper per byte than a *parse* pass in a ratio the code can name.
+An in-memory cap is the other half of the idea and costs nothing when it fits — the
+batches are already decoded and in hand — but at `budget / 8` it fits neither table
+that matters, so it would buy q11's 0.2 s back and nothing else.
+
+So: reverted, with the numbers above as the reason. What would reopen it is a signal
+the engine does not have today — a source that reports its rows, or a per-format
+decode cost — and then the gate is one comparison rather than a constant.
