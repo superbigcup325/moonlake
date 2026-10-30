@@ -419,19 +419,30 @@ fn IntKeyIndex::bytes(self : IntKeyIndex) -> Int64 {
 }
 
 ///|
-/// The hashed slot table at twenty-four bytes an entry: an estimate, and named
-/// as one wherever it is reported.
+/// The hashed slot table at the measured cost of an entry: an estimate, and
+/// named as one wherever it is reported. §75 measured a filled
+/// `Map[Int64, Int32]` at 48 to 69 bytes an entry across 100 thousand to three
+/// million entries (the spread is the doubling slack, which a filled map carries
+/// and so does this count), and this is the value at the million-entry scale the
+/// engine works at. Twenty-four bytes was the unmeasured guess before it.
+const SLOT_MAP_BYTES : Int64 = 60
+
+///|
 fn IntKeyIndex::map_bytes(self : IntKeyIndex) -> Int64 {
-  self.slots.length().to_int64() * 24L
+  self.slots.length().to_int64() * SLOT_MAP_BYTES
 }
 
 ///|
 /// The string half of a join index: each canonical key's id array plus the key
-/// string and an entry, at twenty-four bytes a key: an estimate, named as one.
+/// string and an entry, at the measured cost of an entry (§75: a filled
+/// `Map[String, _]` costs the same as an `Int64` one once the keys exist): an
+/// estimate, named as one.
 fn str_map_bytes(m : Map[String, Array[Int32]]) -> Int64 {
   let mut total = 0L
   m.each(fn(k, ids) {
-    total += 24L + k.length().to_int64() + 4L * ids.length().to_int64()
+    total += SLOT_MAP_BYTES +
+      k.length().to_int64() +
+      4L * ids.length().to_int64()
   })
   total
 }

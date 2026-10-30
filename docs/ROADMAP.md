@@ -1484,6 +1484,16 @@ remainder is attributed to a structure the census can name.
 **Left open on purpose.** The validity bytes in `estimate_batch_bytes` (§70), the eager
 folds that no census reaches, and the swapped path's own points.
 
+**Result (§75).** Kept: the twenty-four-byte guess was low by two to three times. A probe
+measured 63/69/60/48 bytes per filled `Map[Int64, Int32]` entry at 100 thousand to three
+million entries, identical across processes; `SLOT_MAP_BYTES = 60` replaces the guess in
+the three places the census names a map, and nothing reads those numbers but the report.
+q18's largest point rises from 138.9 MB to 192.9 MB and covers 80.7% of the resident
+sample there, meeting the 70% criterion; q21's step point rises to 417.6 MB. The
+stability criterion is not met across sizes (a 30% range, one constant cannot follow it),
+which is recorded rather than smoothed over. The plain matrix against `ed4b9af` is inside
+the spread with identical answers.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

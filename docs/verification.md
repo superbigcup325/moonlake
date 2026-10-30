@@ -5429,3 +5429,71 @@ inside the 10% spread, every answer byte-identical.
 **A note on what a census run now costs.** A fold over 1.5 million rows observes once per
 batch, so q18's census keeps 2,942 points where it kept 2, and each observe samples
 residency. That is a `--mem` run's cost, not a query's: plain runs build no census.
+
+## 75. The slot map costs what it costs (2026-10-30)
+
+The contract ("The slot map cost contract", roadmap) was written first and committed
+alone (`162f71d`). It said the census's "twenty-four bytes an entry" was an unmeasured
+guess and that q18's 98 MB gap was probably that number being wrong.
+
+**The measurement.** One probe process per size, one size per process, filling the map
+with sequential keys and reading `/proc/self/statm` before and after, three processes
+each (the probe is a throwaway under a local scratch directory; it is not part of the
+repository). Bytes per filled entry:
+
+| n | `Map[Int64, Int32]` | `Map[String, _]`, keys allocated before the baseline |
+| --- | --- | --- |
+| 100,000 | 63 | 63 |
+| 500,000 | 69 | 62 / 48 / 38 (unstable) |
+| 1,500,000 | 60 | 60 |
+| 3,000,000 | 48 | 53 |
+
+Every figure was identical across its three processes to the byte, so the spread is the
+map's doubling slack and the allocator's state, not measurement noise. Twenty-four bytes
+was low by a factor of two to three.
+
+**The change.** One constant, `SLOT_MAP_BYTES = 60`, at the million-entry scale the engine
+works at, used by `IntKeyIndex::map_bytes`, `str_map_bytes` and the fold's
+`key slots (estimate)` entry. Nothing else: `grep` showed no decision reads these numbers
+(`join_agg_sides_bytes` sums batches, every budget is counted in `estimate_batch_bytes`),
+and the matrix below confirms it empirically.
+
+**What `--mem` says now (SF1, named bytes):**
+
+| query | point | before | after |
+| --- | --- | --- | --- |
+| q18 | group state (fold) | 138,876,884 | 192,871,412 (key slots 35,996,352 → 89,990,880) |
+| q18 | named / resident sample at the peak | 58.6% | 80.7% (192.9 MB against 239.0 MB) |
+| q21 | hash join output (step 2) | 398,348,765 | 417,626,839 (index map 17,505,912 → 43,764,780) |
+| q21 | named / resident sample | 77.1% | 80.9% |
+| q1 | group state (fold) | 95,560 | 95,704 |
+| q11 | every point | unchanged | unchanged (its maps hold a few hundred entries) |
+
+q18's fold point now covers 80.7% of the resident sample there, so the contract's 70%
+criterion is met, and the ~44 MB still unnamed is the validity bytes of §74 (12.0 MB by
+arithmetic) plus the per-entry variation the single constant cannot follow.
+
+**One criterion not met.** The contract asked for the cost to be stable within 10% across
+sizes and processes. It is stable across processes (identical to the byte) and not across
+sizes: 48 to 69 bytes is a 30% range, and one constant cannot be right at both ends. Sixty
+is the value at the 1.5-million-entry scale of every large TPC-H case here; at three
+million entries it over-counts by about 13%, and at five hundred thousand under-counts by
+15%. The report says "(estimate)" for that reason, and the verification records the range
+rather than implying a precision the measurement does not have.
+
+**One deviation.** `str_map_bytes` names a `Map[String, Array[Int32]]`. Measuring that map
+with the key strings included gave 84/96/92/79, which double-counts them because the helper
+adds the key's length separately. Measured with the keys allocated before the baseline, the
+entry costs the same as the integer map's at the larger sizes (60 at 1.5 million, 53 at
+three million), which is what the helper now assumes; the 500,000-entry rows were unstable
+for the reason the table shows.
+
+**Gates.** 33 goldens, grace/external equivalence checks, `harness/check_cli.sh`,
+`harness/spill_accept.sh`, 413 wasm-gc and 427 native tests. Plain matrix against
+`ed4b9af`, SF1, quiet host (load 1.58), three rounds, no budget and 16 MB: every peak and
+wall time inside the 10% spread, every answer byte-identical — which is the evidence that
+the constants are report-only, as the `grep` said.
+
+**What is left.** The validity bytes in `estimate_batch_bytes` (§70, 12.0 MB of q18's
+remaining gap), a per-size rather than per-entry map estimate if anyone needs the precision,
+the eager folds no census reaches, and the swapped path's own points.

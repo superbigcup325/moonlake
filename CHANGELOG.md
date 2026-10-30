@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` counts a map entry at the measured 60 bytes instead of the unmeasured 24, in the
+  join index's slot table and string half and in the fold's `key slots`. At SF1 q18's
+  largest point rises from 138.9 MB to 192.9 MB, covering 80.7% of the resident sample
+  there. Report-only: no budget, spill threshold or plan choice reads these numbers, and
+  the plain matrix is unchanged. Verification §75.
 - `--mem` now sizes the group state while a fold grows: a `group state (fold)` point is
   kept per input batch, naming the group slot table, the key arrays and the accumulator
   arrays. At SF1 q18's largest point rises from 90.9 MB to 138.9 MB and becomes the
