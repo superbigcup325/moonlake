@@ -6323,7 +6323,12 @@ lands beside the residual fix rather than instead of it.
 | q10 | 3.99 | 3.07 s (−23.0%) | q13 | 2.96 | 2.81 s (−4.9%) |
 | | | | q1 | 5.24 | 5.12 s (−2.2%) |
 
-q16 read +46.2% (0.38 -> 0.56 s) in that sweep and is noise: four timed rounds each give
+At 64 MB the same sweep against 0.6.0 is 21 of 22 more than 5% faster and none slower:
+q19 67.08 -> 3.71 s (−94.5%), q2 13.76 -> 1.79 s (−87.0%), q7 6.80 -> 2.53 s (−62.8%),
+q8 4.24 -> 1.79 s (−57.8%), q9 5.12 -> 2.58 s (−49.5%), and q1 (−2.1%) and q16 (−5.7%)
+the two smallest.
+
+q16 read +46.2% (0.38 -> 0.56 s) in the 16 MB sweep above and is noise: four timed rounds each give
 0.33 -> 0.31 s (−5.8%) at 16 MB, −4.6% at 64 MB and −4.5% unbudgeted. Twenty-one of the
 twenty-two cases are faster at 16 MB, and the two that are close to flat are the two that
 never partition.
