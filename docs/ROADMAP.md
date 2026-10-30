@@ -1050,6 +1050,67 @@ per cell that is derivable when a chunk has no CRLF, and the three separate
 lineitem scans q21 makes — the last worth about as much as this round, and a
 planner question rather than a reader one.
 
+### The partition piece cost contract (2026-10-30)
+
+Written before the change, because it decides what the budget is allowed to count,
+what a first measurement has to establish before any code moves, and what a
+negative result looks like. §68 and §69 left the 16 MB path with a measured cost at
+2048-row batches against 4096 (q9 +35 MB and +9.5% wall, q8 +29 MB, q5 +20 MB, q3
++16 MB) and a mechanism that is inferred from the code and the isolation run, not
+measured.
+
+**The problem it answers.** `partition_side` and `PartitionPool::add` cut every
+input batch into up to one piece per partition with `take_rows`, and
+`estimate_batch_bytes` prices a piece at 16 bytes plus 4 per column plus the
+column's cells. A piece of a few dozen rows is dominated by what that formula
+leaves out: the batch record, the column array, and per column the vector's two
+arrays and their headers. Those costs belong to the piece, not to its rows, so
+halving the batch size doubles the pieces a pass makes and doubles the uncounted
+bytes, while the budget thinks it is holding the same amount. The batch size has
+become a memory knob, which is the thing §68 said it should not be.
+
+**What the first step must establish.** Whether the hypothesis is true, and how
+large the per-piece cost really is. Before touching the estimate, measure it: build
+a large number of pieces of a few rows and a few columns, read the resident
+bytes before and after, and fit a fixed cost per piece and per column. If the fixed
+cost is small next to the 28-101 MB gaps, the mechanism is wrong and this contract
+ends with that finding and no code change (§60, §62). The same pass records how
+many pieces q3, q5, q8 and q9 make under 16 MB at 4096 and at 2048 rows, so the
+claim "four times as many" becomes a count.
+
+**What changes if it holds.** `estimate_batch_bytes` adds the measured per-piece and
+per-column constants. Nothing else: not the partition counts, not the flush rule,
+not the batch size, and not coalescing, which the no-collapse rounds measured and
+rejected. Because the estimate is what decides when a run is written, counting
+more makes a budgeted run flush earlier, so it can write more and smaller runs;
+the spill acceptance checks and wall time are where that would show.
+
+**What must not move.** Every answer, byte for byte. Everything without a budget:
+the estimate is read only by the budgeted paths, and a run without `--memory` must
+measure identical peaks within the spread. The single-table and single-step
+shapes (q1, q6, q11, q12), which do not partition a large input. The external
+sort, grace join and grace aggregation equivalence checks and `harness/spill_accept.sh`.
+
+**What is predicted.** If the per-piece cost explains the gap, the 16 MB peaks at
+2048 rows fall toward the 4096 figures: at least half of the gap closed on each of
+q9 (699 -> 681 MB or lower), q8 (530 -> 516), q5 (459 -> 449) and q3 (263 -> 255),
+measured against the 1% spread the isolation runs showed on these cases, with wall
+within that spread. Counting the cost may also leave the 4096 build ahead,
+because pieces are fewer there; that is not a failure, since the batch size would no
+longer be the knob that decides it.
+
+**How it is measured.** `harness/bench_join_chain.py --budgets none,16M --rounds 3`
+on a quiet host, the change against `70b60fc`, the whole 12-query matrix as in §69
+so that nothing that moves unpredicted is missed, plus the piece counts and the
+fitted constants above. It counts as success if the four named peaks close at least
+half their gap with no invariant moved; if the peaks do not move, the estimate is
+reverted and the finding is recorded.
+
+**Left open on purpose.** The estimate also ignores the validity array (one byte a
+row on every column) at every batch size; that is a per-row undercount unrelated to
+the batch size and would change every spill threshold at once, so it is a separate
+contract if the piece fit shows it matters.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
