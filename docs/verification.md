@@ -5689,3 +5689,41 @@ identical, and no case's candidate-against-control peak or wall time moved by mo
 
 **What is left.** Bounding the accumulated output itself — the streaming join — which the
 contract deliberately left out of scope; the eager folds' own points; and the tee.
+
+## 80. The replay's batches stay collapsed, and the copy is the cheaper half (2026-10-30)
+
+The contract ("The partition replay handover contract", roadmap) was written first and
+committed alone (`bc8af5c`), and it named its own bar: keep the change only if it lowers a
+16 MB case's peak by 10% or more without moving any 16 MB wall time past the spread.
+Measured against `04738aa`, it does neither, so it was reverted.
+
+**The change, as tried.** `join_or_spill` returned `grace_join`'s batches as they are
+instead of collapsing them into one batch first, and the now-unused `collapse_handed` was
+deleted. Nothing else moved.
+
+**What it measured** (SF1, `--memory 16M`, peak from a `VmHWM` poller):
+
+| case | control peak / wall | handed-on peak / wall |
+| --- | --- | --- |
+| q21 | 596.5 MB / 12.6 s | 545.1 MB / 17.5 s (−8.6%, +39%) |
+| q9 | 619.1 MB / 7.6 s | 759.1 MB / 12.7 s (+23%, +67%) |
+| q5 | 415.2 MB / 4.1 s | 415.4 MB / 4.4 s (flat) |
+
+q21's peak did fall, by 8.6% rather than the 10% the bar wanted — the copy is real, but
+the replay point's own sample is 423 MB of a 598.5 MB peak, so removing the copy cannot
+reach the 28% the contract hoped for. q9 went the other way: handing on a hundred small
+batches makes the *next* step's partitioner hold more at once, and its peak rose 23% while
+its wall time rose 67%.
+
+**Why that is the answer, not a surprise.** §65 already measured this trade from the other
+side and chose the collapse; this round re-ran it with the replay's real output instead of
+assuming, and got the same direction with larger numbers. The copy doubles the peak for one
+moment, but the alternative costs every subsequent step's partitioner a copy per batch per
+partition, which is worse at both peak and wall on the query that has the most steps (q9).
+
+**What landed.** The contract and this record. `engine/exec_join.mbt` is back to `04738aa`
+and no code from this round is in the tree.
+
+**What is left.** The one version of this that could still pay — a collapse that writes
+partitions into one destination as they finish, so the output never exists twice — which the
+contract left open on purpose, and the fold's own eager copy.
