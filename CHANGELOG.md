@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- An INNER step whose accumulated side fits the budget but whose table side does not now
+  swaps its roles instead of spilling: the accumulated rows become the hash side and the
+  table streams past them. At SF1 q8 goes 4.25 s → 1.71 s (−60%) at 16 MB with its peak
+  down 39%, q5 −52%, q9 −49% at both 16 MB and 64 MB with peaks down 37–41%, q3 −38%, q21
+  −22%. No answer changes; unordered output may arrive in the table's order instead of
+  partition order. Verification §82.
 - A step whose build side fits the budget is no longer partitioned: the build is held as
   the hash side and the probe streams past it a batch at a time. At SF1 q7 goes 6.34 s →
   2.58 s (−59%) at 64 MB and 7.11 s → 4.33 s at 16 MB, q21 9.17 s → 6.05 s at 64 MB and
