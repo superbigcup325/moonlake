@@ -1548,6 +1548,52 @@ inner side reaches `concat_batches([], [])`, which has no columns to index. That
 latent and predates the change — a larger partition count only made it likely — so the
 estimate is back as it was and the crash is the next contract, before this one is retried.
 
+### The empty partition contract (2026-10-30)
+
+Written before the change. §76 measured the validity bytes and found, on the way, that
+q21 under a 16 MB budget aborts outright: `PanicError` at `Array::at[ColumnVector]` in
+`join_semi`, reached from `join_step` inside `join_partitions`. The cause is one call:
+`join_semi` builds its inner side with `concat_batches(inner, [])`, and `concat_batches`
+only knows how wide to make an empty batch from the dtype list it is handed. Handed an
+empty list it returns a batch with no columns; handed a zero-batch inner side — a grace
+partition with no build rows, which is ordinary when the partition count is larger than
+the number of distinct keys — `eval_vec` then indexes column zero of nothing.
+
+**Why it is latent, and why it is worth its own round.** The crash predates §76: any
+partition that ends up empty crashes, and the partition count depends on the estimate,
+the budget and the data's key distribution, so a different budget, a different constant
+or a skewed table reaches it. §76 reached it by making partitions smaller, which is
+exactly the direction memory work keeps going. A crash inside a join that only some
+budgets hit is worse than a slow query, so the estimate change waits behind this.
+
+**What the change must do.** Give the concatenation the inner layout's dtypes —
+`tail_dtypes(step.out_dtypes, step.right_width)`, the same expression the probe side and
+the residual already use — so a zero-batch inner becomes an empty batch of the right
+width, and the semi/anti join answers correctly instead of reading past its columns. No
+other call site needs it: every other `concat_batches` in the engine either passes a
+dtype list or returns the single batch it was handed.
+
+**What must not move.** Every answer and every golden; the plain matrix's peaks and wall
+times; and the behaviour of a non-empty inner side, which the fix does not touch. A
+semi join over an empty inner must return no left rows, and its anti twin must return
+every left row except where a NULL key rules it out — the same rules `join_semi` already
+documents.
+
+**What is predicted.** q21 at 16 MB completes and returns the control's rows (up to the
+last-digit sum order the spill path already has); the four other 16 MB cases that differed
+only in float order stay as they are; and with the §76 estimate re-applied locally and
+uncommitted, q21 at 16 MB completes there too — which is the evidence that the crash, not
+the estimate, was the blocker.
+
+**How it is measured.** A unit test that forces a semi join through the grace path with a
+partition smaller than the partition count (a tiny budget against a small fixture), for
+both the semi and the anti flavour, comparing against the unbudgeted answer; the q21
+16 MB reproduction before and after; both unit suites, the goldens, the CLI checks and the
+spill acceptance script; and the plain matrix, which must not move.
+
+**Left open on purpose.** Re-attempting the validity bytes afterwards, the eager folds and
+the swapped path's census points, and the tee.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
