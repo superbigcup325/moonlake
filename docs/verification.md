@@ -6187,6 +6187,19 @@ q7 437.8 -> 438.0, q8 288.8 -> 288.8) and every answer byte-identical. 418 wasm-
 native tests pass, with a new one for the function's two cases (a valid cell and a NULL
 one).
 
+**Against the released binary.** §85 recorded one regression against 0.6.0 — q13, the
+noisiest case of the set. Measured directly now, four runs a case:
+
+| q13 | 0.6.0 | before §90 | after §90 |
+| --- | --- | --- | --- |
+| no budget | 1.14 s | 1.22 (+6.7%) | 1.17 (+2.9%) |
+| 16 MB | 2.96 s | 3.02 (+2.0%) | 2.87 (-3.1%) |
+| 64 MB | 2.87 s | 2.87 (+0.2%) | 2.72 (-5.3%) |
+
+so the sweep's one regression is now a 2.9% loss unbudgeted and a 3-5% win at both
+budgets. q2 against the same binary: 14.69 -> 3.43 s at 16 MB (-76.7%), 13.94 -> 1.80 at
+64 MB (-87.1%), and 1.83 -> 1.54 unbudgeted.
+
 **What it does not explain.** q2 is still 3.43 s at 16 MB against 1.53 unbudgeted, so
 §89's question is open by another 90% of the gap. The lesson it leaves is narrower and
 worth keeping: the estimator was measurable because it ran once per side per step, and
