@@ -285,7 +285,7 @@ fn prepare_select(
       }
     }
   }
-  let runner : SubqueryRunner = { catalog, opts, }
+  let runner : SubqueryRunner = { catalog, opts, census, }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
   Ready({ bq: plan.bq, plan, schemas, sources, tables, })
 }
@@ -312,7 +312,7 @@ fn run_pipeline(
   // groups once the fold ends. Shapes that need the whole row set first (DISTINCT,
   // a window function) stay on the eager path below.
   match streaming_agg_source(bq, sources) {
-    Some(entry) => return run_agg_pull(entry, launch, opts, stats)
+    Some(entry) => return run_agg_pull(entry, launch, opts, stats, census~)
     None => ()
   }
   // An ORDER BY under a budget is fed from the scan the same way: the runs are
@@ -358,6 +358,7 @@ fn run_pipeline(
           launch,
           opts,
           stats,
+          census~,
         )
       }
       prebuilt = Some(scans)
@@ -876,7 +877,11 @@ pub fn explain(
         )
     }
   }
-  let runner : SubqueryRunner = { catalog, opts: ExecOptions::in_memory(), }
+  let runner : SubqueryRunner = {
+    catalog,
+    opts: ExecOptions::in_memory(),
+    census: None,
+  }
   // the executed plan includes decorrelated semi/anti joins; explain
   // must render the same thing (the pass executes the inner queries,
   // which the plan depends on anyway)

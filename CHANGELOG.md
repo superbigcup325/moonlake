@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` now reports the pulled shapes: a single-table aggregate and a join folded into
+  an aggregate keep a `pulled fold finished` point with their finished groups, a composed
+  join keeps `composed join fold started` with its build sides, padded copies and key
+  indexes, and the subqueries a query runs while it is bound carry the census too. q11
+  and q18 used to print nothing or a single cache line; q18's census high-water is now
+  within 2.4% of the plain run's peak. A query that reached the earlier points prints
+  exactly what it did. Verification §73.
 - `--mem` names the shared scan cache: a point is kept when it is filled, and the
   report lists `shared scan cache (<table>)` with its bytes (q18 72.9 MB, q21 97.2 MB at
   SF1). `--mem` and `--analyze` also now run the same shared plan as the plain query,

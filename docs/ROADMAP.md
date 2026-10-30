@@ -1353,6 +1353,16 @@ the finding, and the next step is the group state accessor rather than another p
 **Left open on purpose.** Sizing the group state while it grows, the validity bytes,
 and a tee that removes the shared cache and its root altogether.
 
+**Result (§73).** Kept, with the q18 prediction wrong and its fallback taken. The pulled
+shapes keep `pulled fold finished`, a composed join keeps `composed join fold started`,
+and bind-time subquery runs carry the census; q21's census is unchanged to the byte and
+no root was needed, because the bytes are handed to the census as numbers. q11 now
+reaches points (a composed fold of 244 KB, a result of 640 KB). q18 does not compose: its
+outer join is swapped and declares nothing, and the single point it prints is its
+subquery's, so the census high-water (236.9 MB) lands within 2.4% of the plain peak at
+a point that names only 90.9 MB. The unnamed remainder is the group state while the fold
+grows, which is what the contract said to build next.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

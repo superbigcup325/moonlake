@@ -412,11 +412,13 @@ fn run_agg_pull(
   launch : Launch,
   opts : ExecOptions,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
   let pull = input_pull(bq, launch.plan, entry)
   let next = fn() -> @types.DataBatch? raise @types.SqlError { pull.next() }
   let folded = fold_pulled(next, launch, opts)
+  pulled_fold_point(census, [], folded)
   stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
   finish_agg_pull(folded, launch, stats)
 }
@@ -541,6 +543,7 @@ fn chain_pull(
   builds : Array[@types.DataBatch],
   at : Int32,
   next_left : () -> @types.DataBatch? raise @types.SqlError,
+  cursors~ : Array[JoinCursor] = [],
 ) -> (() -> @types.DataBatch? raise @types.SqlError) raise @types.SqlError {
   if at >= steps.length() {
     return next_left
@@ -553,10 +556,11 @@ fn chain_pull(
     filtered_pull(next_left, steps[at].probe_filter)
   }
   let cursor = JoinCursor::open(steps[at], builds[at - 1], input)
+  cursors.push(cursor)
   let out : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
     cursor.next()
   }
-  chain_pull(steps, builds, at + 1, out)
+  chain_pull(steps, builds, at + 1, out, cursors~)
 }
 
 ///|
@@ -591,6 +595,7 @@ fn run_join_agg_pull(
   launch : Launch,
   opts : ExecOptions,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
   let steps = bq.steps
@@ -604,7 +609,15 @@ fn run_join_agg_pull(
   let probe_next : () -> @types.DataBatch? raise @types.SqlError = fn() -> @types.DataBatch? raise @types.SqlError {
     probe.next()
   }
-  let chain = chain_pull(steps, builds, 1, probe_next)
+  let cursors : Array[JoinCursor] = []
+  let chain = chain_pull(steps, builds, 1, probe_next, cursors~)
+  // every build side, its padded copy and each step's index exist now and no probe
+  // batch has been pulled: the one moment the composed shape holds all of them
+  let held = composed_entries(scans, builds, cursors)
+  match census {
+    Some(c) => c.observe("composed join fold started", held)
+    None => ()
+  }
   let join : JoinFoldPull = {
     next_joined: chain,
     deferred: bq.deferred,
@@ -612,6 +625,7 @@ fn run_join_agg_pull(
   }
   let next = fn() -> @types.DataBatch? raise @types.SqlError { join.next() }
   let folded = fold_pulled(next, launch, opts)
+  pulled_fold_point(census, composed_entries(scans, builds, cursors), folded)
   stats.push(("scan \{launch.schemas[0].table}", probe.scanned))
   for i in 1..<(scans.length() + 1) {
     let mut rows = 0L
@@ -1206,4 +1220,55 @@ pub fn ResultStream::next(
 pub fn ResultStream::close(self : ResultStream) -> Unit {
   self.done = true
   self.release()
+}
+
+///|
+/// What a composed join fold holds besides its group state: every build side
+/// as scanned, the padded copy each cursor reads, and one key index per step
+/// (contract: docs/ROADMAP.md, "The pulled shapes declare census points
+/// contract"). The bytes are computed here and handed on as numbers, so the
+/// census never holds a cursor.
+fn composed_entries(
+  scans : Array[Array[@types.DataBatch]],
+  builds : Array[@types.DataBatch],
+  cursors : Array[JoinCursor],
+) -> Array[(String, Int64)] {
+  let entries : Array[(String, Int64)] = []
+  let mut sides = 0L
+  for s in scans {
+    sides += batches_bytes(s).to_int64()
+  }
+  entries.push(("build sides", sides))
+  let mut copies = 0L
+  for b in builds {
+    copies += estimate_batch_bytes(b).to_int64()
+  }
+  entries.push(("build copies", copies))
+  for i, c in cursors {
+    entries.push(
+      ("index arrays (step " + (i + 1).to_string() + ")", c.int_index.bytes()),
+    )
+  }
+  entries
+}
+
+///|
+/// The point a pulled fold keeps when it returns: what the shape still holds, and
+/// the finished groups. The group state while the fold grows is not sized by
+/// anything the executor can read, so `group result` is a lower bound for it.
+fn pulled_fold_point(
+  census : MemCensus?,
+  held : Array[(String, Int64)],
+  folded : PulledAgg,
+) -> Unit {
+  match census {
+    Some(c) => {
+      let entries = held.copy()
+      entries.push(
+        ("group result", estimate_batch_bytes(folded.batch).to_int64()),
+      )
+      c.observe("pulled fold finished", entries)
+    }
+    None => ()
+  }
 }

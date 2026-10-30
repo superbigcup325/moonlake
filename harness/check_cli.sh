@@ -103,8 +103,9 @@ grep -q "PanicError" "$work/pe" && fail "the failure printed a panic trace"
 
 # --mem runs the query with the structure census on and prints its blocks
 # instead of rows; the plain run over the same file still answers. The census
-# is off unless asked for, and a pulled shape reaches no declared point, so it
-# prints nothing rather than an empty header.
+# is off unless asked for. A pulled shape keeps one point of its own when its
+# fold returns (the finished groups), so it prints a census too, and only a
+# query that reaches no declared point prints nothing.
 echo "== --mem prints the census, and only with the flag"
 printf 'k,w\n1,10\n2,20\n' > "$work/m.csv"
 sql="SELECT count(*) AS c FROM m a WHERE EXISTS (SELECT 1 FROM m b WHERE b.k = a.k)"
@@ -119,6 +120,14 @@ esac
 printf '%s\n' "$mem" | grep -q '^# collected FROM tables: ' || fail "no tables block"
 printf '%s\n' "$mem" | grep -q '^scan m: ' || fail "no scan entry"
 out=$("$BIN" exec --csv "$work/m.csv" --mem "SELECT sum(w) AS s FROM m")
-[ -z "$out" ] || fail "a pulled shape printed a census: $out"
+case $out in
+  "-- resident by structure"*) ;;
+  *) fail "a pulled aggregate printed no census: $out" ;;
+esac
+printf '%s\n' "$out" | grep -q '^# pulled fold finished: ' || fail "no pulled fold point"
+printf '%s\n' "$out" | grep -q '^group result: ' || fail "no group result entry"
+# a plain scan with no aggregate reaches no declared point and prints nothing
+out=$("$BIN" exec --csv "$work/m.csv" --mem "SELECT w FROM m")
+[ -z "$out" ] || fail "a plain scan printed a census: $out"
 
 echo "cli checks pass"
