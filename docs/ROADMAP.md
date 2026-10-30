@@ -1758,6 +1758,44 @@ because the next step's partitioner then holds a hundred small batches at once
 `collapse_handed` stays; the numbers are recorded in §80. A collapse that writes into one
 destination as partitions finish remains open.
 
+### The early semi/anti contract (2026-10-31)
+
+Written before the change, after measuring what q21's chain actually carries. The
+decorrelator turns `EXISTS` and `NOT EXISTS` into semi and anti join steps and appends them
+after every FROM item (`extra_items` in `engine/correlate.mbt`), so q21's chain is
+supplier, lineitem, orders, nation, semi, anti — the two most selective conditions in the
+query run *last*, after two joins have already built the intermediate they filter.
+
+Two readings say this is the remaining lever on q21:
+
+- after the first step (supplier joined with the date-filtered lineitem) the chain carries
+  **3,793,296 rows**; after the semi and anti steps it carries **202,092**. A factor of
+  18.8 that steps three and four (orders at 729,413 scanned rows, then nation) currently
+  pay for in full.
+- q21 with no budget takes 2.90 s and peaks at 504 MB; with `--memory 16M` it takes 6.67 s
+  at 538 MB. The unbudgeted peak *is* that intermediate, so a step order that never builds
+  it helps both paths at once — unlike the budget work, which only helps the budgeted one.
+
+**What the change must do.** Place each semi/anti item as early as its own key references
+allow: immediately after the last FROM item whose columns it reads, provided every join it
+moves across is INNER. The reorder happens in AST space, before binding, so the binder
+computes the smaller layouts itself and no positional column reference is rewritten by
+hand. A semi item whose keys read an alias that a later item introduces stays where it is,
+and so does one that would cross a LEFT, RIGHT or FULL join, because moving it would change
+which rows owe an unmatched output.
+
+**What the change must not do.** It must not change any answer: the semi and anti
+conditions are conjunctive filters on the outer rows, so their position among INNER joins
+cannot change the set of rows that survive, only when they are applied. Goldens and the
+budgeted/unbudgeted equivalence checks decide that.
+
+**Bar.** On SF1, q21's wall time and peak both at least 10% better with no budget, and no
+regression over 5% on any other query in the matrix; every golden unchanged.
+
+**What it is not.** It is not a general join reordering: the FROM order decides which side
+each join builds from and the engine's plans are recorded in verification §41–§60, so a
+cost-based reorder of the ordinary joins is a different change with a different contract.
+
 ### The one-sided spill contract (2026-10-30)
 
 Written before the change, after measuring what the budgeted path actually costs. SF1 with
