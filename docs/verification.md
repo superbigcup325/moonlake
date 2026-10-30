@@ -5838,3 +5838,44 @@ have neither side small enough to keep, so they still partition. Choosing the in
 plan time — rather than by whichever side arrives first — is the next lever, and the
 one-sided build partitioning the contract described is what would serve the steps in
 between.
+
+## 83. 0.6.1 is released (2026-10-31)
+
+Renumbered from 0.7.0 by the owner: the plan changes, the census output and the order of
+unordered rows are all visible, but no public signature moved and the previous behaviour was
+never promised, so a patch carries it. The changelog section says that in its own words
+rather than leaving it to the number.
+
+The version claims, checked by `harness/check_release.py --tag v0.6.1 --check-consumer`
+before the tag existed:
+
+- `moon.mod`, `moonlake.mbt`, `pkg.generated.mbti` (via `moon info`), both assertions in
+  `moonlake_test.mbt`, the changelog heading and the tag all say 0.6.1;
+- the archive holds 244 files and none matching a forbidden pattern;
+- the tree is clean at `5c774f1`;
+- the consumer checkout builds against the packaged archive on native, wasm-gc and js, with
+  fresh registry and dependency caches, and its four streamed shapes agree with the
+  collected ones.
+
+`moon publish --dry-run` returned `202 Accepted` for 0.6.1 with a `Check passed` line; the
+real publish returned `Server status: 200 OK`.
+
+**After the publish**, from the registry and with no workspace override:
+
+- `harness/check_consumer.py --registry-version 0.6.1` — all three backends pass;
+- `moon view superbigcup325/moonlake` — `superbigcup325/moonlake@0.6.1`, published
+  2026-10-30T17:18Z, 99 downloads at the time of reading;
+- tag `v0.6.1` is annotated and pushed, the GitHub release is up, and the release workflow
+  deploys the playground afterwards.
+
+**One documentation error fixed on the way.** The empty-grace-partition fix (§77) had been
+written into 0.5.1's `### Fixed` section — an already released one — instead of the
+unreleased block. It now sits in 0.6.1's `### Fixed`, where the reader looking for it will
+be.
+
+**What the release carries.** Eleven changelog entries: the budget's unit split from the
+census' (§78), the two halves of the one-sided spill (§81, §82), the census points for a
+replayed partition and a swapped step (§79, §82), the eager fold's and the shared scan
+cache's points (§74, §75), the cheaper map and group state (§73), the crash fix (§77). Three
+measurements ship as refusals instead: validity bytes in the budget unit (§76), the
+uncollapsed replay handover (§80), and the earlier cell-only census (§78's predecessor).

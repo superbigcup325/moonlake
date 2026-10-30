@@ -1822,6 +1822,14 @@ q9 −48.5% at 16 MB and −49.2% at 64 MB with peaks down a third to 41%, q3 �
 is left is plan-time choice of the index side, which q21's 6.67 s against 2.90 s is still
 paying for.
 
+**Result (§83).** 0.6.1 is published and verified from the registry on all three
+backends. The release carries the two halves of the one-sided spill (§81, §82), the split
+between the budget's unit and the census' (§78), the census points (§74, §75, §79, §82) and
+the empty-partition crash fix (§77); three measurements ship as refusals (§76, §80). The
+number says patch because the owner judged the visible changes — plan, census output, row
+order of unordered results — to be within a patch, and the changelog section records that
+judgement rather than leaving it implicit.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
