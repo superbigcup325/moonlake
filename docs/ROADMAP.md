@@ -1758,6 +1758,36 @@ because the next step's partitioner then holds a hundred small batches at once
 `collapse_handed` stays; the numbers are recorded in §80. A collapse that writes into one
 destination as partitions finish remains open.
 
+### The partition routing contract (2026-10-31)
+
+The grace join slices every input batch by key hash into one piece per partition, so
+the number of pieces — and the number of little gathers that make them — is the
+number of input batches times the partition count. The scan's batch size therefore
+decides the routing cost of a spill it knows nothing about. On q19 at SF1 under a
+16 MB budget the same query takes 65.5 s when the scan emits 4096-row batches and
+127.6 s when it emits 2048-row ones, with every other byte of work identical; the
+answer, the partitions and the pieces' contents are the same, only their number
+differs. 2048 is what the scan itself wants (verification §68: a batch's columns stay
+in cache while the engine walks them, and the 16 MB cases of that round agree), so
+the fix is not to make the scan hand over bigger batches — that is worth 2-7% on
+every other unbudgeted query — but to stop the scan's batch size from deciding how a
+partition is filled.
+
+The partitioner coalesces. `join_partitions` groups each side's batches into chunks of
+at least `budget / 64` estimated bytes, concatenates a chunk, and routes the
+concatenation; only then does a batch's rows become pieces. The transient cost is one
+chunk, `budget / 64`, beside the accumulator the writers already hold; the run size
+stays `budget / 4`, so a partition's piece count and its replay are unchanged, and a
+query's answer cannot change because the rows, their keys and their partition numbers
+are exactly what they were.
+
+Bar, measured against today's tree on SF1: q19 under a 16 MB budget back under 80 s
+(65.5 s was the 4096-row scan, 127.6 s today), no other 16 MB or 64 MB case more than
+5% worse, and no case's peak more than 5% higher. 33 goldens, 417 + 431 unit tests,
+the CLI and the spill acceptance gates unchanged.
+
+**Result:** the measurement and its record go in verification §85.
+
 ### The early semi/anti contract (2026-10-31)
 
 Written before the change, after measuring what q21's chain actually carries. The
