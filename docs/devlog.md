@@ -2489,3 +2489,39 @@ the next lever has to allocate less — not free sooner.
 0.6.0 ships that arc's results: the cheaper build-side index, the chain that
 composes without a budget, the column-wise group state, and the census as an
 opt-in diagnostic. The two negative results ship as records only.
+
+## The budget stops paying for partitions it does not need (2026-10-30): E8, 0.7.0
+
+The instrument built in E7 named the peak but not the cause, and the cause turned
+out to be the budget's own machinery. Two readings did the work. The first: q21
+with `--memory 16M` takes 17.96 s and takes 17.96 s again when it spills to
+`/dev/shm`, so nothing here is disk-bound — it is the encode and decode of every
+partitioned side, and the grace path did that to both sides of every step that
+did not fit. The second: `join_step` has been streaming its probe side, one batch
+at a time, since the join learned to feed the fold; the partitioner was
+partitioning a side the step already knew how to stream.
+
+So the budget stopped partitioning what it did not have to. A step whose build
+side fits (twice over: the index is roughly the build again) keeps it as the hash
+side and lets the probe stream past — q7 at 64 MB went 6.36 s → 2.60 s. A step
+whose *accumulated* side fits and whose table side does not swaps the roles
+instead, reusing the `SwapCursor` the join+aggregate path already had — q8 went
+4.25 s → 1.71 s at 16 MB with its peak down 39%. Both keep the same promise: the
+working set is what fits plus the output, which is what the unpartitioned case
+next door already allowed.
+
+Two things were measured and refused on the way. Counting the validity array in
+the budget unit (not just in the report) bought 0.5–2.8% of wall time for 10 MB
+more peak on two cases, and handing a replay's batches on uncollapsed doubled a
+downstream partitioner's work: §76 and §80 record both, and both took the same
+route — write the contract, measure it, and let the bar the contract set decide.
+
+The census earned its keep twice: it named the empty-partition crash that §76's
+extra bytes exposed (fixed in §77), and it found that a budgeted run's peak is
+the accumulated output plus the copy that collapses it (§79). What is left is
+plan-time choice of the index side; q21's 6.67 s against 2.90 s with no budget is
+what it is still paying for.
+
+0.7.0 ships the arc: the split between the budget's unit and the census', the
+engine that keeps a fitting side out of the partitioner, and the crash fix. The
+refusals ship as records.
