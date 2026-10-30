@@ -5946,3 +5946,79 @@ cost model, and this round is the evidence that the engine does not have one: it
 the FROM list and the conjunct order, and both guesses above were wrong by a wide margin.
 The roadmap's "cost-based reorder" entry is where that belongs, with row counts from the
 census as its first input rather than a hand-derived estimate.
+## 85. The whole TPC-H set against 0.6.0, and one regression it found (2026-10-31)
+
+The twelve-case join matrix every earlier section measured left the other ten queries
+unmeasured, so the release was swept whole: 22 queries x three budgets (none, 16 MB,
+64 MB) against the published 0.6.0 binary, interleaved, two runs a case, fastest wall
+and highest VmHWM kept. Every answer is identical except the five that come back in a
+different order, and those were checked as multisets (floats canonicalised to nine
+significant digits, rows sorted).
+
+**Sixty-one of the sixty-six cases are faster.** The wins are the session's: q2 64 MB
+13.77 -> 2.05 s, q8 16 MB 4.32 -> 1.76 s with the peak 503 -> 290 MB, q3 -41.3% and
+-39.4% peak, q7 64 MB 6.26 -> 2.38 s, q9 -50% with the peak -41%, q21 16 MB 12.34 ->
+6.37 s, q17 -27% with the peak -42% to -46%. Unbudgeted, q15 3.50 -> 1.55 s, q18
+4.04 -> 2.12 s, q21 6.36 -> 2.96 s, q2 2.00 -> 1.61 s with the peak 1395 -> 883 MB.
+Three cases are slower: q13 (+6.5% unbudgeted, +1.8% and +1.0% budgeted — the noisiest
+case of the set) and q19 at 16 MB, which is the finding below.
+
+**The peaks that moved the other way, all unbudgeted.**
+
+| case | before | after | wall |
+| --- | --- | --- | --- |
+| q15 | 41.4 MB | **238.8 MB** | 3.50 -> 1.55 s (-55.7%) |
+| q18 | 145.4 MB | 231.3 MB | 4.04 -> 2.12 s (-47.5%) |
+| q17 | 203.2 MB | 239.4 MB | 4.71 -> 2.61 s (-44.7%) |
+| q20 | 99.4 MB | 112.9 MB | 2.40 -> 2.08 s (-13.2%) |
+| q22 | 35.4 MB | 41.4 MB | 0.74 -> 0.65 s (-12.6%) |
+
+Each of the five reads a table whose columns are now kept for the whole query (the
+shared decode of §71's round, and the batches a chain hands on instead of collapsing),
+and each pays for it in bytes it did not use to hold. The pattern is consistent — q15,
+q18 and q17 are the three that read lineitem twice or keep a wide build side — but the
+cause is not isolated yet and the table above is the honest state of it: without a
+budget the wall time is what the query asked for, and the peak is a cost that no
+contract currently bounds. With a budget the same queries move the right way (q18 16 MB
+73 -> 76 MB, q15 16 MB 41 -> 46 MB, both within 10%).
+
+**q19 under a 16 MB budget: 65.5 -> 127.6 s, and the bisect.** One case in the sweep
+doubled, and it is worth the whole section because the sweep found it and nothing else
+would have.
+
+| build | q19, 16 MB |
+| --- | --- |
+| 0.6.0 (`8ef102e`, the release's first follow-up docs) | 65.5 s |
+| `8b11bad` — a step lets go of tables whose last step it was | 65 s |
+| `70b60fc` — the scan aims for 2048 rows a batch | **127 s** |
+
+`a56517e` (hand a chain's batches on) is 66 s, so the batch size is the whole of it,
+and only at 16 MB: the same query is 66.9 vs 66.4 s unbudgeted and 65.5 vs 66.0 s at
+64 MB. 2048 rows a batch was landed for a reason (§68: the four-node 16 MB matrix lost
+66-101 MB of peak with it), so the question is not which of the two numbers is right
+but what the partitioner does with the smaller batch.
+
+**Two guesses about that, both measured, both wrong.** The contract of the same date
+proposed that the partitioner's cost is the number of little gathers it makes — one
+per partition per input batch — so it should coalesce each side's batches into chunks
+of `budget / 64` before routing. Implemented, 417 + 431 tests and 33 goldens green:
+
+| q19, 16 MB | wall |
+| --- | --- |
+| 2048-row batches, as it stands | 127.6 s |
+| coalesced routing, `budget / 64` chunks | 131 s |
+| 4096-row batches instead | 66.1 s |
+
+So the routing is not where the time is: the pieces and their contents are unchanged
+by construction, and the number of gathers fell by more than half with no effect. The
+other guess was to move the scan to 4096 everywhere, which does fix q19 (66.1 s) but
+costs 2-7% on the unbudgeted cases (q1 +8.3%, q16 +6.7%, q6 +4.9%, q12 +4.0%, q17
++3.0%, q5 +4.5%, and flat peaks) — the cache argument §68 measured, unchanged.
+
+**What that leaves.** The lever is the batch size the *partitioner* sees, and it is
+worth 62 s on q19 against 2-7% on everything else, so it should be decided by whether
+a query is spilling, not by a constant: the scan would hand over 4096-row batches when
+the query carries a budget and 2048-row ones when it does not. That needs the budget
+plumbed into the source reader, which is the next round's work — the coalescing is
+reverted, and this section is what it stands on: the regression is real, it is one
+case, and its cause is a constant two commits away from where the effect shows.

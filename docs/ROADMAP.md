@@ -1786,7 +1786,15 @@ Bar, measured against today's tree on SF1: q19 under a 16 MB budget back under 8
 5% worse, and no case's peak more than 5% higher. 33 goldens, 417 + 431 unit tests,
 the CLI and the spill acceptance gates unchanged.
 
-**Result:** the measurement and its record go in verification §85.
+**Result (§85).** Measured and refused. The coalescing was built — each side grouped
+into chunks of `budget / 64`, concatenated, routed — and left q19 at 131 s where it
+was 127.6 s, so the cost is not the routing: the pieces and their contents are
+unchanged by construction, and halving the number of gathers with them made no
+difference. The same section's bisect puts the whole regression on the scan's batch
+size (4096 rows: 65.5 s, 2048: 127.6 s, at 16 MB only), and moving the scan back to
+4096 everywhere costs 2-7% on the unbudgeted cases, so the batch size should follow
+whether a query is spilling rather than a constant. That needs the budget plumbed into
+the source reader, and it is the next round's work; the coalescing is reverted.
 
 ### The early semi/anti contract (2026-10-31)
 
