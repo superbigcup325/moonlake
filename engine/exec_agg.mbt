@@ -1259,9 +1259,7 @@ fn col_state_entries(
       4L * c.flags.length().to_int64()
   }
   entries.push(("accumulators", accs))
-  entries.push(
-    ("input batch (estimate)", estimate_batch_bytes(batch).to_int64()),
-  )
+  entries.push(("input batch (estimate)", resident_batch_bytes(batch)))
   entries
 }
 
@@ -1281,8 +1279,6 @@ fn boxed_state_entries(
   entries.push(("key slots (estimate)", SLOT_MAP_BYTES * groups))
   entries.push(("group keys (estimate)", groups * (24L + 16L * g.to_int64())))
   entries.push(("accumulators (estimate)", groups * (24L + 16L * m.to_int64())))
-  entries.push(
-    ("input batch (estimate)", estimate_batch_bytes(batch).to_int64()),
-  )
+  entries.push(("input batch (estimate)", resident_batch_bytes(batch)))
   entries
 }

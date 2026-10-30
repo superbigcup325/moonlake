@@ -5590,3 +5590,53 @@ identical, every peak and wall inside the 10% spread.
 
 **What is left.** Re-attempting the validity bytes (now unblocked), the eager folds and
 the swapped path's census points, and the tee.
+
+## 78. The census names resident bytes, the budget keeps its own unit (2026-10-30)
+
+The contract ("The resident bytes contract", roadmap) was written first and committed
+alone (`dfea0ae`). It resolved the tension §74 to §76 kept circling: two numbers with
+different jobs were sharing one definition.
+
+**The split.** `estimate_batch_bytes` stays exactly as it was and stays the unit every
+decision counts in — the budget, the partitioner, the sort's run sizing, the swap path's
+check. §76's measurement is why: counting the validity byte in the bound bought 0.5 to
+2.8% of wall time and two 16 MB peaks 10 MB higher. A new `resident_batch_bytes` adds the
+validity array, one byte a cell, and only the census calls it.
+
+**What moved.** Every place the census names a batch or a cache now reports resident
+bytes: the fold's `input batch`, the join's `probe input`, `build copy`, `filtered build
+scan`, `join output`, `collected output`, `collapsed output`, `inner copy`, `probe copy`,
+`collected FROM tables`, the scan entries, the composed path's `build sides` and
+`build copies`, the pulled fold's `group result`, and the shared scan cache's root. A
+`grep` for the remaining callers of the old helpers is the proof of the split: the twelve
+that are left are budget checks, partition counts, sort run sizing and the helpers
+themselves.
+
+**`--mem` before and after (SF1, named bytes):**
+
+| query | point | before | after | named / resident sample |
+| --- | --- | --- | --- | --- |
+| q18 | group state (fold) | 192,871,412 | 204,877,938 | 86.5% (was 80.7%) |
+| q18 | shared scan cache (lineitem) | 72,858,708 | 84,861,138 | the 12.0 MB was the validity of 6,001,215 rows |
+| q21 | hash join output (step 2) | 417,626,839 | 483,146,786 | 93.8% of the peak sample, 99.7% of the sample at the point |
+| q4 | semi/anti inner side (step 1) | — | 85,545,154 | 91.4% |
+| q1 | group state (fold) | 95,704 | 110,012 | — |
+| q11 | cache point | 16,244,761 | 19,464,811 | 41.9% |
+
+q18's largest point covers 86.5% of the resident sample where it peaks; the 32 MB that
+remain are the allocator's own overhead and the capacity slack of arrays sized by
+doubling, which no report here counts and which keep every total a lower bound. q11 is
+the one case that got *worse* as a fraction, because most of its footprint is partition
+machinery the cache point does not name; the number is still more truthful than before.
+
+**Two whitebox tests changed.** `engine/mem_wbtest.mbt` asserted the old numbers against
+`batches_bytes`; they now compute their expectation with `resident_batches_bytes`, which
+is the same assertion against the definition the census uses.
+
+**Gates.** 414 wasm-gc and 428 native tests, 33 goldens with the equivalence checks,
+`harness/check_cli.sh`, `harness/spill_accept.sh`. Plain matrix against `8f0b161` at no
+budget and 16 MB, three rounds, quiet host: every answer identical, every peak and wall
+time inside the 10% spread — the report moved, the engine did not.
+
+**What is left.** The eager folds and the swapped path's census points, the tee, and the
+allocator overhead that keeps totals lower bounds.

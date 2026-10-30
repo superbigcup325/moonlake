@@ -267,7 +267,7 @@ fn share_repeated_scans(
                       "shared scan cache (\{name})",
                       fn() {
                         match scan.cache {
-                          Some(b) => batches_bytes(b).to_int64()
+                          Some(b) => resident_batches_bytes(b)
                           None => 0L
                         }
                       },

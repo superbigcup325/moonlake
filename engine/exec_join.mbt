@@ -46,12 +46,12 @@ fn exec_joins(
           let extra : Array[(String, Int64)] = [
             ("collected FROM tables", alive_bytes(tables)),
           ]
-          extra.push(("probe input", batches_bytes(acc).to_int64()))
+          extra.push(("probe input", resident_batches_bytes(acc)))
           // a scan the eager path did not pre-filter, and a predicate to apply,
           // means `right` is a fresh compacted copy; without the predicate
           // `filter_batches` hands the table's own batches back, already counted
           if !prescanned[step.table] && step.build_filter is Some(_) {
-            extra.push(("filtered build scan", batches_bytes(right).to_int64()))
+            extra.push(("filtered build scan", resident_batches_bytes(right)))
           }
           acc = join_or_spill(
             acc,
@@ -83,7 +83,7 @@ fn exec_joins(
 fn alive_bytes(tables : Array[Array[@types.DataBatch]]) -> Int64 {
   let mut total = 0L
   for t in tables {
-    total += batches_bytes(t).to_int64()
+    total += resident_batches_bytes(t)
   }
   total
 }
@@ -231,11 +231,11 @@ fn join_step(
       // the eager path made one), its concatenated copy, the index and the
       // output batches not yet collapsed into one
       let entries = extra.copy()
-      entries.push(("build copy", estimate_batch_bytes(build).to_int64()))
+      entries.push(("build copy", resident_batch_bytes(build)))
       entries.push(("index arrays", cursor.int_index.bytes()))
       entries.push(("index map (estimate)", cursor.int_index.map_bytes()))
       entries.push(("index keys (estimate)", str_map_bytes(cursor.str_map)))
-      entries.push(("join output", batches_bytes(out).to_int64()))
+      entries.push(("join output", resident_batches_bytes(out)))
       c.observe("hash join collected its output (\{tag})", entries)
     }
     None => ()
@@ -255,10 +255,8 @@ fn join_step(
       // the collapse, where a budgeted run still makes one: only what is alive
       // here is named, and the cursor was released before the copy started
       let entries = extra.copy()
-      entries.push(("collected output", batches_bytes(out).to_int64()))
-      entries.push(
-        ("collapsed output", estimate_batch_bytes(result).to_int64()),
-      )
+      entries.push(("collected output", resident_batches_bytes(out)))
+      entries.push(("collapsed output", resident_batch_bytes(result)))
       c.observe("hash join collapsed its output (\{tag})", entries)
     }
     None => ()
@@ -1416,11 +1414,11 @@ fn join_semi(
       // the inner side's own copy and index next to the probe copy: this is
       // the point §58 could only estimate, before the answer rows are filtered
       let entries = extra.copy()
-      entries.push(("inner copy", estimate_batch_bytes(inner_batch).to_int64()))
+      entries.push(("inner copy", resident_batch_bytes(inner_batch)))
       entries.push(("index arrays", int_index.bytes()))
       entries.push(("index map (estimate)", int_index.map_bytes()))
       entries.push(("index keys (estimate)", str_map_bytes(str_map)))
-      entries.push(("probe copy", estimate_batch_bytes(left).to_int64()))
+      entries.push(("probe copy", resident_batch_bytes(left)))
       c.observe("semi/anti join's inner side (\{tag})", entries)
     }
     None => ()
