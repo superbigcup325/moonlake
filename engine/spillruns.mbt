@@ -38,13 +38,10 @@ fn estimate_batch_bytes(batch : @types.DataBatch) -> Int32 {
       @types.Int32 | @types.Date => total += 4 * n
       @types.Int64 | @types.Float64 => total += 8 * n
       @types.Bool => total += n
-      @types.Str =>
-        for r in 0..<n {
-          match col.get(r) {
-            @types.Str(s) => total += 4 + s.length() // chars as a byte proxy: budgets stay approximate
-            _ => total += 1
-          }
-        }
+      // chars as a byte proxy: budgets stay approximate; the column reads its
+      // own array rather than one Scalar per row (a budgeted step asks for this
+      // on every side of every step, and a wide join makes that millions of rows)
+      @types.Str => total += col.str_cell_bytes()
     }
   }
   total

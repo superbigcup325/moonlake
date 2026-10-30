@@ -20,6 +20,11 @@ partitioner's cost, and the batch size is chosen for the cache — §85), and fi
 unbudgeted peaks grew as their queries got faster (q15 41 -> 239 MB for -55.7%,
 §86).
 
+**The budget's byte count got 10% cheaper to ask.** `estimate_batch_bytes` summed a
+string column one `Scalar` at a time; it now reads the column's array (§90), which is
+worth 11% on q2 at both budgets and 5% on q13, with no fit decision changed and no peak
+moved.
+
 **Three directions were written as contracts and refused on their own measurements**
 in the same session: the early semi/anti reorder (§84), the coalescing partition
 router (§85), and the spilled tee (§88) — the last because a table that is cheap to

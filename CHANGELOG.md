@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- A budgeted step counts a string column's bytes from the column instead of building one
+  `Scalar` per row, which is 11% of q2's and 5% of q13's wall time at 16 MB and 64 MB
+  (verification §90). No fit decision moves, because the count is the same to the byte.
+
 ## [0.6.1] - 2026-10-31
 
 The memory budget stops paying for partitions it does not need, and the census learns

@@ -37,6 +37,29 @@ pub fn ColumnVector::dtype(self : ColumnVector) -> DataType {
 }
 
 ///|
+/// What a string column's cells cost, in the unit `estimate_batch_bytes` counts:
+/// four proxy bytes plus the characters for a valid cell, one for a NULL. Reads
+/// the column's own array instead of building a `Scalar` per row through `get`,
+/// which is what a byte check in the middle of a join loop needs — a budgeted
+/// step asks for this on every side of every step.
+pub fn ColumnVector::str_cell_bytes(self : ColumnVector) -> Int32 {
+  match self {
+    StrV(d, v) => {
+      let mut total = 0
+      for i in 0..<d.length() {
+        if v[i] {
+          total += 4 + d[i].length()
+        } else {
+          total += 1
+        }
+      }
+      total
+    }
+    _ => 0
+  }
+}
+
+///|
 /// Element access with validity: invalid slots come back as Null.
 pub fn ColumnVector::get(self : ColumnVector, i : Int32) -> Scalar {
   let valid = match self {

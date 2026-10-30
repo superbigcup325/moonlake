@@ -6162,3 +6162,32 @@ which, because every fit decision in §81 and §82 is made with the same estimat
 This host has no profiler (`perf`, `strace` and `ltrace` are all absent), so the
 remaining attribution is a sampling question rather than a reasoning one. Recorded with
 its numbers and its four refutations so the next attempt starts from the list.
+## 90. The budget's byte count reads the column, not one row at a time (2026-10-31)
+
+§89 left q2's remaining 2.4 s unexplained and flagged the estimator as the suspect — not
+because it is wrong, but because of how it is spelled: `estimate_batch_bytes` summed a
+string column by calling `col.get(r)` on every row, which builds a `Scalar`, matches it,
+and only then reads the length. A budgeted step asks for it twice per step (both sides),
+and q2's accumulated side runs to hundreds of thousands of rows and sixteen columns.
+
+`ColumnVector::str_cell_bytes` does the same arithmetic from the column's own array, with
+no `Scalar` per row. The numbers do not move by a byte — a NULL slot still costs one, a
+valid cell four plus its characters — so no fit decision changes; only the cost of asking
+does. Measured against the same tree, four interleaved rounds a case, medians:
+
+| case | 16 MB | 64 MB |
+| --- | --- | --- |
+| q2 | 3.86 -> 3.43 s (-11.0%) | 2.00 -> 1.79 (-10.4%) |
+| q13 | 3.02 -> 2.88 s (-4.8%) | 2.88 -> 2.72 (-5.4%) |
+| q7 | 4.01 -> 4.01 s (+0.1%) | 2.38 -> 2.39 (+0.1%) |
+| q8 | 1.77 -> 1.75 s (-1.1%) | 1.76 -> 1.76 (+0.1%) |
+
+with the peaks equal to a tenth of a percent (q2 1424.9 -> 1425.3 MB, q13 445.7 -> 445.6,
+q7 437.8 -> 438.0, q8 288.8 -> 288.8) and every answer byte-identical. 418 wasm-gc and 432
+native tests pass, with a new one for the function's two cases (a valid cell and a NULL
+one).
+
+**What it does not explain.** q2 is still 3.43 s at 16 MB against 1.53 unbudgeted, so
+§89's question is open by another 90% of the gap. The lesson it leaves is narrower and
+worth keeping: the estimator was measurable because it ran once per side per step, and
+the next section on this path should time its calls before reasoning about its branches.
