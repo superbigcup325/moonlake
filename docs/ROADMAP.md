@@ -1123,6 +1123,78 @@ inside the spread and every answer byte-identical. Nothing without a budget move
 and q1, q7, q11, q12, q18, q20 and q21 stayed inside the spread. So the batch size
 is no longer a memory knob: the budget now sees what a piece costs.
 
+### The shared table scan contract (2026-10-30)
+
+Written before the change, because it decides what may be kept alive between two
+scans of one table, who may read it, and what a negative result looks like. Every
+round so far has treated a scan as something a query does once per table named in
+its text; q21 names lineitem three times.
+
+**The problem it answers.** `Correlator::finish_semi` runs each decorrelated
+EXISTS / NOT EXISTS inner side eagerly through `run_parsed`, and each one scans the
+lineitem CSV from the start, as does the outer chain. On a quiet host (load 1.60,
+best of three, SF1) q21 without its two subqueries takes 3.23 s, with the EXISTS
+4.30 s (+1.07) and in full 5.78 s (+1.48 for the NOT EXISTS); one bare
+`SELECT count(*)` over lineitem takes 1.11 s. So each extra scan costs about what a
+bare scan costs, and the two repeated scans are together about 2.5 s of 5.78 s. The
+repeated work is indexing the same 773 MB again: a column decode added about 0.1 s
+to the bare scan in the earlier measurement, so what a second scan buys is almost
+entirely the index it rebuilds.
+
+**What may be shared.** Only the decoded columns a later scan of the same table
+asks for, cached for the life of one query. Not the cell index: for lineitem it is
+768 MB (two offsets a cell over 96M cells), which would dwarf every number this
+project has fought for, so a shared index is out of scope. The decoded columns the
+three scans of q21 name are `l_orderkey`, `l_suppkey`, `l_receiptdate` and
+`l_commitdate`: about 96 MB of values and 24 MB of validity bytes over 6M rows, so
+the cache is a cost measured in the same units as the peak it can raise.
+
+**Who may read it, and when it goes.** A scan reads the cache only when it asks for
+columns the cache already holds in full and carries no predicate hint that changes
+which rows it must see (a filtered scan reads the cached columns and filters them;
+it never fills the cache from a partial pass). The cache belongs to one query: the
+catalog entry is not mutated, a second query starts empty, and the cache is dropped
+after the last scan of that table has run, at the same point the table-lifetime
+release (§66) lets a finished table go. Under a memory budget there is no cache at
+all: a budgeted run keeps scanning, because holding 120 MB there is exactly what the
+budget forbids.
+
+**What changes if it holds.** The first scan of a table that is named more than once
+fills the cache with the union of the columns its later scans project; the later
+scans read it. Nothing else: not the plan, not the join order, not the semi/anti
+sides' residuals, not the batch size.
+
+**What must not move.** Every answer, byte for byte. Everything without a repeated
+table: q1, q3, q5, q6, q7, q8, q9, q10, q11, q12 name each table once and must show
+identical peaks within the spread. Everything under a budget. The census’s rule
+that only structures alive at a point are named: the cache is a new root and must be
+named at the points where it is alive, and must disappear from the points after it
+is dropped.
+
+**What is predicted.** q21 without a budget falls from 5.78 s toward 3.7-4.2 s,
+because the two repeated scans become reads of decoded arrays plus the cost of
+filling the cache once (the outer scan still indexes the file, and so does the first
+scan that fills the cache; the saving is the second index, not both). Its peak rises
+by at most the cache, 120 MB, and by less if the cache is dropped before the outer
+chain's peak at step 1; q18 and q20, which also repeat a table, are expected to move
+by their own smaller amounts.
+
+**How it is measured.** `harness/bench_join_chain.py --budgets none,16M --rounds 3`
+on a quiet host, the change against `b62918b`, the whole 12-query matrix as in §69,
+plus `--mem` on q21 for where the cache is alive and where the high-water is. It
+counts as success if q21 without a budget falls beyond the spread by at least a
+third of the predicted saving (about 0.5 s) with its peak no more than the cache
+above the control and every invariant unmoved. If the wall time falls but the peak
+rises by more than the cache, the cache is being held past its last reader and that
+is a bug, not a result. If q21 does not fall, the second index was not the cost and
+the change is reverted with this record kept (§60, §62).
+
+**Left open on purpose.** Sharing one pass between consumers (a tee that indexes a
+chunk once and delivers it to every scan of the file) would avoid the cache's memory
+entirely, but the decorrelated sides are run eagerly before the outer query exists,
+so it needs the planner to hand all three scans to one executor; that is a different
+contract and is only worth writing if this one's memory cost proves too high.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
