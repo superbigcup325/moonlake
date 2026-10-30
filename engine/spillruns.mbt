@@ -12,14 +12,28 @@
 // injected SpillStore.
 
 ///|
+/// What a batch costs before it holds a cell, and what each of its columns costs
+/// before it holds one: the batch record, the column array, and per column the
+/// vector's two arrays with their headers. Fitted from a probe that kept 50,000 to
+/// 200,000 small pieces alive in a native process and read the resident bytes
+/// (contract: docs/ROADMAP.md, "The partition piece cost contract"): about 157
+/// bytes a piece and 58-70 a column, on top of the cells and their validity bytes.
+/// A partitioner cuts every batch into many pieces of a few rows, so these
+/// constants, not the cells, are most of what a piece costs.
+const BATCH_FIXED_BYTES : Int32 = 160
+
+///|
+const COLUMN_FIXED_BYTES : Int32 = 64
+
+///|
 /// Estimated in-memory size of one batch: the unit the budgets here count
 /// in. Approximate on purpose -- it decides when to flush a run, not whether
 /// a result is right.
 fn estimate_batch_bytes(batch : @types.DataBatch) -> Int32 {
-  let mut total = 16
+  let mut total = BATCH_FIXED_BYTES
   for col in batch.columns() {
     let n = col.len()
-    total += 4
+    total += COLUMN_FIXED_BYTES
     match col.dtype() {
       @types.Int32 | @types.Date => total += 4 * n
       @types.Int64 | @types.Float64 => total += 8 * n

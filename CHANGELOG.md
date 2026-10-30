@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A memory budget now counts what a small piece of a batch costs, not only its
+  cells: `estimate_batch_bytes` adds about 160 bytes a batch and 64 a column,
+  fitted from a probe of resident bytes. A partitioned join or aggregation cuts
+  every input batch into many pieces, and the old estimate charged each one 16
+  bytes and 4 a column, so the budget believed it held far less than it did. At SF1
+  under a 16 MB budget the process peak fell on q9 from 699.2 to 619.1 MB, q8 from
+  530.2 to 471.1 MB, q5 from 459.2 to 415.2 MB and q3 from 262.9 to 237.3 MB, below
+  what 4096-row batches gave, with every answer and wall time unchanged and nothing
+  moving without a budget. Budgeted runs flush earlier as a result; four tests with
+  budgets of 64 and 2048 bytes, too small to hold one counted piece, use 512 and
+  4096. Verification §70.
 - Scans are about 15% faster on TPC-H at SF1, from three changes in the CSV
   reader's inner loops: a field's end is found a word at a time instead of a byte
   at a time, a quoted cell is remembered in a list instead of a flag written per

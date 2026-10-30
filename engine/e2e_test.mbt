@@ -3240,7 +3240,7 @@ test "grace join: every flavor under a tiny budget matches in-memory" {
     let (_, q) = entry
     assert_same_result(
       run(q, cat),
-      run_opts(q, cat, { budget: 2048, spill: Some(mem_store()), }),
+      run_opts(q, cat, { budget: 4096, spill: Some(mem_store()), }),
     )
   }
 }
