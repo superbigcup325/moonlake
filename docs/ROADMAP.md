@@ -1207,6 +1207,67 @@ each open past the expected count refilled the cache; those opens now pass throu
 Under a budget and everywhere a table is named once nothing moved, and every answer
 is byte-identical. Owed: the census must name the cache where it is alive.
 
+### The census names the shared scan cache contract (2026-10-30)
+
+Written before the change, because §71 left a debt and, while paying it, the code
+reading turned up a second one that changes what the debt means. The rule the
+census lives by (§61) is that it names the structures alive at a point, and that a
+point never keeps one alive.
+
+**The two debts.** First, the shared scan cache (§71) holds the decoded columns of a
+table named twice, and no census point names it, so q18's +81.9 MB and q11's +18 MB
+of peak are memory the report cannot show. Second, and found while reading the call
+sites: `mem_report_with` and `explain_analyze_with` call `run_parsed` directly,
+without `share_repeated_scans`, which only `run_select_opts` and
+`run_select_stream_opts` call. So `--mem` and `--analyze` have been running the
+unshared plan since §71 landed: they do not measure the run the plain query makes,
+and a census of q21 would not contain the cache even if it were named. Naming a
+cache the measured run never builds would be a census of nothing.
+
+**What the change must do.** (1) The two measuring entry points build the per-query
+catalog the plain entry points build, so a census run executes the same plan as the
+plain one. (2) The census keeps a list of live roots, each a function returning the
+bytes it holds right now; `share_repeated_scans` registers one per shared table when
+a census is present. `observe` appends one entry per root that holds anything,
+named `shared scan cache (<table>)`, at every point, so the cache is named exactly
+between the fill and the drop and disappears from the points after it. The size is
+`estimate_batch_bytes` over the cached batches, like every other root. A point still
+never stores a reference to what it sizes. Nothing changes without a census: the
+root list exists only on a `MemCensus`, and a plain run builds none.
+
+**What it may not claim.** `estimate_batch_bytes` counts cells and the fixed
+overhead of §70, not the validity bytes (one a cell, listed as open in §70), so the
+named cache is a lower bound and the census says so by being named like the others,
+whose totals are lower bounds too.
+
+**What must not move.** Every answer, byte for byte, with and without a census.
+Every plain run: peaks and wall times of the whole matrix are unchanged, because the
+plain entry points are not touched. Every census run of a query that names no table
+twice: its points and entries are identical to before.
+
+**What is predicted.** q18: its census names the cache at the points that sit
+between its two lineitem scans, at about 72 MB (6,001,215 rows of `l_orderkey` at 4
+bytes and `l_quantity` at 8), against the 81.9 MB of peak §71 measured; the rest, about
+10 MB, is the validity bytes the estimate does not count. q21: the cache is named at
+the points inside the decorrelated sides and absent from the outer chain's step-1
+point, which is why its peak did not move. q11: a root of a few MB at most. And the
+`--mem` high-water of q21 and q18 should now agree with the plain run's peak within the
+spread, where the unshared census would have reported q21 near 504 MB for a plan the
+plain run no longer runs.
+
+**How it is measured.** `--mem` on q18, q21 and q11 before and after, the plain
+matrix `harness/bench_join_chain.py --budgets none,16M --rounds 3` against `31233bb`
+to show nothing moved, and a unit test that a census over a table named twice has a
+point naming the cache and a census over a table named once has none. It counts as
+success if q18's named cache is within 15% of 72 MB, the cache is absent from the
+points after its drop, and the plain matrix is inside the spread. If the census
+high-water of q18 does not rise toward the plain peak once the cache exists, the
+measuring entry points still differ from the plain ones and that is the finding.
+
+**Left open on purpose.** A tee that shares the index instead of the decoded
+columns, which would remove the cache and this contract with it, and the validity
+bytes in `estimate_batch_bytes`.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
