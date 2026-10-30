@@ -156,6 +156,18 @@ fn join_or_spill(
       if build_fits {
         return join_step(acc, right, step, census~, extra~, tag~, collapse=true)
       }
+      // The mirror: the accumulated side is what fits, so it becomes the hash
+      // side and the table streams past it — the trick the join+aggregate path
+      // already uses for its last step, with no partitioner in between (§82).
+      // INNER only: a LEFT or FULL step owes its unmatched rows to the side that
+      // would become the build side.
+      let probe_fits = match step.kind {
+        Inner => batches_bytes(acc) * 2 <= opts.budget
+        _ => false
+      }
+      if probe_fits {
+        return join_swapped_stream(acc, right, step, census~, extra~, tag~)
+      }
       collapse_handed(
         grace_join(acc, right, step, opts.budget, store, stats, census~),
         step,
@@ -166,6 +178,53 @@ fn join_or_spill(
         "join input exceeds the memory budget (\{total} bytes > \{opts.budget}); provide a spill store (--spill-dir) or raise the budget (--memory)",
       )
   }
+}
+
+///|
+/// One INNER step with the roles put back: the accumulated rows are small enough
+/// to become the hash side whole, and the table streams past them a batch at a
+/// time through `SwapCursor`. The output is the step's combined layout, in
+/// batches of at most `JOIN_OUT_BATCH` (contract and measurement: §82).
+fn join_swapped_stream(
+  acc : Array[@types.DataBatch],
+  right : Array[@types.DataBatch],
+  step : JoinStep,
+  census~ : MemCensus? = None,
+  extra~ : Array[(String, Int64)] = [],
+  tag~ : String = "",
+) -> Array[@types.DataBatch] raise @types.SqlError {
+  let left_width = step.out_dtypes.length() - step.right_width
+  let prefix = concat_batches(acc, head_dtypes(step.out_dtypes, left_width))
+  let mut at = 0
+  let next_right : () -> @types.DataBatch? raise @types.SqlError = fn() {
+    if at < right.length() {
+      let b = right[at]
+      at += 1
+      Some(b)
+    } else {
+      None
+    }
+  }
+  let cursor = SwapCursor::open(step, prefix, next_right)
+  let out : Array[@types.DataBatch] = []
+  while cursor.next() is Some(b) {
+    out.push(b)
+  }
+  match census {
+    Some(c) => {
+      // the point where the swapped step's own pieces are all live: the prefix
+      // copy that became the hash side, its index, and the output so far
+      let entries = extra.copy()
+      entries.push(("prefix copy", resident_batch_bytes(prefix)))
+      entries.push(("index arrays", cursor.int_index.bytes()))
+      entries.push(("index map (estimate)", cursor.int_index.map_bytes()))
+      entries.push(("index keys (estimate)", str_map_bytes(cursor.str_map)))
+      entries.push(("join output", resident_batches_bytes(out)))
+      c.observe("hash join swapped its sides (\{tag})", entries)
+    }
+    None => ()
+  }
+  out
 }
 
 ///|

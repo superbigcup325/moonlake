@@ -5785,3 +5785,56 @@ probe side's.
 it with a fitting probe side when the *build* is what overflows — and choosing the index
 side at plan time, which is what q21's first step still pays for: 9.00 s against 2.98 s with
 no budget, because its build is `lineitem` at 773 MB either way.
+
+## 82. The other half: when the table side is what overflows, swap instead of spill (2026-10-30)
+
+§81 kept a fitting build side out of the partitioner. This is the mirror of that, and it
+was already half-built in the engine: `SwapCursor` (which serves the join+aggregate path's
+last step) builds its hash side from the accumulated rows and streams the *table* past it a
+batch at a time. When the accumulated side fits the budget and the table side does not,
+that is exactly the shape needed.
+
+**The change.** In `join_or_spill`, after the build-fits case: for an INNER step whose
+accumulated side fits (`acc * 2 <= budget`), call `join_swapped_stream`, which concatenates
+the accumulated rows into the prefix, hands the table's batches to `SwapCursor` through a
+cursor, and drains the output. LEFT and FULL steps are excluded — they owe unmatched rows
+to the side that would become the build side — and so are semi/anti, which never partition.
+The new path declares its own census point (`hash join swapped its sides`), naming the
+prefix copy, the index and the output, because §79 established that an allocating phase
+which does not name itself is a hole in the attribution.
+
+**What it measured** (SF1, three rounds, matrix against `130d207`, host round spread 17.8%):
+
+| case | peak | wall |
+| --- | --- | --- |
+| q8 16 MB | 471.4 → 289.3 MB (−38.6%) | 4.25 → 1.71 s (**−59.8%**) |
+| q8 64 MB | 525.3 → 289.2 MB (−44.9%) | 3.80 → 1.71 s (−55.0%) |
+| q5 16 MB | 415.3 → 297.0 MB (−28.5%) | 3.87 → 1.85 s (−52.2%) |
+| q9 64 MB | 661.2 → 389.2 MB (−41.1%) | 4.74 → 2.41 s (−49.2%) |
+| q9 16 MB | 619.3 → 389.1 MB (−37.2%) | 6.43 → 3.31 s (−48.5%) |
+| q5 64 MB | 447.2 → 297.2 MB (−33.5%) | 3.55 → 1.88 s (−47.0%) |
+| q3 16 MB | 237.4 → 161.3 MB (−32.1%) | 2.91 → 1.81 s (−37.8%) |
+| q3 64 MB | 265.3 → 160.9 MB (−39.4%) | 2.76 → 1.85 s (−33.0%) |
+| q21 16 MB | 574.8 → 538.7 MB (−6.3%) | 8.52 → 6.67 s (−21.7%) |
+| q18 16 MB | 77.5 → 75.3 MB (−2.8%) | 4.25 → 3.75 s (−11.8%) |
+
+This is the first change in the session that moves *both* peak and wall time the same way
+by a wide margin: the table side is no longer encoded, written, read back and decoded, it
+just streams. Every no-budget case is unchanged. q20 at 16 MB moved +7.5% in wall time,
+inside the run-to-run spread but recorded here.
+
+**Five cases changed row order, none its content.** q5 and q9 at 16 and 64 MB and q7 at
+16 MB emit rows in the table's order where partitioning emitted them partition-major;
+verified as multisets at nine significant digits against both the control's budgeted answer
+and the unbudgeted one (q3 11 rows, q5 6, q7 5, q9 176 — all equal). The goldens, which
+carry ORDER BY, pass.
+
+**Gates.** 417 wasm-gc and 431 native tests (one new: a budget the build side overflows
+answers the same as no budget, and its census names the swap), 33 goldens with the
+equivalence checks, `harness/check_cli.sh`, `harness/spill_accept.sh`, and the matrix above.
+
+**What is left.** q21 at 16 MB still takes 6.67 s against 2.90 s: its chain's later steps
+have neither side small enough to keep, so they still partition. Choosing the index side at
+plan time — rather than by whichever side arrives first — is the next lever, and the
+one-sided build partitioning the contract described is what would serve the steps in
+between.

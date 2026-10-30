@@ -1812,6 +1812,16 @@ change row order and none changes content (verified as multisets). The rest of t
 — one-sided partitioning when the *build* is what overflows — is what q21's first step still
 pays for.
 
+**Result (§82).** The mirror landed, reusing `SwapCursor`: an INNER step whose accumulated
+side fits (`acc * 2 <= budget`) but whose table side does not now swaps roles — the
+accumulated rows become the hash side and the table streams past them, with no partitioner,
+no encoding and no spill. It is the first change this session that moves peak and wall time
+together: q8 at 16 MB goes 4.25 → 1.71 s (−59.8%) with its peak down 38.6%, q5 −52.2%,
+q9 −48.5% at 16 MB and −49.2% at 64 MB with peaks down a third to 41%, q3 −37.8%, q21
+−21.7%. Five cases change row order and none changes content (verified as multisets). What
+is left is plan-time choice of the index side, which q21's 6.67 s against 2.90 s is still
+paying for.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
