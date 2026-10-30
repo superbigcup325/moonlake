@@ -1707,6 +1707,49 @@ now attributable to the eager materialization rather than unknown. The contract 
 the named total would cover half the sample and it covers 34.7%, which the report's
 lower-bound rule already accounts for and which is recorded. Plain matrix unchanged.
 
+### The partition replay handover contract (2026-10-30)
+
+Written before the change. §79 named the budgeted peak: with `--memory 16M` q21 reaches
+598.5 MB, of which the replay point samples 423 MB (its accumulated output estimated at
+201.6 MB) and the rest is `collapse_handed` concatenating that same output into one batch
+right after the replay — the output and its copy alive together. Without a budget the same
+query peaks at 504.9 MB, so the budgeted run costs about 95 MB more than the unbudgeted
+one, and the extra is this copy.
+
+**Why the copy exists.** §65 concluded that a budgeted join should hand the next step one
+batch a side: a partitioner slices every input batch into every partition, so a hundred
+small batches cost a hundred copies per partition, and holding a handover batch and its
+copy at once measured worse than not collapsing. That conclusion was measured against the
+alternative of *collapsing at both ends*, not against handing the replay's own batches on.
+
+**What is measured, and the decision it makes.** Return the replay's batches to the caller
+as they are, instead of collapsing them into one. The peak should fall by roughly the
+output's size, and the wall time should rise if the next step repartitions many small
+batches — that is exactly the trade §65 described, and this round re-measures it with the
+replay's real output rather than assuming either direction.
+
+The change is kept only if it lowers at least one 16 MB case's peak by 10% or more and no
+16 MB case's wall time moves outside the matrix's spread; otherwise `collapse_handed`
+stays exactly as it is and this contract's result records the measurement that said so.
+
+**What must not move.** Every answer and every golden: the batches are the same rows in
+the same order, only in more pieces. The no-budget cases, which never take the grace path.
+And the census's attribution: the `spill partition replayed` point keeps naming what the
+replay holds, and a new point or the existing one keeps the collapse visible if it stays.
+
+**What is predicted.** q21 16 MB: peak 598.5 MB → about 430 MB (the replay point's sample,
+with the collapse gone), wall time perhaps 5 to 15% worse because the next step repartitions
+106 batches instead of one. If the wall cost is that high, the honest outcome is rejection —
+this engine's target is wall clock, and a 28% peak saving on one budgeted query is not
+worth a 15% time cost on the slowest case it has.
+
+**How it is measured.** The plain matrix against `04738aa` at no budget and 16 MB, three
+rounds, on a quiet host; `--mem` on q21 and q9 at 16 MB before and after for the
+attribution; both unit suites, the goldens, the CLI checks and the spill acceptance script.
+
+**Left open on purpose.** A collapse that does not double the peak (writing the replay's
+output into one destination as partitions finish would), and the fold's own eager copy.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
