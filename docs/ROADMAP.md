@@ -1421,6 +1421,16 @@ matrix is inside the spread.
 still declares no point, the eager folds (no census reaches them), and the validity
 bytes in `estimate_batch_bytes`.
 
+**Result (§74).** Kept, with its success criterion missed and its fallback named. The fold
+now keeps `group state (fold)` per batch: q18's state is 65,993,312 bytes (inside the
+predicted 60–80 MB), its largest point rose from 90.9 MB to 138.9 MB against a predicted
+~150 MB, and that point is now the resident peak. But 138.9 MB against a 236.9 MB sample
+is 58.6%, not the 25% the contract asked for. Of the ~98 MB left, 12.0 MB is the validity
+bytes `estimate_batch_bytes` omits and the rest is unattributed; the largest candidate is
+the group slot map, estimated at 24 bytes a group where a real hash table may cost two or
+three times that, and measuring it is the next contract. The CSV reader indexes one chunk
+at a time, so it is not part of the answer.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

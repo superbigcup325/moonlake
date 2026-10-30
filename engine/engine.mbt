@@ -343,7 +343,15 @@ fn run_pipeline(
         if join_agg_composes(join_agg_sides_bytes(have), opts) {
           match join_agg_swap_prefix(src, launch, have, opts) {
             Some(prefix) =>
-              return run_join_agg_swap(src, launch, have, prefix, opts, stats)
+              return run_join_agg_swap(
+                src,
+                launch,
+                have,
+                prefix,
+                opts,
+                stats,
+                census~,
+              )
             None => ()
           }
         }

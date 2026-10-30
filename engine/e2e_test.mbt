@@ -3643,3 +3643,35 @@ test "a composed join fold names its build sides and indexes at two points" {
     run_opts(sql, cat, { budget: 1073741824, spill: Some(mem_store()), }),
   )
 }
+
+///|
+test "a census sizes the group state while a pulled fold grows" {
+  let cat = grace_join_catalog()
+  let sql = "SELECT k, count(*) AS n FROM t1 GROUP BY k"
+  let report = @engine.mem_report_with(
+    sql,
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_true(report.contains("group state (fold)"))
+  assert_true(report.contains("key slots (estimate)"))
+  assert_true(report.contains("accumulators"))
+  // the fold point is a middle point: the finished groups are still named apart
+  assert_true(report.contains("group result"))
+  // an ungrouped aggregate has one group, so it still keeps the point
+  let single = @engine.mem_report_with(
+    "SELECT count(*) AS c FROM t1",
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_true(single.contains("group state (fold)"))
+  // and the answer is the same whether or not a census ran
+  assert_same_result(
+    run(sql, cat),
+    run_opts(sql, cat, { budget: 1073741824, spill: Some(mem_store()), }),
+  )
+}

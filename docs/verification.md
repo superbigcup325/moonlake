@@ -5366,3 +5366,66 @@ plain scan with no aggregate still prints nothing.
 **What is left.** The group state while a fold grows (q18's unnamed 146 MB), the
 swapped join path (`run_join_agg_swap`), which still declares no point, and the validity
 bytes in `estimate_batch_bytes`. Every named total is a lower bound.
+
+## 74. The census sizes the group state while a fold grows (2026-10-30)
+
+The contract ("The group state is sized while a fold grows contract", roadmap) was
+written first and committed alone (`db81f36`). It answered the 146 MB gap §73 left on
+q18: the census named the finished groups but never the state the fold builds.
+
+**The change.** `aggregate_seq` and `aggregate_cols` take an optional census and observe
+one point per input batch, labelled `group state (fold)`, naming `key slots (estimate)`
+(24 bytes a group, the join census's convention), `group keys` and `accumulators` (the
+columnar arrays by element size, or the per-group arrays at an estimate), and
+`input batch (estimate)`. The label is fixed, so the largest point is the end of the fold
+(the arrays only grow). `fold_pulled` passes the census on; a plain run passes none and
+executes exactly the old path.
+
+**One deviation from the contract.** It said only the two pulled folds pass a census.
+The swapped join-aggregate folds through the same `fold_pulled`, so it passes one too
+(`run_join_agg_swap` gained the parameter): the path that declared no point at all now
+reports its group state, which adds information and changes no fold.
+
+**What `--mem` says now (SF1, named bytes):**
+
+| query | point | named |
+| --- | --- | --- |
+| q18 | group state (fold) | 138,876,884 — cache 72,858,708, key slots 35,996,352, accumulators 17,998,176, group keys 11,998,784, input batch 24,864 |
+| q18 | pulled fold finished | 90,858,996 (unchanged) |
+| q11 | group state (fold) | 1,314,900 |
+| q1 | group state (fold) | 95,560 (input batch 94,632, state 928) |
+| q21 | all points | byte-identical to §73 |
+
+The state itself (key slots + group keys + accumulators) is 65,993,312 bytes, inside the
+contract's 60–80 MB prediction, and the point's total rose from 90.9 MB to 138.9 MB
+against the predicted ~150 MB. q18's largest point is now also the point where the
+resident sample peaks (236,880 KB), so the report names the peak rather than trailing it.
+
+**The success criterion is not met, and the remainder is the finding.** The contract asked
+for the named total to land within 25% of the resident sample at that point; 138.9 MB
+against 236.9 MB is 58.6%. About 98 MB is therefore still unnamed at the peak, and none of
+it is the group state the point names.
+
+One component is known by arithmetic: `estimate_batch_bytes` counts cells and the fixed
+per-batch and per-column overheads but not the validity array, so the cached 6,001,215
+rows over two columns carry 12.0 MB (one byte a cell) the estimate omits (open since §70).
+The rest is unattributed and this round does not guess at it. The largest candidate is the
+group slot map: the point estimates it at the join census's 24 bytes an entry, 35,996,352
+bytes for 1,499,848 groups, and a hash table that size can cost two or three times that,
+which would be most of the gap. That is a hypothesis with no measurement behind it, not a
+finding, and the honest next step is to measure the map's real per-entry cost — or name
+its real size — rather than to add another point.
+
+The CSV reader is *not* a candidate: it indexes one chunk at a time (`scan_rows` over the
+current buffer), so its index arrays are sized by a 2048-row batch and not by the file.
+
+**Gates.** 33 goldens, grace/external equivalence checks, `harness/check_cli.sh`,
+`harness/spill_accept.sh`, 413 wasm-gc and 427 native tests (one new: a grouped pulled
+fold keeps `group state (fold)` naming key slots and accumulators, an ungrouped one keeps
+it too, and the answer equals the budgeted run's). Plain matrix against `b9ea01a`, SF1,
+quiet host (load 1.75), three rounds, no budget and 16 MB: every peak and wall time
+inside the 10% spread, every answer byte-identical.
+
+**A note on what a census run now costs.** A fold over 1.5 million rows observes once per
+batch, so q18's census keeps 2,942 points where it kept 2, and each observe samples
+residency. That is a `--mem` run's cost, not a query's: plain runs build no census.
