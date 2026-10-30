@@ -1,39 +1,40 @@
 # Roadmap
 
-**0.5.1 is released** — `superbigcup325/moonlake@0.5.1` on mooncakes, the
-annotated tag `v0.5.1` on `f8e1204`, a GitHub release, and the registry consumer
-check passing on all three targets (verification §47). The number is the owner's
-decision of 2026-10-27: the scope was planned as 0.6.0 and is unchanged, and
-every document, the delivery-plan heading and the recorded baseline filenames
-were renumbered together. The current dependency is the
-published colenc 0.1.3 (`344d739`), whose full local acceptance, grouped-sketch
-matrix and release pair are recorded in verification §44 and
-`docs/bench-baseline.md`. Two dependency costs closed on the way: the 0.1.1
-artifact's wide-CSV cost (the 0.1.2 cases ran 6-11% faster than its control in
-every round) and the grouped sketch's per-group state (0.1.3 hands the sparse
-registers to this tree, worth 393 MB on the worst shape). The short Parquet cases
-remain unresolved.
+**0.6.1 is released** — `superbigcup325/moonlake@0.6.1` on mooncakes, the annotated
+tag `v0.6.1` on `ec63c74`, a GitHub release, and the deployed playground passing
+16/16 at exactly 0.6.1 (verification §83). The number is the owner's decision of
+2026-10-31: the plan shapes, the census output and the order of unordered rows are
+visible changes, but no public signature moved and the previous behaviour was never
+promised, so a patch carries it. It ships eleven changes: the budget's unit split
+from the census' (§78), both halves of the one-sided spill (§81, §82), census points
+for a replayed partition and a swapped step (§79, §82), the eager fold's and the
+shared scan's points, the empty-grace-partition fix (§77), and the batch-size and
+scan work the measurements below stand on.
 
-Upstream checked on 2026-10-27 (Asia/Shanghai): `main` is `020be75`, with
-[CI passing](https://github.com/superbigcup325/moonlake/actions/runs/40513060636).
-The release commit `f8e1204` passed
-[Pages](https://github.com/superbigcup325/moonlake/actions/runs/40512431550),
-and verification §47 records both the fresh-cache registry consumer on three
-targets and the deployed playground at exactly 0.5.1. `moon view` confirms
-0.5.1 and colenc 0.1.3 as the respective registry latest versions. colenc `main`
-is `d6a892e`, with
-[CI passing](https://github.com/superbigcup325/colenc/actions/runs/40347664183).
-Neither repository has an open issue or pull request at this snapshot. The
-latest nightly passed on `f4e9348`, before E5; it is not a nightly result for
-the released source. This status check did not repeat functional or performance
-acceptance.
+**What the release measures.** The whole TPC-H set was swept against 0.6.0 before and
+after: 61 of 66 cases are faster (§85) — q2 at 64 MB 13.77 -> 2.05 s, q8 at 16 MB
+4.32 -> 1.76 s with its peak 503 -> 290 MB, q9 -50% with the peak -41%, q21 at 16 MB
+12.34 -> 6.37 s. Three moved the other way and are recorded rather than smoothed
+over: q13 by 1-6.5%, q19 at 16 MB by 95% (the scan's batch size decides the
+partitioner's cost, and the batch size is chosen for the cache — §85), and five
+unbudgeted peaks grew as their queries got faster (q15 41 -> 239 MB for -55.7%,
+§86).
 
-The [delivery after colenc 0.1.3](#next-delivery-after-colenc-013) is complete:
-H0 measured the grouped-HLL cost, C3 consumed sparse state, E5 removed retained
-scan input before budgeted GROUP BY, and R3 released the scope as 0.5.1. The
-[next proposed work](#next-work-after-051) is to measure a join feeding an
-aggregate and decide whether to compose their batch paths. FSST reuse and
-Roaring index integration retain their workload triggers.
+**Three directions were written as contracts and refused on their own measurements**
+in the same session: the early semi/anti reorder (§84), the coalescing partition
+router (§85), and the spilled tee (§88) — the last because a table that is cheap to
+parse pays the tee's two extra passes instead of saving a decode, and the engine has
+no plan-time signal to tell the two apart. A fourth measurement stands behind them:
+setting any budget at all costs a query 45-88% even when nothing spills, and three
+attempts to attribute that (§89) did not find it.
+
+The [delivery after colenc 0.1.3](#next-delivery-after-colenc-013) is complete;
+H0, C3, E5 and R3 closed it as 0.5.1. What the next delivery is worth is now
+measured rather than guessed: the budget path's unexplained 2x (§89), q19's 62 s
+(§85), and the unbudgeted peak (§86) are the three numbers a contract should be
+written against. FSST reuse and Roaring index integration retain their workload
+triggers.
+
 
 ## Current implementation
 

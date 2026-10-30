@@ -2525,3 +2525,39 @@ what it is still paying for.
 0.6.1 ships the arc: the split between the budget's unit and the census', the
 engine that keeps a fitting side out of the partitioner, and the crash fix. The
 refusals ship as records.
+
+## W5 (2026-10-31): 0.6.1 out, the whole set measured, three refusals on the record
+
+### Goal
+
+Ship what the one-sided spill work earned, then measure the whole TPC-H set rather
+than the twelve cases the earlier sections watched, and let the numbers choose the
+next contract.
+
+### What landed
+
+- 0.6.1 published, tagged, released, playground 16/16 (§83) — renumbered from 0.7.0
+  because no public signature moved.
+- The full 22-query x 3-budget sweep against 0.6.0 (§85): 61 of 66 cases faster,
+  q2 at 64 MB 13.77 -> 2.05 s, q8 at 16 MB 4.32 -> 1.76 s with its peak -42%.
+- The census of the shared decode (§86): q15 holds 239 MB for a 2.3x faster answer,
+  and no reader can release it earlier without losing the reuse that pays for it.
+- The map of what a budget costs when nothing spills (§87, §89): the shared decode is
+  off under a budget (q21 +85%), and a further 2.4 s on q2 has no explanation yet.
+
+### What was refused, and why that is the output
+
+Three contracts were written first and measured after, and all three failed their own
+bars: the early semi/anti reorder (§84, the passes cost in proportion to their input),
+the coalescing partition router (§85, halving the gathers changed nothing), and the
+spilled tee (§88, 20% faster on q18 and 63% slower on q11 because a cheap table pays
+the tee's two extra passes). Each has its matrix in `docs/verification.md` and its
+result line in the roadmap, so the next attempt starts from evidence instead of from
+the same idea.
+
+### Edges
+
+The budget path is 2-3x the unbudgeted path on joins and nobody has attributed the
+second half of it (§89). q19's 16 MB time is decided by the scan's batch size, which
+is chosen for the cache; the fix needs the budget inside the source reader (§85). The
+unbudgeted peak follows the shared decode and has no contract to meet (§86).
