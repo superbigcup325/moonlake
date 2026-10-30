@@ -1268,6 +1268,15 @@ measuring entry points still differ from the plain ones and that is the finding.
 columns, which would remove the cache and this contract with it, and the validity
 bytes in `estimate_batch_bytes`.
 
+**Result (§72).** Kept, and two of its predictions were wrong. The measuring entry
+points now build the plain run's catalog, and `--mem` names the cache: q18 at
+72,858,708 bytes (1.2% from the 72 MB predicted), q21 at 97,238,736, q11's three caches
+at 16.2 MB. But the cache is never alive at a point the census already declared (q11
+and q18 reach none, q21's is gone before the outer chain's first), so it needed a
+point of its own, at the fill; a root read only at existing points would have named
+nothing. And the census high-water does not agree with the plain peak (q18 138 MB
+against 231 MB), because only declared points are seen. The plain matrix did not move.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

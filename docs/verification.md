@@ -5246,3 +5246,63 @@ still run before the outer query exists, so a tee that indexes each chunk once a
 delivers it to every scan would avoid the cache entirely; that is the contract the
 roadmap left open. The sharing is by column name and deliberately wide, so a table
 with a same-named column in two scans decodes it once for both.
+
+## 72. The census names the shared scan cache (2026-10-30)
+
+The contract ("The census names the shared scan cache contract", roadmap) was written
+first and committed alone (`0011f97`). It owed two things: `--mem` had to name the cache
+§71 added, and, found while reading the call sites, `mem_report_with` and
+`explain_analyze_with` had been calling `run_parsed` without `share_repeated_scans`, so
+`--mem` and `--analyze` ran the unshared plan while the plain query ran the shared one.
+
+**The change.** Both measuring entry points now build the same per-query catalog as the
+plain ones. `MemCensus` keeps a list of live roots (a name and a function returning
+bytes now); `observe` reads each at the moment a point is kept and names the ones that
+hold anything, so a root appears exactly while it is alive and nothing a point records
+keeps it alive. `share_repeated_scans` registers one root per shared table
+(`shared scan cache (<table>)`) when a census is present. Plain runs build no census
+and are not touched.
+
+**What the contract got wrong.** It predicted the cache would be named at the existing
+points between q18's two scans. It is not: q11 and q18 reach no declared point at all
+(`--mem` printed nothing for either, before and after the entry-point fix), and q21's
+cache is alive only inside the decorrelated sides, which have no point either, and is
+gone before the outer chain's first point. A root that is only read at existing points
+would therefore never have shown anywhere. So the cache gets one declared point of its
+own, kept when it is filled (`shared scan cache filled (<table>)`), where the roots are
+read and the cache is by definition alive.
+
+**What `--mem` now says (SF1, no budget):**
+
+| query | point | named |
+| --- | --- | --- |
+| q18 | shared scan cache filled (lineitem) | 72,858,708 bytes |
+| q21 | shared scan cache filled (lineitem) | 97,238,736 bytes |
+| q11 | filled (partsupp) | partsupp 16,162,656, supplier 81,440 |
+| q11 | filled (nation) | partsupp 16,162,656, supplier 81,440, nation 665 |
+
+q18's 72.86 MB is 1.2% from the 72 MB the contract worked out (6,001,215 rows of
+`l_orderkey` and `l_quantity`), and against the 81.9 MB of peak §71 measured it leaves
+about 9 MB, the validity bytes the estimate does not count. q21's cache is 97.2 MB
+(four columns) and its outer-chain points are unchanged: step 1 398,348,765 bytes
+and step 2 391,367,971, identical to before, which is the census's version of why its
+peak did not move. The cache is absent from every point after its drop.
+
+**What the census still cannot do.** Its high-water is not the plain run's peak: q18
+reports 138 MB where the plain run peaks at 231 MB, because the census sees only the
+points it declares and q18's pulled shape declares none besides this one. The contract
+predicted the two would agree; they do not, and the unnamed remainder is the finding.
+
+**Nothing else moved.** Full plain matrix against `31233bb`, SF1, quiet host (load
+1.70), three rounds: no budget and 16 MB, every peak and wall time inside the spread,
+every answer byte-identical. A census of a query that names no table twice is
+unchanged.
+
+**Gates.** 33 goldens, grace/external equivalence checks, `harness/check_cli.sh`,
+`harness/spill_accept.sh`, 410 wasm-gc and 424 native tests; the new one checks the
+cache is named for a table named twice and absent for a table named once and under a
+budget.
+
+**What is left.** The validity bytes in `estimate_batch_bytes`, so every named root is a
+lower bound. The shapes that reach no declared point (q11, q18, the pulled queries) are
+still mostly invisible to `--mem`; giving them points is a separate contract.

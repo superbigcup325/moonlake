@@ -3568,3 +3568,36 @@ test "a table named twice answers the same with and without shared scans" {
     )
   }
 }
+
+///|
+test "the census names the shared scan cache while a table named twice is alive" {
+  let cat = grace_join_catalog()
+  let twice = "SELECT id FROM t1 WHERE EXISTS (SELECT * FROM t1 x WHERE x.k = t1.k AND x.id <> t1.id) ORDER BY id"
+  let report = @engine.mem_report_with(
+    twice,
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_true(report.contains("shared scan cache filled (t1)"))
+  assert_true(report.contains("shared scan cache (t1)"))
+  // a table named once has no cache, so no point names one
+  let once = "SELECT t1.id AS a, t2.id AS b FROM t1 JOIN t2 ON t1.k = t2.k ORDER BY a, b"
+  let plain = @engine.mem_report_with(
+    once,
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_false(plain.contains("shared scan cache"))
+  // a budgeted run shares nothing and so names nothing
+  let budgeted = @engine.mem_report_with(twice, cat, {
+    budget: 1073741824,
+    spill: Some(mem_store()),
+  }) catch {
+    e => abort("\{e}")
+  }
+  assert_false(budgeted.contains("shared scan cache"))
+}

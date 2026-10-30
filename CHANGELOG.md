@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` names the shared scan cache: a point is kept when it is filled, and the
+  report lists `shared scan cache (<table>)` with its bytes (q18 72.9 MB, q21 97.2 MB at
+  SF1). `--mem` and `--analyze` also now run the same shared plan as the plain query,
+  which they had stopped doing when sharing landed. Plain runs are unchanged.
+  Verification §72.
 - A table a query names more than once is decoded once. The decorrelated EXISTS and
   NOT EXISTS sides of q21 each scanned lineitem from the start, so q21 indexed the
   same 773 MB three times; a lazy table named at least twice now shares its decoded
