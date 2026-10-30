@@ -5866,7 +5866,10 @@ real publish returned `Server status: 200 OK`.
 - `moon view superbigcup325/moonlake` — `superbigcup325/moonlake@0.6.1`, published
   2026-10-30T17:18Z, 99 downloads at the time of reading;
 - tag `v0.6.1` is annotated and pushed, the GitHub release is up, and the release workflow
-  deploys the playground afterwards.
+  (which ran to completion) deployed the playground;
+- the deployed page passes `harness/playground_accept.cjs` against
+  `https://superbigcup325.github.io/moonlake/index.html`: **16/16**, and its first line is
+  the version gate reporting `0.6.1 (expected 0.6.1)`.
 
 **One documentation error fixed on the way.** The empty-grace-partition fix (§77) had been
 written into 0.5.1's `### Fixed` section — an already released one — instead of the
