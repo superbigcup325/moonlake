@@ -1603,6 +1603,51 @@ keys against four reproduced the abort at every one of 512/1024/2048/4096 bytes 
 With §76's estimate re-applied locally, q21 at 16 MB now completes and matches the
 unbudgeted answer, so the estimate is unblocked and owes only its own measurement.
 
+### The resident bytes contract (2026-10-30)
+
+Written before the change. Two rounds have now said the same thing from opposite sides:
+§76 added the validity array to the budget unit and the measurement said no (peaks rose,
+walls rose, and the bar rejected it), and §74, §75 and §76 all left "the validity bytes"
+as the largest component of q18's unnamed gap. The resolution is that the two numbers
+have different jobs and should stop sharing one.
+
+**The two jobs.** The budget unit is a *conservative* bound: it decides when a run
+flushes and how many partitions a join makes, and §76 measured that counting the validity
+byte in it costs more than it buys (0.5 to 2.8% of wall time, and two 16 MB peaks 10 MB
+higher, because a bigger total means more partitions and each partition carries fixed
+buffers). The census is a *report*: it says how many bytes a structure holds, and a report
+that omits a byte a cell is simply wrong. So the bound keeps the unit that measured
+better, and the report gets the truth.
+
+**What the change must do.** Add `resident_batch_bytes` — the existing estimate plus the
+validity array, one byte a cell per column — and use it wherever the census names a
+batch: the fold's `input batch`, the join's `probe input`, `build copy`, `join output`,
+`collapsed output`, `inner copy` and `probe copy`, the composed path's `build sides` and
+`build copies`, the pulled fold's `group result`, the `collected FROM tables` entry, and
+the shared scan cache's root. `estimate_batch_bytes` and `batches_bytes` keep their
+current definition and every decision keeps calling them: the budget, the partitioner,
+the sort's run sizing and the swap path's check.
+
+**What must not move.** Every answer and every golden; every plain run's peak and wall
+time, because nothing a decision reads changes; and `--mem`'s behaviour (the points and
+their labels stay, the numbers they name grow).
+
+**What is predicted.** q18's `shared scan cache (lineitem)` rises from 72,858,708 by the
+6,001,215 rows' validity bytes (12.0 MB over two columns), so its fold point rises from
+192,871,412 to about 204.9 MB — 85.7% of the 239.0 MB resident sample there, against 80.7%
+before. q21's step point rises by the validity of the structures it names. Smaller points
+move by their own few hundred bytes. No wall clock or peak moves at all.
+
+**How it is measured.** `--mem` on q18, q11, q21, q1 and q4 before and after; the plain
+matrix against `8f0b161` at no budget and 16 MB to show it is flat (the change is
+report-only); both unit suites, the CLI checks, the goldens and the spill acceptance
+script. A `grep` is part of the evidence: every remaining caller of `batches_bytes` and
+`estimate_batch_bytes` is a decision or a size check, not a report.
+
+**Left open on purpose.** The allocator's own overhead, which no report here counts and
+which keeps every total a lower bound; the eager folds and the swapped path's points; and
+the tee.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
