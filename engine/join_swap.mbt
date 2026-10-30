@@ -317,6 +317,7 @@ fn run_join_agg_swap(
   prefix : (Array[@types.DataBatch], Int64),
   opts : ExecOptions,
   stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
 ) -> SelectResult raise @types.SqlError {
   let bq = launch.bq
   let steps = bq.steps
@@ -347,7 +348,7 @@ fn run_join_agg_swap(
     joined: 0L,
   }
   let next = fn() -> @types.DataBatch? raise @types.SqlError { join.next() }
-  let folded = fold_pulled(next, launch, opts)
+  let folded = fold_pulled(next, launch, opts, census~)
   stats.push(("scan \{launch.schemas[0].table}", prefix.1))
   for i in 1..<last {
     let mut rows = 0L

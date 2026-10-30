@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` now sizes the group state while a fold grows: a `group state (fold)` point is
+  kept per input batch, naming the group slot table, the key arrays and the accumulator
+  arrays. At SF1 q18's largest point rises from 90.9 MB to 138.9 MB and becomes the
+  resident peak; the state itself is 66 MB. Plain runs are unchanged. Verification §74.
 - `--mem` now reports the pulled shapes: a single-table aggregate and a join folded into
   an aggregate keep a `pulled fold finished` point with their finished groups, a composed
   join keeps `composed join fold started` with its build sides, padded copies and key

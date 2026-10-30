@@ -334,13 +334,20 @@ fn fold_pulled(
   next : () -> @types.DataBatch? raise @types.SqlError,
   launch : Launch,
   opts : ExecOptions,
+  census~ : MemCensus? = None,
 ) -> PulledAgg raise @types.SqlError {
   let bq = launch.bq
   if opts.budget > 0 && bq.group_exprs.length() > 0 {
     aggregate_pulled(next, bq.group_exprs, bq.group_types, bq.aggs, opts)
   } else {
     {
-      batch: aggregate_seq({ next, }, bq.group_exprs, bq.group_types, bq.aggs),
+      batch: aggregate_seq(
+        { next, },
+        bq.group_exprs,
+        bq.group_types,
+        bq.aggs,
+        census~,
+      ),
       partitions: 0,
       peak_buffered: 0L,
       largest_spilled: 0L,
@@ -417,7 +424,7 @@ fn run_agg_pull(
   let bq = launch.bq
   let pull = input_pull(bq, launch.plan, entry)
   let next = fn() -> @types.DataBatch? raise @types.SqlError { pull.next() }
-  let folded = fold_pulled(next, launch, opts)
+  let folded = fold_pulled(next, launch, opts, census~)
   pulled_fold_point(census, [], folded)
   stats.push(("scan \{launch.schemas[0].table}", pull.scanned))
   finish_agg_pull(folded, launch, stats)
@@ -624,7 +631,7 @@ fn run_join_agg_pull(
     joined: 0L,
   }
   let next = fn() -> @types.DataBatch? raise @types.SqlError { join.next() }
-  let folded = fold_pulled(next, launch, opts)
+  let folded = fold_pulled(next, launch, opts, census~)
   pulled_fold_point(census, composed_entries(scans, builds, cursors), folded)
   stats.push(("scan \{launch.schemas[0].table}", probe.scanned))
   for i in 1..<(scans.length() + 1) {

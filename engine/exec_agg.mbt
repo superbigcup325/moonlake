@@ -571,9 +571,10 @@ fn aggregate_seq(
   group_exprs : Array[PhysExpr],
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
+  census~ : MemCensus? = None,
 ) -> @types.DataBatch raise @types.SqlError {
   if col_agg_plan(group_types, aggs) is Some(kinds) {
-    return aggregate_cols(seq, group_exprs, group_types, kinds, aggs)
+    return aggregate_cols(seq, group_exprs, group_types, kinds, aggs, census~)
   }
   let g = group_exprs.length()
   let m = aggs.length()
@@ -825,6 +826,14 @@ fn aggregate_seq(
         }
       }
     }
+    match census {
+      Some(c) =>
+        c.observe(
+          "group state (fold)",
+          boxed_state_entries(group_keys, acc_rows, batch),
+        )
+      None => ()
+    }
   }
   if g == 0 && group_keys.length() == 0 {
     // a no-GROUP-BY aggregate over empty input still yields one row
@@ -975,6 +984,7 @@ fn aggregate_cols(
   group_types : Array[@types.DataType],
   kinds : Array[ColAggKind],
   aggs : Array[AggSpec],
+  census~ : MemCensus? = None,
 ) -> @types.DataBatch raise @types.SqlError {
   let m = aggs.length()
   let nk = group_exprs.length()
@@ -1127,6 +1137,14 @@ fn aggregate_cols(
         }
       }
     }
+    match census {
+      Some(c) =>
+        c.observe(
+          "group state (fold)",
+          col_state_entries(ka, kb, kf, cols, batch),
+        )
+      None => ()
+    }
   }
   let n = ka.length()
   let columns : Array[@types.ColumnVector] = []
@@ -1206,4 +1224,65 @@ fn aggregate_cols(
     }
   }
   @types.DataBatch::new(columns, n)
+}
+
+///|
+/// What a column-wise fold holds at the end of one batch: the group slot table, the
+/// key arrays, and every aggregate's arrays. The slot table is an estimate at the
+/// join census's twenty-four bytes an entry; the arrays are counted by element size.
+/// The bytes are computed here and handed on as numbers, so a census point never
+/// holds the fold (contract: docs/ROADMAP.md, "The group state is sized while a fold
+/// grows").
+fn col_state_entries(
+  ka : Array[Int64],
+  kb : Array[Int64],
+  kf : Array[Int32],
+  cols : Array[ColAgg],
+  batch : @types.DataBatch,
+) -> Array[(String, Int64)] {
+  let groups = ka.length().to_int64()
+  let entries : Array[(String, Int64)] = []
+  entries.push(("key slots (estimate)", 24L * groups))
+  entries.push(
+    (
+      "group keys",
+      8L * ka.length().to_int64() +
+      8L * kb.length().to_int64() +
+      4L * kf.length().to_int64(),
+    ),
+  )
+  let mut accs = 0L
+  for c in cols {
+    accs = accs +
+      8L * c.ints.length().to_int64() +
+      8L * c.dbls.length().to_int64() +
+      4L * c.flags.length().to_int64()
+  }
+  entries.push(("accumulators", accs))
+  entries.push(
+    ("input batch (estimate)", estimate_batch_bytes(batch).to_int64()),
+  )
+  entries
+}
+
+///|
+/// The same for the general fold, whose state is one key array and one accumulator
+/// array per group: both are estimates, because what an array of scalars or of
+/// accumulators costs per element is the runtime's business and not measured here.
+fn boxed_state_entries(
+  group_keys : Array[Array[@types.Scalar]],
+  acc_rows : Array[Array[Acc]],
+  batch : @types.DataBatch,
+) -> Array[(String, Int64)] {
+  let groups = group_keys.length().to_int64()
+  let g = if group_keys.length() > 0 { group_keys[0].length() } else { 0 }
+  let m = if acc_rows.length() > 0 { acc_rows[0].length() } else { 0 }
+  let entries : Array[(String, Int64)] = []
+  entries.push(("key slots (estimate)", 24L * groups))
+  entries.push(("group keys (estimate)", groups * (24L + 16L * g.to_int64())))
+  entries.push(("accumulators (estimate)", groups * (24L + 16L * m.to_int64())))
+  entries.push(
+    ("input batch (estimate)", estimate_batch_bytes(batch).to_int64()),
+  )
+  entries
 }
