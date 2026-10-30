@@ -1277,6 +1277,82 @@ point of its own, at the fill; a root read only at existing points would have na
 nothing. And the census high-water does not agree with the plain peak (q18 138 MB
 against 231 MB), because only declared points are seen. The plain matrix did not move.
 
+### The pulled shapes declare census points contract (2026-10-30)
+
+Written before the change, because it decides which structures a pulled shape is
+allowed to name, how a root that borrows an owner's structure is kept from keeping it
+alive, and what this round is allowed to measure. It is the contract §72 said was
+owed: q11 and q18 reach no declared point at all, so `--mem` prints nothing for them,
+and the census high-water on the one point q18 does have (138 MB) is far from the
+plain run's peak (231 MB).
+
+**The problem it answers.** The census points live in the eager executor
+(`exec_joins`, the semi/anti inner side, the collected FROM tables). A shape the
+router sends elsewhere never reaches them: `run_agg_pull` (a single-table aggregate
+fed from the scan), `run_join_agg_pull` (a join chain folded into an aggregate, which
+is q18 and q11), and the runs the binder makes at bind time for a non-correlated
+scalar or IN subquery (`run_parsed` with no census, so q18's `lineitem` group-by and
+q11's threshold subquery are invisible). What the composed shape holds is known from
+the code: every build side whole (`scans`), a padded concatenated copy of each
+(`builds`), one key index per step inside its `JoinCursor`, one probe batch in
+flight, and the group state of `aggregate_seq`. The census names none of it.
+
+**What the change must do.** Three declared points, nothing else:
+(1) `composed join fold started`, kept once the build sides, their copies and the
+cursors exist and before the first probe batch is pulled, naming `build sides`,
+`build copies` and one `index arrays (step N)` per step; (2) `pulled fold finished`,
+kept when the fold returns, naming the structures still alive (the build sides and
+indexes of a composed shape) and `group result`, the finished groups; (3) the
+bind-time subquery runs receive the census, so a point inside them is kept like any
+other and carries its own label. A single-table pulled aggregate keeps only (2).
+The group state *during* the fold is not sized by anything the executor can read
+without a new accessor, so `group result` is a lower bound for it and the point says
+so by name; adding that accessor is out of scope.
+
+**How a root borrows a structure without keeping it alive.** A cursor's index is
+read through a root registered on the census (the live-roots mechanism of §72). A
+closure that captures a cursor keeps its index alive for as long as the census does,
+which is the one thing a point may never do. So every root registered by a pulled
+shape is removed when its owner finishes (`MemCensus::remove_root`), at the end of
+the fold, and the point (2) reads the roots before they are removed. A plain run
+builds no census, registers no root and calls none of this.
+
+**What it may not claim.** The named bytes are `estimate_batch_bytes` plus the index
+bytes the join census already reports, so they are lower bounds, as at every other
+point (the validity bytes stay open from §70). The census high-water is a sample
+taken at declared points; it is not a profile of the process.
+
+**What must not move.** Every answer, byte for byte, with and without a census. A
+census of any query that reaches the existing points: its points and entries are
+identical (q21's six labels and their bytes, to the byte, plus the shared-cache point
+of §72). Plain runs: nothing here executes without a census, so a plain run is
+unchanged by construction, and the evidence for that is the goldens and the unit
+tests, not a clock.
+
+**What is predicted.** q18's composed fold names its lineitem build side (the 6M-row
+`l_orderkey` and `l_quantity` columns, about 72.9 MB, the same arrays the shared
+cache held and still shared with it), a concatenated copy of the same size, and a
+key index of tens of MB, so the point sits well above 150 MB and the census
+high-water of q18 comes within 25% of the plain run's 231 MB peak. q11's composed
+fold names its few-MB build sides and no more. The bind-time subqueries show up as
+points of their own. A single-table pulled aggregate such as q1 names only its group
+result, a few KB, which is the honest answer for a shape that holds one batch and its
+state.
+
+**How it is measured.** `--mem` once on q18, q11, q1 and q21 before and after, read
+as named bytes (they are deterministic; a resident sample printed beside them is not
+read as a claim), plus unit tests that a census over a composed join-aggregate has the
+two points with the roots named and that every root is gone after the fold, and the
+goldens, the CLI and spill checks, and both unit suites. No benchmark harness and no
+wall-time comparison is run for this change: the host's timing is not stable enough
+to read, and nothing here is timed. It counts as success if q18's census high-water is
+within 25% of its plain peak, q21's census is unchanged to the byte, and no root
+outlives its fold. If q18's high-water stays far from 231 MB, the unnamed remainder is
+the finding, and the next step is the group state accessor rather than another point.
+
+**Left open on purpose.** Sizing the group state while it grows, the validity bytes,
+and a tee that removes the shared cache and its root altogether.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
