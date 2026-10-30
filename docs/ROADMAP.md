@@ -1758,6 +1758,51 @@ because the next step's partitioner then holds a hundred small batches at once
 `collapse_handed` stays; the numbers are recorded in §80. A collapse that writes into one
 destination as partitions finish remains open.
 
+### The one-sided spill contract (2026-10-30)
+
+Written before the change, after measuring what the budgeted path actually costs. SF1 with
+`--memory 16M`: q21 takes 17.96 s against 2.9 s with no budget, and the same query spilling
+to `/dev/shm` takes 17.96 s — the disk is not the cost. The cost is the spill's own CPU:
+every partitioned side is encoded to a run format and decoded back, and the symmetric grace
+path does that to *both* sides of every step that does not fit.
+
+Three facts from reading the code, which shape the contract:
+
+- `join_step` already streams the probe side (`next_left` hands `acc`'s batches to the
+  cursor one at a time) and only materializes the build side.
+- `concat_batches` already returns its single input unchanged, so a one-batch partition is
+  not re-copied.
+- q21's first step is the shape that matters: probe `supplier` at 324 KB (fits easily),
+  build `lineitem` at 773 MB (does not). The grace path partitions both — it encodes and
+  decodes 773 MB of build side, and 324 KB of probe side it could have kept.
+
+**What the change must do.** Partition the side that needs it, and only that side. When the
+build side fits the budget and the probe side does not, the step already works: stream the
+probe, hold the build. When the probe fits and the build does not, partition the *build*
+side into `ceil(build / budget)` parts and probe each part with the whole in-memory probe
+side — `P` cheap passes over small rows instead of encoding and decoding the probe. When
+neither fits, the symmetric grace path stays exactly as it is.
+
+**What must not move.** Every answer, every golden and every peak: the partitioner's output
+is the same rows in the same order (a partition is a key range, and a probe row can only
+match rows in its own partition), and the probe side being small is what makes the repeated
+passes safe to bound. The steps where both sides exceed the budget are untouched, and the
+contract's measurement must show they are.
+
+**What is predicted.** q21 at 16 MB saves the probe-side encode/decode, which is small, so
+its wall time should move by only a few percent — the honest expectation is that this
+contract buys little on q21 and more wherever a step's probe side is small and its build
+side is not. If the measurement shows no case improving by more than the spread, the change
+is rejected on the same terms §80 was.
+
+**How it is measured.** The plain matrix against `04738aa` at no budget and 16 MB, three
+rounds, quiet host, plus 4M and 64M for the middle band; `--mem` on the cases that move;
+both unit suites, the goldens, the CLI checks and the spill acceptance script.
+
+**Left open on purpose.** Encoding a partition as batches rather than bytes when the store
+is in memory (the CPU cost measured here is the encoding, not the disk), and choosing the
+index side at plan time instead of by arrival order.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
