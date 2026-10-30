@@ -1021,7 +1021,7 @@ depend on it.
 **The knob.** `SCAN_BATCH_ROWS` is public and was 4096 when the reader was
 written. The sweep says the batch size is a cache question, not a call-overhead
 one: 16384 rows a batch cost 19-35% on every query measured, and 1024 against
-4096 is worth 14-25% the other way. The setting is 1024.
+4096 is worth 14-25% the other way without a budget, but under one it costs 28-101 MB of peak (§68). The setting is 2048.
 
 **How it is measured.** `harness/bench_join_chain.py --budgets none --rounds 3`
 with control and candidate interleaved; the wall-time column is read as a ratio
@@ -1037,6 +1037,13 @@ was 3.13, so the absolute times are inflated about 2.7x and only the ratios are
 read. The sweep also settled the neighbouring question: 16384 rows a batch is
 recorded above as a 19-35% loss, so that nobody adopts it later as an obvious win
 — the batch size is a cache question and the curve turns up hard.
+
+**Correction (§68).** The first quiet-host matrix showed what the loaded one had
+hidden: with 1024-row batches the 16 MB budget path rose on q9 by 101 MB, q8 76,
+q5 66 and q3 28 (wall +12% on q8/q9), because the partitioner slices every input
+batch into up to 256 pieces and four times as many batches means four times as many
+pieces whose overhead `estimate_batch_bytes` does not count. 2048 gives back most of
+it (q9 765 -> 699 MB) and keeps the no-budget win to within about 2%.
 
 What this leaves is a per-row width check the scan could count as it goes, a second offset
 per cell that is derivable when a chunk has no CRLF, and the three separate

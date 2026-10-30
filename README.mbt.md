@@ -131,7 +131,7 @@ moon add superbigcup325/moonlake
 > one batch (q21 at SF1 peaks 58 MB lower, verification §65), and a step lets go
 > of the tables it has finished with instead of holding them to the end (another
 > 60 MB, §66). Also on `main`: the scan reads a field's end a word at a time and
-> a batch is 1024 rows rather than 4096, which is worth about 15% of wall time on
+> a batch is 2048 rows rather than 4096, which is worth about 10% of wall time on
 > the TPC-H queries at SF1 (§67). The next release carries all of it and no
 > version is claimed for it yet.
 
