@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A step whose build side fits the budget is no longer partitioned: the build is held as
+  the hash side and the probe streams past it a batch at a time. At SF1 q7 goes 6.34 s →
+  2.58 s (−59%) at 64 MB and 7.11 s → 4.33 s at 16 MB, q21 9.17 s → 6.05 s at 64 MB and
+  12.65 s → 9.00 s at 16 MB, with q21's 64 MB peak down 10%. Answers are unchanged;
+  unordered output may arrive in probe order instead of partition order. Verification §81.
 - `--mem` now declares a point for each partition a grace join replays, naming the
   replayed left and build partitions and the output accumulated so far. Under a 16 MB
   budget q21's census goes from one point to 106 and names its real peak: 207.9 MB of

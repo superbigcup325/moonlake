@@ -3680,14 +3680,15 @@ test "a composed join fold names its build sides and indexes at two points" {
 }
 
 ///|
-test "a budgeted join names the partition it replays" {
-  // A partitioned join allocates where nothing used to observe: the accumulated
-  // output plus the partition being replayed. Two thousand distinct keys against
-  // four under a small budget forces the grace path (§79).
+test "a budget only the build side fits in still streams the probe" {
+  // §81: when the build side fits the budget nothing is partitioned — the probe
+  // streams past the whole build. Row order is then the probe side's, so a
+  // budgeted run matches the unbudgeted one row for row on a query with no
+  // ORDER BY, which is what this asserts.
   let sb = StringBuilder()
   sb.write_string("k,v\n")
   for i in 0..<2000 {
-    sb.write_string("\{i},\{i * 7 % 1000}\n")
+    sb.write_string("\{i},\{i * 3 % 97}\n")
   }
   let cat = @catalog.Catalog::new()
   cat.register(
@@ -3700,7 +3701,41 @@ test "a budgeted join names the partition it replays" {
       e => abort("\{e}")
     },
   )
-  let sql = "SELECT k FROM t WHERE k IN (SELECT k FROM u) ORDER BY k"
+  let sql = "SELECT t.k AS k, t.v AS v FROM t JOIN u ON t.k = u.k"
+  let free = run(sql, cat)
+  let budgeted = run_opts(sql, cat, { budget: 2048, spill: Some(mem_store()), })
+  assert_eq(free.row_count(), 4)
+  assert_same_result(free, budgeted)
+}
+
+///|
+test "a budgeted join names the partition it replays" {
+  // An inner join whose build side alone outgrows the budget: that is the shape
+  // that still partitions, since §81 keeps a fitting build side in memory. Two
+  // thousand probe rows against three thousand build rows under a 2048-byte
+  // budget forces the grace path (§79).
+  let sb = StringBuilder()
+  sb.write_string("k,v\n")
+  for i in 0..<2000 {
+    sb.write_string("\{i},\{i * 7 % 1000}\n")
+  }
+  let ub = StringBuilder()
+  ub.write_string("k,w\n")
+  for i in 0..<3000 {
+    ub.write_string("\{i % 1500},\{i}\n")
+  }
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string(sb.to_string(), "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  cat.register(
+    @csv.scan_string(ub.to_string(), "u") catch {
+      e => abort("\{e}")
+    },
+  )
+  let sql = "SELECT t.k AS k, u.w AS w FROM t JOIN u ON t.k = u.k ORDER BY k"
   let report = @engine.mem_report_with(sql, cat, {
     budget: 2048,
     spill: Some(mem_store()),

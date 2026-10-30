@@ -142,6 +142,20 @@ fn join_or_spill(
           "cross join input exceeds the memory budget (\{total} bytes > \{opts.budget}); a cross join has no keys to partition on",
         )
       }
+      // The build side fits the budget: nothing has to be partitioned. The
+      // step's hash side is the whole build, its probe side streams past it a
+      // batch at a time, and the working set is the build plus its index plus
+      // the output — the same set the `total <= budget` case above already
+      // allows, minus the probe side (§81, measurement in docs/verification.md).
+      // A RIGHT step builds from the accumulated side instead, so it is not
+      // this check's shape.
+      let build_fits = match step.kind {
+        Right => false
+        _ => batches_bytes(right) * 2 <= opts.budget
+      }
+      if build_fits {
+        return join_step(acc, right, step, census~, extra~, tag~, collapse=true)
+      }
       collapse_handed(
         grace_join(acc, right, step, opts.budget, store, stats, census~),
         step,

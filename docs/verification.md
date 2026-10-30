@@ -5727,3 +5727,61 @@ and no code from this round is in the tree.
 **What is left.** The one version of this that could still pay — a collapse that writes
 partitions into one destination as they finish, so the output never exists twice — which the
 contract left open on purpose, and the fold's own eager copy.
+
+## 81. A step whose build side fits the budget is not partitioned at all (2026-10-30)
+
+The contract ("The one-sided spill contract", roadmap) was written first and committed
+alone (`db94fee`). It said the budgeted path partitions both sides of every step that does
+not fit, including a probe side it could have kept, and pointed at `join_step` already
+streaming its probe one batch at a time. What it under-specified was the cheap half: a step
+whose *build* side fits needs no partitioning at all.
+
+**The change.** In `join_or_spill`, after the `total <= opts.budget` case and before the
+grace path: if the build side alone fits the budget, join it in memory — the build is the
+hash side, the probe streams past it, and the working set is the build plus its index plus
+the output, which is a subset of what the `total <= budget` case next door already allows.
+A RIGHT step is excluded: it builds from the accumulated side, so the check is not its
+shape. The rule is `build * 2 <= budget`, not `build <= budget`, because the index is
+roughly the build again: at `build <= budget` q18's 16 MB peak rose 20.3% (65.4 → 78.7 MB),
+and at half that it rises 2.6% while every win below survives. That is the measured reason
+for the factor of two.
+
+**What it measured** (SF1, three rounds, matrix against `db94fee`, quiet host, worst
+round-to-round spread 13.3%):
+
+| case | peak | wall |
+| --- | --- | --- |
+| q7 64 MB | 451.7 → 437.1 MB (−3.2%) | 6.36 → 2.60 s (**−59.1%**) |
+| q7 16 MB | 443.2 → 437.4 MB (−1.3%) | 7.18 → 4.33 s (**−39.7%**) |
+| q21 64 MB | 608.9 → 546.9 MB (−10.2%) | 8.31 → 5.31 s (**−36.1%**) |
+| q21 16 MB | 598.3 → 562.9 MB (−5.9%) | 12.50 → 8.87 s (**−29.0%**) |
+| q10 16 MB | 195.4 → 189.4 MB (−3.1%) | 4.11 → 3.54 s (−13.9%) |
+| q9 16 MB | 619.2 → 619.0 MB (flat) | 7.62 → 7.06 s (−7.3%) |
+| q18 16 MB | 75.4 → 75.5 MB (+0.1%) | 4.09 → 4.06 s (flat) |
+
+Every no-budget case is unchanged (they never take this branch), every other budgeted case
+stayed inside the spread, and no peak rose. The `build * 2 <= budget` rule is what keeps
+q18 there: at `build <= budget` its 16 MB peak rose 20.3% in the probe run before the rule
+was tightened.
+
+**Four answers changed their row order, none their content.** q5, q7 and q9 at 16 MB and q7
+at 64 MB now emit rows in probe order where partitioning used to emit them partition-major.
+Checked as multisets with 9-significant-digit canonicalisation: q5 6 rows, q7 5 rows, q9
+176 rows, equal to both the control's budgeted answer and the unbudgeted answer in every
+case. The goldens, which carry their own ORDER BY, all pass. This is the harness's `same`
+flag doing its job — a changed order is visible — and the reason the check above exists.
+
+**One test moved for the right reason.** "a budgeted join names the partition it replays"
+(§79) used a four-row inner side, which now fits the budget and never partitions; it takes
+an inner join with a three-thousand-row build side instead, which still does. A new test
+pins the shortcut itself: a budgeted run whose build side fits matches the unbudgeted run
+row for row on a query with no ORDER BY, which is only true while the row order is the
+probe side's.
+
+**Gates.** 416 wasm-gc and 430 native tests, 33 goldens with their equivalence checks,
+`harness/check_cli.sh`, `harness/spill_accept.sh`, and the three-budget matrix above.
+
+**What is left.** The other half of the contract — partitioning the build side and probing
+it with a fitting probe side when the *build* is what overflows — and choosing the index
+side at plan time, which is what q21's first step still pays for: 9.00 s against 2.98 s with
+no budget, because its build is `lineitem` at 773 MB either way.
