@@ -5497,3 +5497,54 @@ the constants are report-only, as the `grep` said.
 **What is left.** The validity bytes in `estimate_batch_bytes` (§70, 12.0 MB of q18's
 remaining gap), a per-size rather than per-entry map estimate if anyone needs the precision,
 the eager folds no census reaches, and the swapped path's own points.
+
+## 76. The validity bytes were counted, measured, and reverted (2026-10-30)
+
+The contract ("The validity bytes count contract", roadmap) was written first and
+committed alone (`41eabb3`), and it allowed for this outcome: if a 16 MB case regressed
+past the matrix's spread, the change would be reverted and the number that made the
+tighter bound not worth it would be recorded. That is what happened, and worse than
+predicted: one case aborted.
+
+**The change, as implemented.** One line in `estimate_batch_bytes`: `total += n` before
+the dtype's cell count, so an Int32 column counts 5 bytes a cell instead of 4, an Int64 9
+instead of 8, a Bool 2 instead of 1. Both unit suites passed (413 wasm-gc, 427 native).
+
+**What the matrix said** (SF1, against `8e32215`, quiet host load 1.64, three rounds):
+
+| case | peak (MB) | wall (s) |
+| --- | --- | --- |
+| q5 16M | 415.3 → 415.3 | 4.10 → 4.19 |
+| q7 16M | 446.0 → 444.8 | 6.60 → 6.63 |
+| q8 16M | 471.3 → 481.5 | 4.27 → 4.35 |
+| q9 16M | 619.2 → 629.2 | 6.89 → 7.08 |
+| q10 16M | 195.5 → 173.6 | 3.71 → 3.75 |
+| q21 16M | — | aborted |
+
+The prediction was that peaks would fall slightly; two of them rose by 10 MB, because a
+bigger estimate means more partitions and each partition keeps its own buffers. Wall
+times rose 0.5 to 2.8% on the spilled cases. And q21 at 16 MB died with SIGABRT.
+
+**The crash, and why it matters more than the timing.** Under the debug build the abort
+is a `PanicError` at `Array::at[ColumnVector]` in `join_semi` (`exec_join.mbt:1363`),
+reached from `join_step` inside `join_partitions`. A partition that ends up with no rows
+on the inner side reaches `concat_batches([], [])`, which builds a batch with no columns,
+and `eval_vec` then indexes a column that is not there. The crash is latent, not caused by
+this change: a larger partition count only made an empty partition more likely, and any
+query whose hash partitioning leaves one empty would have hit it. It is now the next
+contract's job, and the estimate stays as it was until it is fixed.
+
+**The other differing answers are not regressions.** q5, q7, q9 and q10 at 16 MB print
+last-digit differences (55502041.16969999 against a control's 55502041.1697, for instance)
+because a different partition count changes the order of a `sum` of doubles. The goldens
+already accept that: `harness/compare.py` compares floats at 1e-9 relative tolerance, and
+these differ at about 1e-16. The bench harness's `same` flag is an exact string comparison
+across binaries, so it reports False and the report above should be read that way.
+
+**What landed.** The contract, and this record. `estimate_batch_bytes` is back to its
+previous form; no code from this round is in the tree.
+
+**What is left.** Fix the empty-partition crash under its own contract, with a test that a
+semi join over an empty inner partition returns the left rows (and its anti twin), then
+re-attempt the validity bytes and re-measure; and the eager folds and the tee that §75
+left open.

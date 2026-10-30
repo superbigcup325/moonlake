@@ -1540,6 +1540,14 @@ case regresses past the spread and q18's named bytes rise by the arithmetic 12.0
 **Left open on purpose.** The eager folds and the swapped path, which still declare no
 census point, and the tee that would remove the shared decode cache altogether.
 
+**Result (§76).** Rejected, and the rejection found a latent crash. Counting the validity
+byte cost 0.5 to 2.8% of wall time on the spilled cases and *raised* two peaks by 10 MB
+(more partitions, each with its own buffers), contradicting the prediction; and q21 at
+16 MB aborted with a `PanicError` inside `join_semi`, because a partition with an empty
+inner side reaches `concat_batches([], [])`, which has no columns to index. That crash is
+latent and predates the change — a larger partition count only made it likely — so the
+estimate is back as it was and the crash is the next contract, before this one is retried.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
