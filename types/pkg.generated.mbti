@@ -99,6 +99,7 @@ pub fn ColumnVector::get(Self, Int32) -> Scalar
 pub fn ColumnVector::len(Self) -> Int32
 pub fn ColumnVector::make(DataType, Int32) -> Self
 pub fn ColumnVector::set(Self, Int32, Scalar) -> Unit
+pub fn ColumnVector::str_cell_bytes(Self) -> Int32
 
 pub struct DataBatch {
   columns : Array[ColumnVector]

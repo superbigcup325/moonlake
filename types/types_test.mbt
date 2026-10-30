@@ -376,3 +376,22 @@ test "checked integer arithmetic refuses to wrap; arith still wraps" {
     2L,
   )
 }
+
+///|
+test "str_cell_bytes counts what the budget unit counts" {
+  // a valid cell costs its four proxy bytes plus the characters, a NULL one byte
+  let valid = FixedArray::make(3, true)
+  let nulls = FixedArray::make(3, true)
+  nulls[1] = false
+  let col = @types.StrV(FixedArray::from_array(["ab", "", "ccc"]), valid)
+  assert_eq(col.str_cell_bytes(), 4 + 2 + (4 + 0) + (4 + 3)) // 17
+  let with_null = @types.StrV(
+    FixedArray::from_array(["ab", "zz", "ccc"]),
+    nulls,
+  )
+  assert_eq(with_null.str_cell_bytes(), 6 + 1 + 7) // the NULL slot costs one byte
+  assert_eq(
+    @types.I32(FixedArray::make(2, 1), FixedArray::make(2, true)).str_cell_bytes(),
+    0,
+  )
+}
