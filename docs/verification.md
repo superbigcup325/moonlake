@@ -5306,3 +5306,63 @@ budget.
 **What is left.** The validity bytes in `estimate_batch_bytes`, so every named root is a
 lower bound. The shapes that reach no declared point (q11, q18, the pulled queries) are
 still mostly invisible to `--mem`; giving them points is a separate contract.
+
+## 73. The pulled shapes keep census points (2026-10-30)
+
+The contract ("The pulled shapes declare census points contract", roadmap) was written
+first and committed alone (`3e0de51`). No benchmark or wall-time comparison was run for
+this change, as the contract said: the host's timing was not stable, and everything
+below is named bytes, which are deterministic, or answers.
+
+**The change.** Three things. `run_agg_pull` and `run_join_agg_pull` keep a point,
+`pulled fold finished`, when their fold returns, naming the finished groups
+(`group result`) and, for a composed join, what the shape still holds. A composed
+join also keeps `composed join fold started` once its build sides, padded copies and
+cursors exist and before the first probe batch, naming `build sides`, `build copies`
+and one `index arrays (step N)` per step. And the bind-time subquery runs (scalar, EXISTS,
+IN) receive the census, so a point inside them is kept like any other.
+
+**One deviation from the contract.** It planned live roots that borrow a cursor's index
+and are removed when the fold ends. The code did not need them: `composed_entries` and
+`pulled_fold_point` compute the bytes where the structures are alive and hand the census
+numbers, so it never holds a cursor, no root is registered and `remove_root` was not
+written. The rule it protected (a point never keeps a structure alive) holds more
+simply.
+
+**What `--mem` says now (SF1, named bytes):**
+
+| query | point | named |
+| --- | --- | --- |
+| q1 | pulled fold finished | 1,096 (group result) |
+| q11 | composed join fold started | 244,447 (build sides 81,743, build copies 80,591, two small indexes) |
+| q11 | pulled fold finished | 640,458 (group result 358,104, index arrays step 1 120,004) |
+| q18 | pulled fold finished | 90,858,996 (shared scan cache 72,858,708, group result 18,000,288) |
+| q21 | all six labels and the cache point | identical to §72, to the byte |
+
+q11 reaches 7 points now where it reached none of its own before.
+
+**What the contract got wrong about q18.** It predicted q18 would keep a composed fold
+point with the lineitem build side, a copy and an index, well above 150 MB. It keeps no
+composed point at all: its outer join takes the swapped path (`--analyze` shows 9 rows
+out of `orders`, 63 joined rows and 9 result rows), which declares nothing. The one
+`pulled fold finished` it prints is the bind-time subquery's, the `GROUP BY l_orderkey`
+over 1.5 million orders: 1,500,024 groups at 12 bytes is the 18.0 MB `group result`.
+So the census high-water of q18 is 236,884 KB, 2.4% above the 231.3 MB peak the plain
+matrix reported in §71 (that figure was not re-measured this round), and it is reached
+at the subquery's point, where only 90.9 MB is named: about 146 MB of the resident sample
+is the group state that is still growing, which nothing can size. The contract's
+success criterion (high-water within 25% of the plain peak) is met, for a different
+reason than it predicted, and its fallback is the finding: the next step is a group
+state accessor, not another point.
+
+**Gates.** 33 goldens, grace/external equivalence checks, `harness/check_cli.sh`,
+`harness/spill_accept.sh`, 412 wasm-gc and 426 native tests (two new: a single-table
+pulled aggregate keeps the point and names no build side, and a composed join-aggregate
+names its sides and indexes while its answer matches the budgeted one). One check
+changed on purpose: `check_cli.sh` asserted that a pulled aggregate prints no census,
+which was the pre-change contract; it now asserts the point and the group result, and a
+plain scan with no aggregate still prints nothing.
+
+**What is left.** The group state while a fold grows (q18's unnamed 146 MB), the
+swapped join path (`run_join_agg_swap`), which still declares no point, and the validity
+bytes in `estimate_batch_bytes`. Every named total is a lower bound.

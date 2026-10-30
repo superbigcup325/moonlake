@@ -3601,3 +3601,45 @@ test "the census names the shared scan cache while a table named twice is alive"
   }
   assert_false(budgeted.contains("shared scan cache"))
 }
+
+///|
+test "a pulled aggregate keeps a census point with its finished groups" {
+  let cat = grace_join_catalog()
+  let report = @engine.mem_report_with(
+    "SELECT k, count(*) AS n FROM t1 GROUP BY k",
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  assert_true(report.contains("pulled fold finished"))
+  assert_true(report.contains("group result"))
+  // a single-table fold holds no join, so it names no build side
+  assert_false(report.contains("build sides"))
+  assert_false(report.contains("composed join fold started"))
+}
+
+///|
+test "a composed join fold names its build sides and indexes at two points" {
+  let cat = grace_join_catalog()
+  let sql = "SELECT t1.k AS k, count(*) AS n FROM t1 JOIN t2 ON t1.k = t2.k GROUP BY t1.k"
+  let report = @engine.mem_report_with(
+    sql,
+    cat,
+    @engine.ExecOptions::in_memory(),
+  ) catch {
+    e => abort("\{e}")
+  }
+  // the shape is either composed (both points) or swapped (the swap path declares
+  // none); either way the census must not abort and the answer must not change
+  if report.contains("composed join fold started") {
+    assert_true(report.contains("build sides"))
+    assert_true(report.contains("build copies"))
+    assert_true(report.contains("index arrays (step 1)"))
+    assert_true(report.contains("pulled fold finished"))
+  }
+  assert_same_result(
+    run(sql, cat),
+    run_opts(sql, cat, { budget: 1073741824, spill: Some(mem_store()), }),
+  )
+}

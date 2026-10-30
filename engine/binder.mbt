@@ -185,6 +185,7 @@ priv struct Conjunct {
 priv struct SubqueryRunner {
   catalog : @catalog.Catalog
   opts : ExecOptions
+  census : MemCensus? // a profiling run sees the subquery runs too
 }
 
 ///|
@@ -192,7 +193,7 @@ fn SubqueryRunner::run_scalar(
   self : SubqueryRunner,
   sel : @sql.Select,
 ) -> (@types.Scalar, @types.DataType) raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog, [], self.opts)
+  let r = run_parsed(sel, self.catalog, [], self.opts, census=self.census)
   if r.names().length() != 1 {
     raise @types.SqlError::Bind(
       "scalar subquery must return exactly one column",
@@ -219,7 +220,7 @@ fn SubqueryRunner::run_exists(
   self : SubqueryRunner,
   sel : @sql.Select,
 ) -> Bool raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog, [], self.opts)
+  let r = run_parsed(sel, self.catalog, [], self.opts, census=self.census)
   r.row_count() > 0
 }
 
@@ -228,7 +229,7 @@ fn SubqueryRunner::run_key_set(
   self : SubqueryRunner,
   sel : @sql.Select,
 ) -> (Map[String, Bool], Bool, @types.DataType) raise @types.SqlError {
-  let r = run_parsed(sel, self.catalog, [], self.opts)
+  let r = run_parsed(sel, self.catalog, [], self.opts, census=self.census)
   if r.names().length() != 1 {
     raise @types.SqlError::Bind("IN subquery must return exactly one column")
   }
