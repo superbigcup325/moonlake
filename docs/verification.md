@@ -6050,3 +6050,33 @@ trigger is an unbudgeted peak contract, which does not exist yet.
 
 Recorded here rather than fixed: the wall time is what the query asked for, the memory
 is visible in the census, and the budget path is unaffected by more than 10%.
+## 87. A budget turns the shared decode off, and what that costs (2026-10-31)
+
+§86 recorded the cache's memory. This section records its price on the other side:
+`share_repeated_scans` returns the catalog unchanged when `opts.budget > 0`, so a
+budgeted query decodes a repeated table twice.
+
+Set a budget large enough that nothing can spill — 2 GB, against a 1.1 GB SF1
+lineitem — and the queries that read lineitem twice slow down while the rest do not
+move at all:
+
+| case | unbudgeted | 2 GB budget | |
+| --- | --- | --- | --- |
+| q21 (EXISTS + NOT EXISTS) | 2.98 s | 5.51 s | +85% |
+| q18 (IN + aggregate subquery) | 2.15 s | 3.30 s | +54% |
+| q17 (correlated avg subquery) | 2.63 s | 3.83 s | +45% |
+| q9, q5, q7, q12, q13, q6, q1 | unchanged | unchanged | within 4% |
+
+The three that pay are exactly the three whose plan scans lineitem twice, and `--mem`
+says what the second decode would have cost to keep: `shared scan cache (lineitem):
+139059657` bytes — 139 MB, 57% of q17's 245 MB unbudgeted peak. No 16 MB or 64 MB
+budget can hold it, so the toggle is right: a cache that cannot fit is not a cache.
+
+What it costs is the second decode, and the query pays it whatever the budget is
+(the same three cases are +88%, +54% and +45% at 2 GB, where the spill path is idle
+and the only difference is the toggle). The shape that could recover it is the one the
+roadmap already names — write the decoded table to the spill store once and let later
+readers stream it back — and this measurement is what its bar is made of: for q21 at
+16 MB, one decode (~1.5 s) plus a write and two reads against two decodes (~3 s) is a
+gain of about a second on 6.37 s, and it has to beat that without breaking the budget
+it exists to respect.
