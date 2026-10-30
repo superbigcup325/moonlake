@@ -1657,6 +1657,47 @@ rises to 483,146,786 (93.8% of its peak sample). Two whitebox tests moved to the
 definition. Plain matrix against `8f0b161`: identical answers, everything inside the
 spread, which is the point — the report changed and the engine did not.
 
+### The budgeted peak declares itself contract (2026-10-30)
+
+Written before the change. With SF1 and `--memory 16M`, q21 peaks at 598.5 MB, and its
+"no budget" peak is 504.9 MB — the budgeted run holds *more* than the unbudgeted one. The
+census cannot say where: under that budget q21 declares one point, `collected FROM tables`
+at 183.6 MB, and the highest resident sample any of its points sees is 236 MB. Three
+hundred and sixty megabytes of the peak live in a phase the census never visits.
+
+**Why the points miss it.** A budgeted plan materializes and replays in `join_partitions`:
+per partition it reads the partition back from the spill store, joins it, and pushes the
+joined batches onto an accumulated `out` array that is the whole step's output. That
+number — the accumulated output plus the partition being replayed — is where a budgeted
+peak lives, and nothing observes it (§73 added points to the pulled shapes, not to the
+partitioned ones).
+
+**What the change must do.** Declare a point at each partition's replay in
+`join_partitions`, naming what is alive there: the replayed left partition, the replayed
+build partition, and the output accumulated so far. One observe per partition, not per
+row: the partition count is capped at 256 a level and three levels deep, so a step adds
+at most 768 points, which is the same order as the fold's per-batch points (§74).
+
+**What must not move.** Every answer, every golden, every peak and every wall time: a
+point is declared, not taken, and the contract keeps the honesty rule that a point never
+keeps a structure alive — the closures read what the replay already holds. The plain
+matrix is run as evidence.
+
+**What is predicted.** q21's 16 MB census starts naming a point above 400 MB, dominated by
+the accumulated output, and the named total at the peak covers more than half of the
+598.5 MB sample. If the peak is instead in a phase with no natural boundary (an allocator
+high-water from a temporary the replay frees), the points will show a much lower ceiling
+than the peak and that will be the finding — the round's deliverable is the attribution,
+not a fix.
+
+**How it is measured.** `--mem` on q21, q18 and q9 with and without a 16 MB budget, before
+and after; the number of points a query declares; both unit suites, the goldens, the CLI
+checks and the spill acceptance script; the plain matrix against `317243b`.
+
+**Left open on purpose.** What to do about the peak once it is named — the accumulated
+output is the eager materialization this engine's whole shape rests on, and bounding it is
+the streaming join's problem, not this contract's.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
