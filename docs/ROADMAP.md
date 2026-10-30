@@ -1494,6 +1494,52 @@ stability criterion is not met across sizes (a 30% range, one constant cannot fo
 which is recorded rather than smoothed over. The plain matrix against `ed4b9af` is inside
 the spread with identical answers.
 
+### The validity bytes count contract (2026-10-30)
+
+Written before the change. `estimate_batch_bytes` is the unit every memory decision in
+this engine is counted in — the spill thresholds, the compose-or-eager choice, the piece
+sizing of §70 — and it counts a column's cells and two fixed overheads but not the
+validity array every column carries: one byte a cell. §70 listed it as open, §74 and §75
+both left it as the one component of q18's remaining gap that arithmetic can name (12.0 MB
+over 6,001,215 rows and two columns).
+
+**Why this one is not report-only.** The map constant of §75 changed what a report said.
+This constant changes when a budgeted run flushes: count a cell at five bytes instead of
+four and the same budget holds a fifth fewer rows, so a spilled case spills sooner. An
+Int32 column goes from 4 to 5 bytes a cell, an Int64 from 8 to 9, a Bool from 1 to 2, and
+the `BATCH_FIXED_BYTES`/`COLUMN_FIXED_BYTES` constants of §70 stay as measured.
+
+**What the change must do.** Add one byte per cell per column, which is the validity
+array's own size, and nothing else. The alternative — leaving the estimate and naming the
+validity bytes only in the census — is refused here because the estimate's job is bound
+memory, and a bound that omits a byte a cell is not a bound; but the refusal is only worth
+anything if the measurement below shows the tighter bound costs little.
+
+**What must not move.** Every answer, byte for byte; every golden; the spill acceptance
+checks; and the resident peaks of the budgeted cases, which may fall a little but may not
+rise. The no-budget cases must not move at all: `join_agg_composes` short-circuits on a
+zero budget and the eager path never consults the estimate.
+
+**What it may cost, and the bar.** A budgeted run now flushes earlier, so wall time may
+rise. The bar: every 16 MB case's wall time stays within the matrix's own spread (10% this
+session) of the control, and every peak stays at or below the control's. If any 16 MB case
+regresses past the spread, the change is rejected, `estimate_batch_bytes` goes back, and
+this contract's result records the number that made the tighter bound not worth it.
+
+**What is predicted.** The 16 MB peaks fall slightly (a case holding 16 MB of estimated
+bytes now holds about 10% fewer real bytes); wall time rises 0 to 3% on the spilled cases
+and not at all elsewhere; no-budget cases are identical. In the census, q18's fold point
+rises by 12.0 MB (the cached 6,001,215 rows over two columns) and the `input batch`
+entries rise by their validity bytes.
+
+**How it is measured.** The plain matrix against `8e32215` at no budget and 16 MB, three
+rounds, on a quiet host; `--mem` on q18 before and after; the goldens, the spill
+acceptance script, the CLI checks, and both unit suites. It counts as success if no 16 MB
+case regresses past the spread and q18's named bytes rise by the arithmetic 12.0 MB.
+
+**Left open on purpose.** The eager folds and the swapped path, which still declare no
+census point, and the tee that would remove the shared decode cache altogether.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
