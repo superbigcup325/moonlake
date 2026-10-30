@@ -1195,6 +1195,18 @@ entirely, but the decorrelated sides are run eagerly before the outer query exis
 so it needs the planner to hand all three scans to one executor; that is a different
 contract and is only worth writing if this one's memory cost proves too high.
 
+**Result (§71).** Kept, with one cost named. q21 without a budget fell from 5.30 to
+2.94 s (-44.5%, quiet host, three interleaved rounds) with its peak unchanged
+(504.3 -> 503.8 MB), better than the predicted 3.7-4.2 s: the cache is dropped after
+the last expected open, before the outer chain reaches its step-1 peak, so it never
+sits on top of it. q18 fell 3.30 -> 2.15 s and paid for it, 149.4 -> 231.3 MB, which
+is the contract's own bound at work (its two lineitem scans keep the decoded columns
+alive between them). The first matrix also moved q11 by +33% wall, which the contract
+had not listed: the engine opens a table more often than the statement names it, and
+each open past the expected count refilled the cache; those opens now pass through.
+Under a budget and everywhere a table is named once nothing moved, and every answer
+is byte-identical. Owed: the census must name the cache where it is alive.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
