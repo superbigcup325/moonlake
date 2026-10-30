@@ -1431,6 +1431,59 @@ the group slot map, estimated at 24 bytes a group where a real hash table may co
 three times that, and measuring it is the next contract. The CSV reader indexes one chunk
 at a time, so it is not part of the answer.
 
+### The slot map cost contract (2026-10-30)
+
+Written before the change. §74 left q18's peak at 138,876,884 named bytes against a
+236,880 KB resident sample, and named its own largest suspect: the group slot map, which
+the census reports at "twenty-four bytes an entry" — a constant inherited from the join
+index and never measured. At 1,499,848 groups that is 35,996,352 bytes; if a MoonBit
+`Map[Int64, Int32]` really costs two or three times that, most of the 98 MB gap is this
+one number being wrong.
+
+**What is measured.** The real cost of the two maps the census estimates:
+`Map[Int64, Int32]`, the group slot table and the join index's `slots`, and
+`Map[String, Array[Int32]]`, the join index's string half (`str_map_bytes`, which already
+counts its per-key arrays separately and adds 24 bytes an entry). A probe process fills
+one map with `n` entries and reports the resident delta over `n`, for
+`n` = 100,000 / 500,000 / 1,500,000 / 3,000,000, three processes each, one size per
+process: a freed page is reused by the next allocation, so two sizes in one process
+would report the second one's cost as near zero (the mistake the piece probe made, §70).
+The probe fills sequential `Int64` keys, which is the shape a `l_orderkey` group key and
+a dense join key both have.
+
+**What the number means.** The map grows by doubling, so a filled map holds up to twice
+its entries in capacity; the measured bytes per *filled* entry therefore include that
+slack, and so does what the census reports, because the census counts filled groups. The
+measurement is resident bytes, which include the allocator's rounding, and that is also
+what the resident sample in `--mem` counts, so the two are comparable.
+
+**What the change must do.** Replace the 24-byte constant with the measured one, in the
+two places the census names a map: `IntKeyIndex::map_bytes` and `str_map_bytes`, and the
+fold's `key slots (estimate)` entry. Only those. `grep` shows neither number feeds a
+decision — `join_agg_sides_bytes` sums batches, and every budget is counted in
+`estimate_batch_bytes` — so this cannot move what a query does, only what a report says.
+
+**What must not move.** Every answer, every plain run, and every decision: no budget, no
+spill threshold, no compose choice reads these numbers. Wall times are unchanged by
+construction, and the matrix is run as evidence rather than as a measurement of this
+change.
+
+**What is predicted.** 40 to 64 bytes per entry for the `Int64` slot map, so q18's
+`key slots` entry rises from 36.0 MB to between 60 and 96 MB and its largest point from
+138.9 MB to between 163 and 199 MB, against a 236.9 MB sample. If the measurement lands
+at or below 24 bytes the constant was right and the gap is somewhere else, which the
+verification records rather than explains away.
+
+**How it is measured.** The probe's output at four sizes and three processes each (the
+spread is the evidence, not one run); `--mem` on q18, q11, q21 and q1 before and after;
+and the gates: both unit suites, the goldens, the CLI and spill checks. It counts as
+success if the per-entry cost is stable within 10% across sizes and processes and q18's
+named total at its peak covers at least 70% of the resident sample there, or the
+remainder is attributed to a structure the census can name.
+
+**Left open on purpose.** The validity bytes in `estimate_batch_bytes` (§70), the eager
+folds that no census reaches, and the swapped path's own points.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
