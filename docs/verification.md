@@ -6306,5 +6306,27 @@ measured q19 at 127.9 -> 128.1 s (+0.2%): q19's 16 MB run does not partition at 
 have touched it. The chunking's gains are on the cases that do partition, which is why it
 lands beside the residual fix rather than instead of it.
 
+**The whole set, at 16 MB, against 0.6.0.** The same sweep that found the q19 regression
+(§85) run once more with the fix in, two timed rounds a case, `bin-060` as the control:
+
+| q | 0.6.0 | today | q | 0.6.0 | today |
+| --- | --- | --- | --- | --- | --- |
+| q19 | 65.97 | **3.70 s (−94.4%)** | q15 | 3.56 | 2.96 s (−17.0%) |
+| q2 | 14.64 | 3.51 s (−76.0%) | q4 | 2.11 | 1.78 s (−15.5%) |
+| q8 | 4.44 | 1.81 s (−59.3%) | q6 | 2.15 | 1.82 s (−15.2%) |
+| q5 | 4.42 | 1.94 s (−56.0%) | q18 | 4.42 | 3.76 s (−15.0%) |
+| q7 | 7.08 | 3.21 s (−54.7%) | q14 | 3.53 | 3.00 s (−15.0%) |
+| q9 | 6.86 | 3.15 s (−54.1%) | q11 | 0.35 | 0.31 s (−12.0%) |
+| q21 | 12.41 | 6.29 s (−49.3%) | q22 | 0.76 | 0.68 s (−10.6%) |
+| q3 | 3.28 | 1.95 s (−40.4%) | q20 | 2.61 | 2.36 s (−9.6%) |
+| q17 | 5.45 | 3.89 s (−28.6%) | q12 | 2.70 | 2.45 s (−9.5%) |
+| q10 | 3.99 | 3.07 s (−23.0%) | q13 | 2.96 | 2.81 s (−4.9%) |
+| | | | q1 | 5.24 | 5.12 s (−2.2%) |
+
+q16 read +46.2% (0.38 -> 0.56 s) in that sweep and is noise: four timed rounds each give
+0.33 -> 0.31 s (−5.8%) at 16 MB, −4.6% at 64 MB and −4.5% unbudgeted. Twenty-one of the
+twenty-two cases are faster at 16 MB, and the two that are close to flat are the two that
+never partition.
+
 Gates: `moon test` 418, `moon test --target native` 432, 33 goldens, `check_cli.sh`,
 `spill_accept.sh`, and every answer in the matrix byte-identical to 0.6.0's.
