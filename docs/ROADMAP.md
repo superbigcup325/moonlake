@@ -1758,6 +1758,16 @@ because the next step's partitioner then holds a hundred small batches at once
 `collapse_handed` stays; the numbers are recorded in §80. A collapse that writes into one
 destination as partitions finish remains open.
 
+### The unbudgeted peak, waiting for a contract
+
+A query without a budget has no memory bound by design: what it allocates is what it
+asked for. §86 measures what that means now — q15 holds 239 MB of decoded input for a
+2.3x faster answer, q18 and q17 150-240 MB — and finds the cache that does it cannot be
+trimmed without removing the reuse that pays for it. A byte cap that drops entries
+instead of keeping them is the shape the fix would take, and the trigger is a contract
+that says what an unbudgeted peak owes; until then the census names the bytes and the
+number is a choice the caller makes with `--memory`.
+
 ### The partition routing contract (2026-10-31)
 
 The grace join slices every input batch by key hash into one piece per partition, so

@@ -6022,3 +6022,31 @@ the query carries a budget and 2048-row ones when it does not. That needs the bu
 plumbed into the source reader, which is the next round's work — the coalescing is
 reverted, and this section is what it stands on: the regression is real, it is one
 case, and its cause is a constant two commits away from where the effect shows.
+## 86. What the shared decode costs, and why it is kept (2026-10-31)
+
+§85's sweep found five unbudgeted cases whose peak grew while their wall time halved.
+The cause is one commit, `31233bb` (decode a table once when a query names it more than
+once): a query that reads a table twice decodes it once and keeps the columns for the
+rest of the query.
+
+| unbudgeted | before the cache (`b62918b`) | after it (`31233bb`) | today |
+| --- | --- | --- | --- |
+| q15 | 41.4 MB | 237.2 MB | 238.8 MB |
+| q18 | 145.4 MB | 237.3 MB | 231.3 MB |
+| q17 | 203.2 MB | 239.4 MB | 239.4 MB |
+
+q15 is the clearest case: it expands `revenue0` twice, so lineitem is read twice, and
+the cache is what turns 3.50 s into 1.55 s (-55.7%). Holding the columns costs 197 MB
+of an unbudgeted peak, and 5 MB of a 16 MB one (41.5 -> 45.5 MB), because under a
+budget the scan hands batches on instead of accumulating them.
+
+The trade is worth stating plainly because it cannot be trimmed to nothing: the second
+reader is the end of the query, so releasing the entry when the first reader finishes
+removes exactly the reuse that pays for it. What can move is the bound — an unbudgeted
+query has no memory contract, so the cache follows the query's shape rather than a
+number, and the census names it (`# shared scan cache`, §75's point). A byte cap that
+drops entries rather than keeping them is the shape a future contract would take; the
+trigger is an unbudgeted peak contract, which does not exist yet.
+
+Recorded here rather than fixed: the wall time is what the query asked for, the memory
+is visible in the census, and the budget path is unaffected by more than 10%.
