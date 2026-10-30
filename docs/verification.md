@@ -5078,3 +5078,40 @@ loaded-host ratios in §67 held. 2048 sits within about 2% of those.
 coalesce small batches before partitioning, so the batch size stops being a memory
 knob; the earlier no-collapse rounds say coalescing has its own cost, so it is a
 separate contract. The full no-budget memory matrix has not been re-baselined at 2048.
+
+## 69. The matrix at 2048 rows a batch (2026-10-30)
+
+§66's 24-row matrix was measured with 4096-row batches and §68 changed the batch
+size, so this is the whole matrix again: `main` (2048 rows, `70b60fc`) against
+`63eafd3` (the same scan code, 4096 rows), SF1, load 1.59, three interleaved rounds,
+every answer byte-identical. The worst peak-RSS spread across rounds was 15%, so a
+difference under about 15 MB on the large cases is not read.
+
+| case | no budget peak, 4096 -> 2048 | no budget wall | 16 MB peak | 16 MB wall |
+| --- | --- | --- | --- | --- |
+| q1 | 35.3 -> 29.3 MB | 2.70 -> 2.62 s | 73.4 -> 73.4 | 5.16 -> 5.07 s |
+| q3 | 306.7 -> 310.9 | 2.01 -> 1.92 | 247.0 -> 262.9 | 3.04 -> 3.13 |
+| q5 | 478.7 -> 481.1 | 2.03 -> 1.93 | 439.4 -> 459.2 | 4.18 -> 4.39 |
+| q7 | 326.1 -> 326.2 | 2.58 -> 2.42 | 445.5 -> 445.7 | 6.94 -> 7.02 |
+| q8 | 474.7 -> 476.9 | 1.96 -> 1.87 | 501.2 -> 530.2 | 4.24 -> 4.51 |
+| q9 | 662.5 -> 666.9 | 2.63 -> 2.50 | 663.8 -> 699.0 | 6.60 -> 7.23 |
+| q10 | 237.2 -> 236.9 | 2.71 -> 2.63 | 195.4 -> 176.2 | 3.68 -> 3.74 |
+| q11 | 25.3 -> 25.4 | 0.32 -> 0.30 | 25.5 -> 25.6 | 0.29 -> 0.27 |
+| q12 | 35.4 -> 35.3 | 2.56 -> 2.48 | 35.6 -> 35.6 | 2.57 -> 2.48 |
+| q18 | 145.2 -> 148.7 | 3.65 -> 3.51 | 79.5 -> 73.5 | 3.74 -> 3.65 |
+| q20 | 102.0 -> 98.2 | 2.21 -> 2.15 | 74.9 -> 74.9 | 2.28 -> 2.29 |
+| q21 | 508.9 -> 504.9 | 5.92 -> 5.65 | 600.7 -> 605.8 | 11.37 -> 11.44 |
+
+**Without a budget** nothing moved in memory beyond the spread and every case is
+2-6% faster (q21 -4.6%, q7 -6.2%, q9 -4.9%). The §66 numbers (q21 491 MB at the
+time) still stand as the same shape: q21 is 504.9 MB here, inside the spread of
+the 491-509 MB this build has shown across rounds.
+
+**Under 16 MB** 2048 rows still costs against 4096: q9 +35 MB and +9.5% wall, q8
++29 MB and +6.4% wall, q5 +20 MB, q3 +16 MB; q10 fell 19 MB. That is the price §68
+named, now measured over the full set, and it is concentrated in the shapes that
+partition a large input (q3, q5, q8, q9). It is the argument for making the
+partitioner count its pieces rather than for a smaller batch.
+
+**What is left.** The census (`--mem`) numbers per point have not been regenerated
+at 2048 rows; only the process peaks above were.
