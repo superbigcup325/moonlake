@@ -1796,6 +1796,20 @@ regression over 5% on any other query in the matrix; every golden unchanged.
 each join builds from and the engine's plans are recorded in verification §41–§60, so a
 cost-based reorder of the ordinary joins is a different change with a different contract.
 
+**Result (§84).** Measured and refused. The reorder was built (each synthetic semi/anti
+item placed right after the last FROM item its ON reads, across INNER joins, in AST space),
+moved q21's plan as predicted, and made it worse in both directions: no budget 2.89 → 7.95 s,
+16 MB 6.26 → 16.63 s with the peak 545 → 872 MB, 64 MB 5.43 → 12.25 s with the peak 550 →
+805 MB. The row count fell exactly as predicted; the model behind the prediction is what was
+wrong — a semi or anti pass costs in proportion to its input, and moving it up doubles that
+input by getting ahead of the cheap inner filters, while its pre-executed inner side (600 MB
+for q21's `__semi0`) then sits beside the largest probe the chain holds. The current order is
+already the good one. The change found a real latent bug in `explain`, whose schema list
+assumed the synthetic tables are the last FROM items; that is fixed and kept, and the rest is
+reverted. A smaller measurement along the same line — anti before semi, 1.7% — was below the
+bar, so no such heuristic was added. Ordering the chain by measured selectivity is a cost
+model, and this round is the evidence that guessing one is not the way to get it.
+
 ### The one-sided spill contract (2026-10-30)
 
 Written before the change, after measuring what the budgeted path actually costs. SF1 with

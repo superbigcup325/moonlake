@@ -867,39 +867,49 @@ pub fn explain(
       on: None,
     })
   }
-  let schemas : Array[@catalog.TableSchema] = []
-  for item in sel.from {
-    match item.table {
-      Named(name) =>
-        if name == "__one" {
-          schemas.push({ table: name, columns: [], })
-        } else {
-          match catalog.lookup(name) {
-            Some(entry) => schemas.push(entry.schema)
-            None => raise @types.SqlError::Bind("unknown table \"\{name}\"")
-          }
-        }
-      Sub(_) =>
-        raise @types.SqlError::Bind(
-          "EXPLAIN does not descend into derived tables yet",
-        )
-    }
-  }
   let runner : SubqueryRunner = {
     catalog,
     opts: ExecOptions::in_memory(),
     census: None,
   }
-  // the executed plan includes decorrelated semi/anti joins; explain
-  // must render the same thing (the pass executes the inner queries,
-  // which the plan depends on anyway)
+  // the executed plan includes decorrelated semi/anti joins; explain must render
+  // the same thing (the pass executes the inner queries, which the plan depends
+  // on anyway). The decorrelator places a synthetic table where its keys are
+  // first available, which can be between the user's tables, so the schema list
+  // follows the FROM order instead of appending the synthetics at the end - that
+  // was correct only while they were always last.
   let (sel, extra_schemas, _extra_batches) = decorrelate(
     sel,
     catalog,
     ExecOptions::in_memory(),
   )
-  for t in extra_schemas {
-    schemas.push(t)
+  let schemas : Array[@catalog.TableSchema] = []
+  for item in sel.from {
+    match item.table {
+      Named(name) => {
+        if name == "__one" {
+          schemas.push({ table: name, columns: [], })
+          continue
+        }
+        let mut hit = false
+        for t in extra_schemas {
+          if t.table == name {
+            schemas.push(t)
+            hit = true
+          }
+        }
+        if !hit {
+          match catalog.lookup(name) {
+            Some(entry) => schemas.push(entry.schema)
+            None => raise @types.SqlError::Bind("unknown table \"{name}\"")
+          }
+        }
+      }
+      Sub(_) =>
+        raise @types.SqlError::Bind(
+          "EXPLAIN does not descend into derived tables yet",
+        )
+    }
   }
   let plan = prune_bound(bind_select(sel, schemas, runner), schemas)
   let bq = plan.bq

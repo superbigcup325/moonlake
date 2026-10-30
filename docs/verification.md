@@ -5882,3 +5882,67 @@ replayed partition and a swapped step (§79, §82), the eager fold's and the sha
 cache's points (§74, §75), the cheaper map and group state (§73), the crash fix (§77). Three
 measurements ship as refusals instead: validity bytes in the budget unit (§76), the
 uncollapsed replay handover (§80), and the earlier cell-only census (§78's predecessor).
+
+## 84. The early semi/anti placement is measured and refused (2026-10-31)
+
+The contract ("The early semi/anti contract", roadmap) was written first and committed
+alone (`b40e4a2`). It predicted a win from a row count: after q21's first step the chain
+carries 3,793,296 rows and after its semi and anti steps 202,092, so placing the two most
+selective conditions before the joins that build that intermediate should make steps three
+and four eighteen times cheaper. The bar was q21 at least 10% better in wall time *and* peak
+with no budget, and no other query more than 5% worse.
+
+**What was built.** `place_extra_items`: after the decorrelator collects the synthetic
+semi/anti items, each is inserted right after the last FROM item its ON reads, across INNER
+joins only, in AST space so the binder computes the smaller layouts itself. Items whose
+references cannot be attributed (bare columns, nested selects, an alias it cannot find) and
+items that would cross a LEFT, RIGHT or FULL join keep the old place at the end. q21's plan
+did move: supplier, lineitem, semi, anti, orders, nation.
+
+**What it measured.** The prediction was wrong, and in both directions at once:
+
+| q21 | before | after |
+| --- | --- | --- |
+| no budget, wall | 2.89 s | **7.95 s** (+175%) |
+| no budget, peak | 504 MB | — |
+| 16 MB, wall | 6.26 s | **16.63 s** (+165%) |
+| 16 MB, peak | 545.0 MB | **872.5 MB** (+60.1%) |
+| 64 MB, wall | 5.43 s | **12.25 s** (+125.7%) |
+| 64 MB, peak | 550.1 MB | **804.8 MB** (+46.3%) |
+
+Every other case was flat, the answer stayed the same (`same True`), and the row count did
+fall as predicted — so the model that produced the prediction is what failed, not the code.
+Two facts the row count hid:
+
+- the semi and anti steps are not cheap filters. Each probes every row it is handed and
+  evaluates a residual (`l2.l_suppkey <> l1.l_suppkey`) per pair, so a pass costs roughly in
+  proportion to its input — and moving them up doubles that input, because they now see the
+  rows *before* the cheap `o_orderstatus = 'F'` filter has halved them (1.9M rows became
+  3.79M).
+- their inner sides are already materialized, `__semi0` at 6,001,215 rows and `__semi1` at
+  3,793,296, because the decorrelator pre-executes each inner query. Moving the steps up puts
+  that 600 MB beside the largest probe the chain ever holds, which is where the +60% peak
+  comes from.
+
+So the current order is already the good one: the two expensive passes sit where the probe
+is smallest, after the selective inner joins. Refused; the code is reverted and the census
+test keeps its `(step 2)` expectation, which is the same statement from the other side.
+
+**A latent bug found on the way, and fixed.** `explain` built its schema list in FROM order
+and then appended the synthetic tables at the end — correct only while the synthetics *are*
+the last FROM items, which they always were. With the reorder in place, `--analyze` on q21
+failed with `unknown column "__sk1" in table "orders"` while the plain run answered
+correctly. The path now resolves each FROM item against the decorrelated list (synthetic
+first, catalog second), so it no longer depends on that assumption. The fix stays: it costs
+nothing and the assumption is exactly the kind that a later change breaks silently.
+
+**One smaller measurement, also below the bar.** Running the anti before the semi without
+moving either — the anti keeps 337,680 of the 3,793,296 rows the first step produces, the
+semi keeps 3,657,708 — is worth 2.90 s → 2.85 s (1.7%) on the existing plan, so no heuristic
+ordering of the two was introduced on the strength of it.
+
+**What this says about the next lever.** Ordering the chain by measured selectivity is a
+cost model, and this round is the evidence that the engine does not have one: it orders by
+the FROM list and the conjunct order, and both guesses above were wrong by a wide margin.
+The roadmap's "cost-based reorder" entry is where that belongs, with row counts from the
+census as its first input rather than a hand-derived estimate.
