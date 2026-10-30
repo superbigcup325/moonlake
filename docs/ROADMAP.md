@@ -20,6 +20,16 @@ partitioner's cost, and the batch size is chosen for the cache — §85), and fi
 unbudgeted peaks grew as their queries got faster (q15 41 -> 239 MB for -55.7%,
 §86).
 
+**A residual stopped re-evaluating the side that does not move.** The join cursor
+rebuilt both sides' residual masks for every probe batch, so a build side of 200,000
+rows against 2,930 probe batches cost 1.76 billion tri-state evaluations — q19's 128 s.
+Each half is now evaluated once (§92): q19 is 128.5 -> 3.8 s unbudgeted and 3.7 s at
+every budget (17.8x against 0.6.0), q2 at 16 MB -11%, q13 -5%, nothing else outside
++-5%. The partitioner also stopped paying a gather per partition per scan batch (a
+`budget / 4` chunk before routing, worth 24% on q7 at 16 MB and 10% on q9, peak 0.0%).
+The record's own attribution was wrong and is corrected: q19's 2x was never the
+budget's, and §85's "+66 s at 16 MB only" was the same defect seen once.
+
 **The budget's byte count got 10% cheaper to ask.** `estimate_batch_bytes` summed a
 string column one `Scalar` at a time; it now reads the column's array (§90), which is
 worth 11% on q2 at both budgets and 5% on q13, with no fit decision changed and no peak

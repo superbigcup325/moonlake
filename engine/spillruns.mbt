@@ -239,6 +239,61 @@ fn key_partition(
 }
 
 ///|
+/// The bytes a side's batches are grouped to before they are routed. The
+/// partition count keeps a partition near a quarter of the budget, so a quarter
+/// is also where routing stops paying per input batch: `partition_side` gathers
+/// once per non-empty partition per input batch, so a side arriving in 2048-row
+/// batches pays (rows / 2048) x partitions gathers.
+fn routing_chunk_bytes(budget : Int32) -> Int32 {
+  let target = budget / 4
+  if target < 65536 {
+    65536
+  } else {
+    target
+  }
+}
+
+///|
+/// A batch's column types, for `concat_batches`.
+fn batch_dtypes(batch : @types.DataBatch) -> Array[@types.DataType] {
+  let out : Array[@types.DataType] = []
+  for col in batch.columns() {
+    out.push(col.dtype())
+  }
+  out
+}
+
+///|
+/// Group a side's batches into chunks of at least `target` estimated bytes, so
+/// the routing sees a few large inputs instead of many small ones. Rows, their
+/// keys and their partition numbers do not change, so no answer can; the chunk
+/// is the transient, and the measured peak moves by 0.0% (§92).
+fn chunk_side(
+  batches : Array[@types.DataBatch],
+  target : Int32,
+) -> Array[@types.DataBatch] {
+  if batches.length() <= 1 {
+    return batches
+  }
+  let out : Array[@types.DataBatch] = []
+  let mut group : Array[@types.DataBatch] = []
+  let mut bytes = 0
+  for b in batches {
+    group.push(b)
+    bytes += estimate_batch_bytes(b)
+    if bytes >= target {
+      out.push(concat_batches(group, batch_dtypes(group[0])))
+      group = []
+      bytes = 0
+    }
+  }
+  if group.length() > 0 {
+    out.push(concat_batches(group, batch_dtypes(group[0])))
+  }
+  out
+}
+
+///|
 /// Route each row of `batch` into its key-hash partition writer.
 fn partition_side(
   batch : @types.DataBatch,

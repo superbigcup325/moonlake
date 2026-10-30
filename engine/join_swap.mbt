@@ -20,6 +20,9 @@ priv struct SwapCursor {
   mut fast : Bool
   left_width : Int32
   next_right : () -> @types.DataBatch? raise @types.SqlError
+  rplan : ResidualPlan?
+  rleft_t : Array[FixedArray[Bool]]
+  rleft_u : Array[FixedArray[Bool]]
   mut right_now : @types.DataBatch?
   mut out_p : Array[Int32] // pending prefix rows
   mut out_t : Array[Int32] // pending table rows, aligned with out_p
@@ -40,6 +43,18 @@ fn SwapCursor::open(
       prefix_keys.push(eval_vec(e, prefix))
     }
   }
+  // the residual's prefix half is the same for every table batch: evaluating it
+  // once here is the difference between one pass over the prefix and one per
+  // batch of the streamed table (§92)
+  let left_width = step.out_dtypes.length() - step.right_width
+  let rplan : ResidualPlan? = match step.residual {
+    Some(re) => Some(residual_plan(re, left_width, step.right_width))
+    None => None
+  }
+  let (rleft_t, rleft_u) = match rplan {
+    Some(plan) => residual_side_state(plan, prefix, true)
+    None => ([], [])
+  }
   {
     step,
     prefix,
@@ -49,6 +64,9 @@ fn SwapCursor::open(
     fast: false,
     left_width: step.out_dtypes.length() - step.right_width,
     next_right,
+    rplan,
+    rleft_t,
+    rleft_u,
     right_now: None,
     out_p: [],
     out_t: [],
@@ -202,15 +220,12 @@ fn SwapCursor::next(
         if !self.primed {
           self.prime(right_keys)
         }
-        let rstate : ResidualState? = match self.step.residual {
-          Some(re) =>
-            Some(
-              residual_state(
-                residual_plan(re, self.left_width, self.step.right_width),
-                self.prefix,
-                right,
-              ),
-            )
+        let rstate : ResidualState? = match self.rplan {
+          Some(plan) => {
+            // only the table's half changes per batch
+            let (bt, bu) = residual_side_state(plan, right, false)
+            Some({ plan, lt: self.rleft_t, lu: self.rleft_u, bt, bu, })
+          }
           None => None
         }
         self.right_now = Some(right)

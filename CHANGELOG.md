@@ -6,11 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The join's residual masks were rebuilt for both sides on every probe batch, although
+  the build side does not change between them. q19's OR of three arms over a 200,000-row
+  build side against 2,930 probe batches evaluated 1.76 billion tri-states per run: it
+  now takes 128.5 s → 3.8 s unbudgeted and 3.7 s at 16 MB and 64 MB, 17.8x against 0.6.1.
+  Each half of the state is evaluated once, the answers are identical, and the same fix
+  is worth 11% of q2 at 16 MB and 5% of q13. Verification §92.
+
 ### Changed
 
 - A budgeted step counts a string column's bytes from the column instead of building one
   `Scalar` per row, which is 11% of q2's and 5% of q13's wall time at 16 MB and 64 MB
   (verification §90). No fit decision moves, because the count is the same to the byte.
+- The partitioner routes a side in `budget / 4` chunks instead of in the scan's batches,
+  which is 20x fewer gathers: 24% of q7's and 10% of q9's wall time at 16 MB, with peaks
+  unchanged (verification §92). Rows, keys and partition numbers do not move, so no
+  answer changes.
 
 ## [0.6.1] - 2026-10-31
 

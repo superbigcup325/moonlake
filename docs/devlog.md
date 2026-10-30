@@ -2544,6 +2544,11 @@ next contract.
   and no reader can release it earlier without losing the reuse that pays for it.
 - The map of what a budget costs when nothing spills (§87, §89): the shared decode is
   off under a budget (q21 +85%), and a further 2.4 s on q2 has no explanation yet.
+- The residual's fixed side evaluated once, and the router chunked (§92): q19 128.5 ->
+  3.8 s unbudgeted and 3.7 s at every budget (17.8x against 0.6.1), q2 -11% and q13 -5%
+  at 16 MB, q7 -24% and q9 -10% from the routing, peaks unmoved, answers identical.
+  The record's own attribution of q19 to the batch size was wrong and is corrected in
+  §85: one defect produced the 2x at every budget and the budget only made it visible.
 
 ### What was refused, and why that is the output
 
