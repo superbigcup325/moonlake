@@ -6121,3 +6121,44 @@ that matters, so it would buy q11's 0.2 s back and nothing else.
 So: reverted, with the numbers above as the reason. What would reopen it is a signal
 the engine does not have today — a source that reports its rows, or a per-format
 decode cost — and then the gate is one comparison rather than a constant.
+## 89. A budget costs a query that never spills, and the probes that missed it (2026-10-31)
+
+§87 found the first half of this — a budget switches off the shared decode — and this
+section records the rest: for a join query, setting a budget at all costs wall time
+even when nothing is over budget and nothing spills.
+
+q2 is the cleanest case. Its plan, printed by `--analyze`, is byte-identical with and
+without a budget; its counters are identical too (`joins: 460`), and the only
+difference the report shows is 16 spill files that wrote 8.6 MB and read 374 bytes
+back.
+
+| q2 (part, partsupp, supplier, nation, region) | wall |
+| --- | --- |
+| no budget | 1.53 s |
+| 64 MB | 2.05 s |
+| 16 MB | 3.93 s |
+
+Four probes tried to attribute the 2.4 s and each was measured against the same tree:
+
+- **the sort.** Dropping `order by` from q2 changes nothing (3.94 s at 16 MB), so the
+  external sort is not it. The sort does have a fixed cost of its own — 0.27 -> 0.35 s
+  (+30%) for a top-100 `order by` over partsupp — but on 1.5 s of join it is not the
+  gap.
+- **the collapse.** §65's collapse runs whenever a budget is set; handing batches on
+  instead of collapsing them is within 1% on q2 and q7 and 20% *worse* on q9, so it is
+  not the gap either (and is not landed).
+- **the partitioner.** Coalescing its input (§85) halved its gathers and moved the
+  time not at all.
+- **the store.** The spilled tee (§88) is for repeated reads, and q2 reads each table
+  once.
+
+What is left is inside the eager path itself, and the census points at a number that
+cannot be real: `# hash join collapsed its output (step 1): 3219567569 bytes` — 3.2 GB
+reported at a 16 MB budget, the same value at 64 MB, where the wall time halves. Either
+that label accumulates over the run instead of reporting a point, or the estimator is
+wrong by an order of magnitude; the first thing the next attempt should do is settle
+which, because every fit decision in §81 and §82 is made with the same estimator.
+
+This host has no profiler (`perf`, `strace` and `ltrace` are all absent), so the
+remaining attribution is a sampling question rather than a reasoning one. Recorded with
+its numbers and its four refutations so the next attempt starts from the list.
