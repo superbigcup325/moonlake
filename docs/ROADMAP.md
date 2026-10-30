@@ -1750,6 +1750,14 @@ attribution; both unit suites, the goldens, the CLI checks and the spill accepta
 **Left open on purpose.** A collapse that does not double the peak (writing the replay's
 output into one destination as partitions finish would), and the fold's own eager copy.
 
+**Result (§80).** Rejected, and §65's choice confirmed from the other side. Handing the
+replay's batches on uncollapsed lowers q21's 16 MB peak by only 8.6% (596.5 → 545.1 MB)
+while raising its wall time 39%, and *raises* q9's peak 23% with a 67% wall-time cost,
+because the next step's partitioner then holds a hundred small batches at once
+(`require the spread` bar: at least one 10% peak win, no wall time past the spread).
+`collapse_handed` stays; the numbers are recorded in §80. A collapse that writes into one
+destination as partitions finish remains open.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
