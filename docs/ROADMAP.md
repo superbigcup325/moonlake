@@ -1648,6 +1648,15 @@ script. A `grep` is part of the evidence: every remaining caller of `batches_byt
 which keeps every total a lower bound; the eager folds and the swapped path's points; and
 the tee.
 
+**Result (§78).** Split, and both halves are better for it. `estimate_batch_bytes` keeps
+its definition and stays the unit of every decision; `resident_batch_bytes` adds the
+validity array for the census only, and every census site now reports it. q18's largest
+point rises 192,871,412 → 204,877,938 (86.5% of the resident sample there, from 80.7%),
+its cache entry rises by the 12.0 MB the rows' validity accounts for, and q21's step point
+rises to 483,146,786 (93.8% of its peak sample). Two whitebox tests moved to the new
+definition. Plain matrix against `8f0b161`: identical answers, everything inside the
+spread, which is the point — the report changed and the engine did not.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.

@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `--mem` now reports each structure's resident bytes, including the validity array a
+  column carries (one byte a cell), instead of counting only the cells. At SF1 q18's
+  largest point rises to 204.9 MB and covers 86.5% of the resident sample there. Budgets
+  keep their old unit on purpose: §76 measured that counting the validity byte in the
+  bound costs wall time and raises peaks. Verification §78.
 - `--mem` counts a map entry at the measured 60 bytes instead of the unmeasured 24, in the
   join index's slot table and string half and in the fold's `key slots`. At SF1 q18's
   largest point rises from 138.9 MB to 192.9 MB, covering 80.7% of the resident sample

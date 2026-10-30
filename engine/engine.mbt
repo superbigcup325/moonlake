@@ -434,7 +434,7 @@ fn run_pipeline(
       let entries : Array[(String, Int64)] = []
       for k, batches in narrowed {
         entries.push(
-          ("scan \{schemas[k].table}", batches_bytes(batches).to_int64()),
+          ("scan \{schemas[k].table}", resident_batches_bytes(batches)),
         )
       }
       c.observe("collected FROM tables", entries)

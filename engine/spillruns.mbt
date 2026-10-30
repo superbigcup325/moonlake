@@ -51,6 +51,31 @@ fn estimate_batch_bytes(batch : @types.DataBatch) -> Int32 {
 }
 
 ///|
+/// The bytes a batch really occupies, as a report should count them: the
+/// estimate's cells and overheads plus the validity array every column
+/// carries, one byte a cell. The budget deliberately keeps counting only
+/// `estimate_batch_bytes` (contract: docs/ROADMAP.md, "The resident bytes
+/// contract"): adding the validity byte to the bound made partitions smaller
+/// and peaks higher (§76), so the bound keeps the unit that measured better and
+/// the report names the whole structure.
+fn resident_batch_bytes(batch : @types.DataBatch) -> Int64 {
+  let mut total = estimate_batch_bytes(batch).to_int64()
+  for col in batch.columns() {
+    total += col.len().to_int64()
+  }
+  total
+}
+
+///|
+fn resident_batches_bytes(batches : Array[@types.DataBatch]) -> Int64 {
+  let mut total = 0L
+  for b in batches {
+    total += resident_batch_bytes(b)
+  }
+  total
+}
+
+///|
 /// Total estimated byte size of a batch array.
 fn batches_bytes(batches : Array[@types.DataBatch]) -> Int32 {
   let mut total = 0

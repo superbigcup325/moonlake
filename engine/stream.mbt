@@ -1243,12 +1243,12 @@ fn composed_entries(
   let entries : Array[(String, Int64)] = []
   let mut sides = 0L
   for s in scans {
-    sides += batches_bytes(s).to_int64()
+    sides += resident_batches_bytes(s)
   }
   entries.push(("build sides", sides))
   let mut copies = 0L
   for b in builds {
-    copies += estimate_batch_bytes(b).to_int64()
+    copies += resident_batch_bytes(b)
   }
   entries.push(("build copies", copies))
   for i, c in cursors {
@@ -1271,9 +1271,7 @@ fn pulled_fold_point(
   match census {
     Some(c) => {
       let entries = held.copy()
-      entries.push(
-        ("group result", estimate_batch_bytes(folded.batch).to_int64()),
-      )
+      entries.push(("group result", resident_batch_bytes(folded.batch)))
       c.observe("pulled fold finished", entries)
     }
     None => ()

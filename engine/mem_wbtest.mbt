@@ -158,7 +158,7 @@ test "a join point names the scanned tables at their own size" {
   // every column is used, so the narrowed tables are the batches' own bytes
   let big = cat.lookup("big").unwrap().batches
   let small = cat.lookup("small").unwrap().batches
-  let expected = (batches_bytes(big) + batches_bytes(small)).to_int64()
+  let expected = resident_batches_bytes(big) + resident_batches_bytes(small)
   let text = plain.render()
   assert_true(text.contains("# collected FROM tables: \{expected} bytes"))
   assert_true(text.contains("scan big: "))
@@ -204,12 +204,14 @@ test "a step releases the tables whose last step it was" {
   let big = cat.lookup("big").unwrap().batches
   let small = cat.lookup("small").unwrap().batches
   let tiny = cat.lookup("tiny").unwrap().batches
-  let all = (batches_bytes(big) + batches_bytes(small) + batches_bytes(tiny)).to_int64()
+  let all = resident_batches_bytes(big) +
+    resident_batches_bytes(small) +
+    resident_batches_bytes(tiny)
   let text = census.render()
   // step 2 stands on no table but its own: step 1 finished big and small
   assert_true(text.contains("collected FROM tables: \{all}"))
   assert_true(
-    text.contains("collected FROM tables: \{batches_bytes(tiny).to_int64()}"),
+    text.contains("collected FROM tables: \{resident_batches_bytes(tiny)}"),
   )
   // and letting go of them answers what holding them answered
   let plain = run_select(sql, mw_catalog())
