@@ -1803,6 +1803,15 @@ both unit suites, the goldens, the CLI checks and the spill acceptance script.
 is in memory (the CPU cost measured here is the encoding, not the disk), and choosing the
 index side at plan time instead of by arrival order.
 
+**Result (§81).** The cheap half landed and it is the largest win this session: when the
+build side fits the budget (`build * 2 <= budget`, the index being the build again), the
+step is not partitioned at all — the build is the hash side and the probe streams past it.
+q7 at 64 MB goes 6.34 → 2.58 s (−59.3%), q7 at 16 MB −39.1%, q21 at 64 MB −34.1% and at
+16 MB −28.9%, q10 −12.9%, q9 −7.1%, with q21's 64 MB peak also down 10.4%. Four cases
+change row order and none changes content (verified as multisets). The rest of the contract
+— one-sided partitioning when the *build* is what overflows — is what q21's first step still
+pays for.
+
 ## Known limits, and what closing each one means
 
 The writer's 2 GiB file-offset limit was the first row here until 2026-10-24.
