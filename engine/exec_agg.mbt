@@ -1242,7 +1242,7 @@ fn col_state_entries(
 ) -> Array[(String, Int64)] {
   let groups = ka.length().to_int64()
   let entries : Array[(String, Int64)] = []
-  entries.push(("key slots (estimate)", 24L * groups))
+  entries.push(("key slots (estimate)", SLOT_MAP_BYTES * groups))
   entries.push(
     (
       "group keys",
@@ -1278,7 +1278,7 @@ fn boxed_state_entries(
   let g = if group_keys.length() > 0 { group_keys[0].length() } else { 0 }
   let m = if acc_rows.length() > 0 { acc_rows[0].length() } else { 0 }
   let entries : Array[(String, Int64)] = []
-  entries.push(("key slots (estimate)", 24L * groups))
+  entries.push(("key slots (estimate)", SLOT_MAP_BYTES * groups))
   entries.push(("group keys (estimate)", groups * (24L + 16L * g.to_int64())))
   entries.push(("accumulators (estimate)", groups * (24L + 16L * m.to_int64())))
   entries.push(
