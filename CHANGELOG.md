@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+The memory budget stops paying for partitions it does not need, and the census learns
+where a budgeted run's peak actually is.
+
 ### Changed
 
 - An INNER step whose accumulated side fits the budget but whose table side does not now
@@ -98,6 +103,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   budget the collapse is kept, as it was: a partitioner slices each input batch
   into every partition, and handing it many small batches measured 4.4x slower.
   Verification §65.
+
+### Fixed
+
+- A semi or anti join no longer aborts when grace partitioning leaves a partition with no
+  inner rows: the inner side is concatenated with its own layout, so an empty side is an
+  empty batch instead of a batch with no columns to probe. Two thousand distinct keys
+  against four aborted at every budget from 512 bytes to 4 KB before this. Verification §77.
 
 ## [0.6.0] - 2026-10-29
 
@@ -518,10 +530,6 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 
 ### Fixed
 
-- A semi or anti join no longer aborts when grace partitioning leaves a partition with no
-  inner rows: the inner side is concatenated with its own layout, so an empty side is an
-  empty batch instead of a batch with no columns to probe. Two thousand distinct keys
-  against four aborted at every budget from 512 bytes to 4 KB before this. Verification §77.
 - A Parquet file whose footer understates a column chunk decodes again. Some
   writers leave the page headers out of `total_compressed_size`:
   apache/parquet-testing's `nation.dict-malformed.parquet` declares 2002 bytes
