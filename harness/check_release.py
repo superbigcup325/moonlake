@@ -40,7 +40,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # What a published archive must contain, and what it must never contain.
-REQUIRED = ("moon.mod", "README.md", "LICENSE", "moonlake.mbt")
+REQUIRED = ("moon.mod", "README.md", "LICENSE", "NOTICE", "moonlake.mbt")
 FORBIDDEN = (
     "moon.work",
     "_build/",

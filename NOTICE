@@ -1,0 +1,20 @@
+moonlake
+Copyright 2026 The moonlake Authors
+
+Licensed under the Apache License, Version 2.0 — see LICENSE. The LICENSE file is
+the unmodified license text; this file carries the copyright statement.
+
+moonlake builds on packages published on mooncakes.io. They are fetched at build
+time and are not bundled here; each carries its own license:
+
+  moonbitlang/x              Apache-2.0   filesystem, argument parsing, encoding
+  moonbitlang/quickcheck     Apache-2.0   property-based testing
+  superbigcup325/colenc      Apache-2.0   Parquet DELTA, BYTE_STREAM_SPLIT, RLE
+
+The Parquet reader and writer in sources/parquet implement the Apache Parquet
+format (apache/parquet-format, Apache-2.0) and are verified against the
+apache/parquet-testing corpus (Apache-2.0).
+
+The TPC-H query texts in harness/queries/ are the official benchmark texts, used
+here for correctness validation against DuckDB. TPC-H is a trademark of the
+Transaction Processing Performance Council.

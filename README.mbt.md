@@ -10,21 +10,87 @@ Embeddable analytical query engine for MoonBit — run SQL over CSV/Parquet file
 > evaluator is columnar — vectorized expression kernels, a columnar hash
 > join, and bind-time projection pruning — but APIs may still change.
 
+## Quickstart
+
+```bash
+git clone https://github.com/superbigcup325/moonlake && cd moonlake
+moon update
+moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
+  "SELECT l_returnflag, sum(l_extendedprice) FROM lineitem WHERE l_shipdate <= date '1998-09-02' GROUP BY l_returnflag ORDER BY l_returnflag"
+# l_returnflag|sum_2
+# A|532348211.6499983
+# ...
+```
+
+The checkout carries the SF0.01 TPC-H data, so that query runs as written. CI
+pins `moonc` 0.10.18 (`0.10.18+6c83a7f62`); the supported floor is 0.10.16, and a
+nightly job checks `latest` separately.
+
+For everyday use, install a standalone binary and skip `moon run`:
+
+```bash
+moon build cmd/main --target native --release
+install -m755 _build/native/release/build/cmd/main/main.exe ~/.local/bin/moonlake
+moonlake exec --csv lineitem.csv --file q6.sql     # SQL from a file: no shell quoting
+```
+
+As a library, `moon add superbigcup325/moonlake` and name the packages in the
+`moon.pkg` of the package that imports them (`moon new` puts `main` in
+`cmd/main`, so that is the file to edit):
+
+```text
+import {
+  "superbigcup325/moonlake",
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/sources/csv",
+}
+```
+
+```moonbit nocheck
+// a @catalog.Catalog with registered table entries — @csv/@parquet
+// scan into one; note the argument order: content/name, not name/content.
+// registration is lazy: the schema is available at once, and a query decodes
+// only the columns it projects, in 2048-row batches
+
+///|
+fn main raise {
+  let cat = @catalog.Catalog::new()
+  cat.register(@csv.scan_string("region,amount\nnorth,100\n", "events"))
+
+  // read results back cell by cell: names() gives the columns,
+  // row_count() the rows, get(row, col) a @types.Scalar (null via Null)
+  let result = @moonlake.execute(
+    "SELECT region, count(*) FROM events GROUP BY region", cat,
+  )
+  for r in 0..<result.row_count() {
+    println(result.get(r, 0).to_string() + "|" + result.get(r, 1).to_string())
+  }
+}
+```
+
+`examples/basic/` is the snippet above as a compiled package, and
+`examples/stream/` is the streaming snippet in
+[docs/streaming.md](docs/streaming.md): `moon run examples/basic`,
+`moon run examples/stream`.
+
+- every flag, output mode and spill behaviour: [docs/cli.md](docs/cli.md)
+- reading batches instead of collecting them: [docs/streaming.md](docs/streaming.md)
+
+> This README and the browser playground track `main`; `moon add` gives the
+> latest published release from mooncakes (0.6.3). What has landed since is in
+> [CHANGELOG.md](CHANGELOG.md) under Unreleased.
+
 ## What it is
 
 moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) workloads:
 
-- Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV column types are inferred (int32 → int64 → float64 for integers that outgrow their type, bool — `true`/`false` in any letter case, so a pandas export's `True`/`False` is a bool and not a string —, date, string) — out-of-range values widen, never wrap. A ragged row is refused by row number (a short row would otherwise read its neighbour's cells), a repeated header name is renamed the way DuckDB's `read_csv` does (`a`, `a_1`, …) so both columns stay reachable, and the `NaN` / `inf` / `-Infinity` spellings read as float64 instead of turning the column into strings.
-- Parquet decoding is in-house (`sources/parquet`) and scoped on purpose: flat schemas, v1 data pages, PLAIN, dictionary, the DELTA family and BYTE_STREAM_SPLIT page encodings (the last five through colenc), RLE boolean values, `UNCOMPRESSED` and `SNAPPY`. Nested fields, INT96 timestamps, v2 pages, DECIMAL, UINT_32/UINT_64 and the other codecs are refused with a pointed error rather than guessed at (a decimal byte array read as text, or a UINT taken as signed, would be a wrong answer rather than a refusal). Writing is the same scope and now speaks the format rather than merely the encoding: `write_bytes` / `write_file` emit one row group per batch with v1 pages, PLAIN values, `STRING`/`DATE` annotations, and per-column-chunk statistics (`min_value`/`max_value`/`null_count`), so moonlake's own output is prunable by its own reader; `--snappy` (library: `write_bytes_with`) stores pages compressed, and `moonlake write --csv in.csv --out out.parquet` is the CLI path. Every column is written OPTIONAL with RLE definition levels (about one bit per value on disk, and what pyarrow does by default): that is what lets the input stream through one batch at a time instead of being materialized, since a REQUIRED schema would have to be decided before the first page is written. On native targets the file path streams: pages go straight to a file handle and a temporary name is renamed over the target, so peak memory no longer grows with the output (326 MB → 101 MB writing a 75 MB file from Parquet input) and a failed write leaves the previous file intact; wasm-gc/js keep the whole-file write their hosts require, behind the same `write_file_with` signature. `harness/check_writer_interop.py` reads the result with pyarrow and DuckDB and reads a DuckDB-written file back. Reading is incremental in the same way: on native targets a scan reads the 8-byte trailer and the footer, then one column chunk per projected column per row group, so peak memory is a couple of row groups' columns rather than the file (`count(*)` over a 287 MB archive: 295 MB → 12 MB of peak RSS); `scan_bytes` and the wasm-gc/js builds keep their whole-input behaviour behind the same signatures. CSV scans are ranged the same way: registration reads a 64 KB prefix (header plus the inference sample) and a scan reads one 4 MB range at a time, indexing, materializing and dropping each range, so the per-cell offset table is one range rather than the file (`count(*)` over a 302 MB CSV: 1063 MB → 35 MB of peak RSS, 1.36 s → 0.64 s, and `write --csv` on the same input 1063 MB → 35 MB with byte-identical output).
-- Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase.
-- One limit is worth knowing before you meet it: wasm-gc/js scans read whole
-  files, because their filesystem module has no ranged read (native scans read
-  byte ranges, and the writer streams on native). [docs/ROADMAP.md](docs/ROADMAP.md)
-  says what closing that would take, and lists the rest of the directions that
-  are on hold with the evidence each one waits for.
-- No external database process or database FFI binding, no storage engine — the query engine is MoonBit; filesystem access uses `moonbitlang/x` (including its native system bindings) plus a small private native C stub (`platform/io`, POSIX) for incremental file reads and writes, which is not part of the published API and is replaced by whole-file calls on wasm-gc/js. moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
+- Register CSV/Parquet files as tables, run SQL, get columnar result batches. CSV types are inferred (out-of-range values widen, never wrap), a ragged row is refused by row number, and the Parquet reader and writer refuse what they do not implement rather than guessing — scope, per-format rules and peak-memory numbers in [docs/sources.md](docs/sources.md)
+- Ships as a native single binary for ad-hoc command-line analysis, embeds as a MoonBit library, and compiles to WebAssembly (GC) from the same codebase; the [playground](https://superbigcup325.github.io/moonlake/) is the whole engine as wasm-gc, all client-side
+- No external database process or database FFI binding, no storage engine — the query engine is MoonBit; filesystem access uses `moonbitlang/x` (including its native system bindings) plus a small private native C stub (`platform/io`, POSIX) for incremental file reads and writes, which is not part of the published API and is replaced by whole-file calls on wasm-gc/js
+- Queries larger than memory degrade honestly: a `--memory` budget spills a blocking `ORDER BY` to sorted runs and streams the result back, and large joins and `GROUP BY`s partition their inputs to disk the same way
+- One limit is worth knowing before you meet it: wasm-gc/js scans read whole files, because their filesystem module has no ranged read (native scans read byte ranges, and the writer streams on native). [docs/ROADMAP.md](docs/ROADMAP.md) says what closing that would take, and lists the rest of the directions that are on hold with the evidence each one waits for
 
-### Repository layout
+## Repository layout
 
 | path | what lives there |
 |---|---|
@@ -40,24 +106,17 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 | `harness/` | TPC-H generation, golden comparisons, benchmarks and CI drivers |
 | `docs/` | demo, verification report, roadmap, devlog and design surveys |
 
-### SQL surface
+## SQL surface
 
-- `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
-- `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` joins, `UNION [ALL]` / `INTERSECT` / `EXCEPT` (INTERSECT binds tighter; ALL keeps multisets) (hash join; join order chosen greedily by connectivity, LEFT keeps written order)
-- Expressions: arithmetic, comparison, `CASE WHEN`, `IN`, `NOT IN`, `BETWEEN`, `NOT BETWEEN`, `LIKE`, `NOT LIKE`, `IS [NOT] NULL`, `NULL` as a comparison/arithmetic operand, `EXTRACT(year/month/day)`, `DATE` literals, `date +/- INTERVAL n day/month/year` (calendar-aware, day-of-month clamping), `CAST`, string functions (`substring` — both argument styles, `length`, `upper`, `lower`, variadic `concat`), `abs`, `round`, three-valued NULL logic throughout. `round` and `cast(<double> AS int/int64)` round half away from zero, as DuckDB and PostgreSQL do (`round(-2.5)` is -3, `cast(2.5 AS int)` is 3; C, SQLite and MySQL truncate instead), and a float → integer cast that does not fit raises instead of saturating; `concat(a, b, ...)` takes one or more arguments, casts the non-string ones, and skips NULL arguments (`concat('a', NULL, 'b')` is `'ab'`), while the `||` operator takes two strings and propagates NULL. Division is DuckDB-style: `/` is always DOUBLE (`x/0` is ±inf, `0/0` is nan) and `%` follows fmod (`x % 0` is NULL). Integer literals widen int32 → int64 → float64 to stay exact; int32/int64 `+`/`-`/`*` raise on overflow rather than wrap (the same refusal `sum()` makes), since a wrapped value is a wrong number a query never asked for. Identifiers: the DATE-part keywords `year`/`month`/`day`/`date` double as bare column/table/alias names; double-quoted identifiers (`"left"`, with `""` escape) reach every other reserved word
-- Aggregates: `sum` / `avg` / `min` / `max` / `count` / `count(*)` / `count(DISTINCT)` / `stddev` (+samp/pop) / `variance` (+samp/pop) / `median` / `string_agg` (literal separator); aggregates over int64 that overflow raise instead of wrapping
-- Approximate aggregates, both explicit and never substituted for the exact form: `approx_count_distinct(expr)` estimates the distinct non-NULL count with a HyperLogLog at precision 14 (about 0.81% standard error, 16 KiB of register payload per dense sketch, plus object overhead) and `approx_quantile(expr, q)` estimates a quantile with a t-digest at compression 100 (`q` a constant in [0, 1], checked at bind time; NaN and infinity input is a SQL error). [docs/sketches.md](docs/sketches.md) records the types, NULL and value-equivalence rules, and the measured state cost
-- `GROUP BY 1` ordinals resolve to select items
-- Window functions in the select list: `row_number()`, `rank()`, `dense_rank()` and every aggregate as `agg(expr) OVER (PARTITION BY ... ORDER BY ...)` (NULLS FIRST/LAST per key). Aggregates use the standard default frame — RANGE UNBOUNDED PRECEDING TO CURRENT ROW (a running aggregate whose peers share the value); without ORDER BY the frame is the whole partition. Explicit frame clauses (`ROWS`/`RANGE` BETWEEN ...), window functions in WHERE/ORDER BY/HAVING/GROUP BY (order by the output alias instead) and windows inside correlated subqueries are rejected with pointed errors
-- Subqueries: correlated `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` and correlated scalar aggregate subqueries, anywhere an expression may appear — a WHERE conjunct, a select item, inside `AND` / `OR` / `NOT` / `CASE` — nested to the depth TPC-H asks. The correlation is general, not just equality: an `inner.col = outer.col` pair is still joined by hash key, a purely inner conjunct stays in the inner filter, and everything else (`<`, `>`, `<>`, `BETWEEN`, an `OR`, a conjunct on the outer columns alone) becomes a keyless semi/anti join for `EXISTS` / `IN`, or — for a scalar subquery and for `EXISTS` / `IN` used as a value — a theta aggregate computed once per distinct combination of the outer values it reads and joined back on a row key, so a repeated outer row cannot multiply the inner matches. A `GROUP BY` inside the EXISTS is dropped (it cannot change whether a matching row exists) and a `HAVING` is kept when the grouping is the correlation keys themselves, refused with its reason when it is the user's own grouping; `IN` / `NOT IN` keep SQL's three-valued logic as values too (`NULL` probe or a `NULL` in the set yields `NULL`). What is still refused, each with a pointer to rewrite it as a join: a derived table in the subquery's FROM, `DISTINCT` / `LIMIT` / `OFFSET` / a set operation inside it, a grouping or `HAVING` that is not the correlation keys, and a correlated subquery in a position the rewriter does not reach — the select list of a `GROUP BY` query (its value would have to appear in the `GROUP BY`), a `HAVING` clause, or a `JOIN ON` clause. A reference to a table two levels out is refused too, but by the binder (`unknown table or alias <name> in FROM`): it has no named message yet. Derived tables (`FROM (SELECT ...) AS t`), with optional column alias lists (`AS t (a, b)`)
-- `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
-- Scalar functions: `coalesce` / `nullif` / `greatest` / `least`, `date_trunc(unit, date)`, `date_diff(unit, start, end)`; `SELECT` works without FROM and a bare `NULL` select item reads as INTEGER
-- Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
-- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking operators. `ORDER BY` becomes sorted runs whose final merge streams into projection/DISTINCT/OFFSET/LIMIT (a LIMIT query holds only its output window); a hash join partitions the sides that do not fit, splits an over-budget partition again, and swaps the sides when the table side is the one that overflows (0.6.1, verification §82), and a `GROUP BY` partitions its input and aggregates each partition one spill file at a time, while an `ORDER BY` over a `GROUP BY` sorts that grouped result in memory once the fold ends, since a grouped result is not input and the budget does not bound it (verification §45, §50) — so a hot group key is fine while a single join key holding most of a side is refused with that reason, unless the query is a shape the fold accepts and the join is never collected (verification §49). `--analyze` under a budget reports `spill runs` / `spill files` / `spill bytes written` / `spill bytes read` (plus `fold segments` when a budgeted `GROUP BY` splits its fold instead of partitioning), and the CLI removes its temp directory on both exit paths. A query spills into its own `moonlake-spill-<n>` subdirectory of `--spill-dir` (or `TMPDIR`), so two processes may share one `--spill-dir` without touching each other's runs, and a caller's own files there are never read or deleted. A subdirectory is claimed with an `owner` marker naming the pid, the boot id and the pid's start time, so a run killed outright no longer leaks: the next query removes that subdirectory when the marker proves its owner is gone (another boot, a pid that no longer exists, a pid whose start time changed), and keeps — and reports — any directory it cannot judge, such as one with no marker (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
+- `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`, `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` joins, `UNION [ALL]` / `INTERSECT` / `EXCEPT`, derived tables, non-recursive `WITH` CTEs
+- Expressions, aggregates (`count(DISTINCT)`, `median`, `string_agg`, and the explicit `approx_count_distinct` / `approx_quantile` sketches), window functions, and correlated subqueries anywhere an expression may appear — three-valued NULL logic throughout, integer overflow raises instead of wrapping
+- Semantics follow DuckDB and PostgreSQL where the engines could differ — rounding, division, integer-literal widening, float → integer casts — and every deviation from C/SQLite/MySQL is stated
 
-Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, explicit window frame clauses (the default frame is supported), cost-based optimization, multi-statement scripts.
+The full reference, including each refusal and what is out of scope, is
+[docs/sql-surface.md](docs/sql-surface.md), with the approximate-aggregate rules
+in [docs/sketches.md](docs/sketches.md).
 
-### TPC-H cross-validation
+## TPC-H cross-validation
 
 SQL correctness is validated by differential testing against DuckDB over the TPC-H benchmark: **all 22 queries pass on their official texts** (annex parameter values; dbgen directives stripped) — every result matching DuckDB within 1e-9 relative tolerance on SF0.01, and the whole chain runs in CI (job `tpch` regenerates the data and DuckDB's answers from scratch, then diffs every query). One documented deviation: Q15's official text materializes a view with `CREATE VIEW ... ; SELECT ...; DROP VIEW ...` and the engine executes single statements, so the harness runs its sanctioned `WITH` spelling of the same query (`harness/queries/q15.sql`), which DuckDB answers identically.
 
@@ -110,173 +169,20 @@ best of 5 native debug runs: q1 130→94 ms, q6 111→67 ms, q3 130→73 ms, a b
 Parquet table with 8 row groups, a selective predicate drops from ~430 ms to
 ~50 ms and peak RSS from 130 MB to 32–39 MB.
 
-## Quickstart
-
-```bash
-git clone https://github.com/superbigcup325/moonlake && cd moonlake
-moon update
-moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
-  "SELECT l_returnflag, sum(l_extendedprice) FROM lineitem WHERE l_shipdate <= date '1998-09-02' GROUP BY l_returnflag ORDER BY l_returnflag"
-# l_returnflag|sum_2
-# A|532348211.6499983
-# ...
-```
-
-CI pins `moonc` 0.10.18 (`0.10.18+6c83a7f62`); the supported floor is 0.10.16, and a nightly job checks `latest` separately.
-
-For everyday use, install a standalone binary and skip `moon run`:
-
-```bash
-moon build cmd/main --target native --release
-install -m755 _build/native/release/build/cmd/main/main.exe ~/.local/bin/moonlake
-moonlake exec --csv lineitem.csv --file q6.sql     # SQL from a file: no shell quoting
-```
-
-Joins take one `--csv` per table; `--parquet` scans Parquet files (declare epoch-day DATE columns of an *unannotated* file with `--date-col` — a file that carries the standard DATE annotation needs nothing); a `--csv` argument may carry one `*`, and only in its final path segment (`data/part-*.csv`): the matches are read as one table, named after the file stem when there is one match and after the pattern's own stem when there are several (a bare `*.csv` is refused, since it leaves no name); the SQL is one quoted argument or a file via `--file` (a trailing semicolon is fine), and with no `--csv`/`--parquet` at all the query runs against an empty catalog, so `moonlake exec "SELECT 1 + 1"` needs no data file; `--explain` prints the physical plan; `--json` emits machine-readable output — one JSON array per result, printed as it arrives: the opening `[` starts the first line and each batch is one more line, so a scan never has to become one string (a result that fits one batch is a single line, byte-identical to the encoding of the whole array); SQL NULL is `null`, DATE is a quoted calendar date, and the non-finite doubles JSON cannot spell are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`. Text and JSON output are consumed batch by batch, so neither accumulates the result, and a query that fails after printing rows leaves those rows on stdout, the message on stderr and exit status 1. `moonlake write --csv in.csv --out out.parquet [--snappy]` converts a registered table to Parquet; it refuses an `--out` that is one of its own inputs (the write would replace the source), a failed write is reported as `sql error (execute):` and leaves any previous file intact, and a write killed outright can leave a `<out>.moonlake-tmp-<pid>-<n>` file beside the target — the publication is a `rename`, so that leftover is a partial temp file, never a half-written `--out`
-
-As a library:
-
-```bash
-moon add superbigcup325/moonlake
-```
-
-A new module names the packages it uses in `moon.pkg`. Both snippets below need these:
-
-```text
-import {
-  "superbigcup325/moonlake",
-  "superbigcup325/moonlake/catalog",
-  "superbigcup325/moonlake/sources/csv",
-}
-```
-
-`examples/basic/` and `examples/stream/` are these two snippets as compiled packages: `moon run examples/basic` and `moon run examples/stream`.
-
-> This README and the browser playground track `main`. `moon add` gives you the
-> latest published release from mooncakes (0.6.3). 0.6.0 through 0.6.3, in order:
-> the peak that stopped paying for copies it did not need; the build side that
-> swaps and partitions only when it must; the join residual that stopped
-> rebuilding a side that never moves; and a budgeted `GROUP BY` that splits its
-> fold into `budget`-sized segments instead of partitioning its input (q1 at
-> 16 MB reads 5.04 -> 2.62 s, q20's inner sum 2.31 -> 2.08 s).
-> On `main` since 0.6.3: a memory budget's fit tests compared byte counts as
-> `Int32` and two of them after doubling, so a side above 2^31 bytes wrapped
-> negative and a 1.5 GB side "fitted" a 16 MB budget — the comparisons are
-> `Int64` now, and a join step may hash a build side up to the whole budget
-> instead of half of it (§97: q2 at 16 MB 3.65 -> 1.96 s, q7 3.40 -> 2.31 s, q9
-> 3.44 -> 3.01 s, no query slower than +5% at 16 MB or 64 MB). Also on `main`:
-> `--analyze` names the time each stage took and what a routed join step did with
-> its sides, on targets that have a monotonic clock. No version is claimed for
-> any of it yet.
-
-**Building from source.** `main` depends on `superbigcup325/colenc@0.1.3`,
-published on mooncakes, so a plain checkout builds — no workspace file needed:
-
-```bash
-moon update   # refresh the registry index; the graph downloads on the first check
-moon check
-```
-
-Hacking on `colenc` and `moonlake` together still works: add a `moon.work` that
-lists the sibling checkout, and the workspace version shadows the registry one:
-
-```bash
-ln -s ../colenc .colenc
-printf 'members = [".", "./.colenc"]\n' > moon.work
-```
-
-Remove both again before checking what a consumer actually installs.
-
-```moonbit nocheck
-// a @catalog.Catalog with registered table entries — @csv/@parquet
-// scan into one; note the argument order: content/name, not name/content.
-// registration is lazy: the schema is available at once, and a query decodes
-// only the columns it projects, in 2048-row batches
-
-///|
-fn main raise {
-  let cat = @catalog.Catalog::new()
-  cat.register(@csv.scan_string("region,amount\nnorth,100\n", "events"))
-
-  // read results back cell by cell: names() gives the columns,
-  // row_count() the rows, get(row, col) a @types.Scalar (null via Null)
-  let result = @moonlake.execute(
-    "SELECT region, count(*) FROM events GROUP BY region", cat,
-  )
-  for r in 0..<result.row_count() {
-    println(result.get(r, 0).to_string() + "|" + result.get(r, 1).to_string())
-  }
-}
-```
-
-Read them a batch at a time when the result may not fit: `@moonlake.stream`
-(or `stream_with` for `ExecOptions`) returns an `@engine.ResultStream` whose
-`names()` and `types()` describe the columns and whose `next()` yields one
-`@types.DataBatch` per call until it returns `None`. Four shapes are pulled
-rather than collected — the ones whose input can be consumed as it arrives:
-
-- a single-table scan, where the WHERE, the projection and the OFFSET/LIMIT
-  window run per batch, so a windowed query stops reading once it is full;
-- an aggregate, because the group table is a running hash table: its answer is
-  one batch but its input never is (2,000,000 rows over 16 columns: 109.7 MB →
-  35.3 MB of peak RSS). A `GROUP BY` under a budget is fed the same way: its
-  batches are buffered up to `--memory` and partitioned only past it, so
-  retained input stops growing with the rows (100 groups, 8,000,000 rows, 4M
-  budget: 195 MB → 63 MB) while the group state and the finished result stay
-  unbounded. It is also fed a two-table keyed INNER/LEFT/FULL join's batches
-  directly, without collecting the joined rows first (4,000,000 joined rows:
-  39 MB against 191 MB, verification §49), and an `ORDER BY` above either shape
-  is sorted after the fold, so the ordered shapes stay pulled too (TPC-H q1:
-  543 MB → 35 MB, q12: 113 MB → 35 MB, verification §50), and it is still
-  delivered as one finished batch;
-- an `ORDER BY` under a memory budget, which builds its sorted runs from the
-  scan and hands out the merge a batch at a time (506.8 MB → 178.8 MB for
-  `select * … order by id`, and it stops merging once a window is full);
-- a two-table INNER/LEFT/FULL join, whose build side is read once and stays
-  resident while the probe side arrives a batch at a time (a 2,000,000-row probe
-  against a 1,000-row build: 270.8 MB → 35.3 MB, and under `--memory 8M` it
-  stops spilling entirely, 1.99 s → 0.41 s).
-
-Everything else is computed first and handed back as one batch, because its
-answer does not exist until every row has been seen: a chain of joins, a RIGHT
-or SEMI/ANTI join, a cross join, and DISTINCT or a window above a join. An
-aggregate is the case the distinction is about: its answer is one finished batch
-even when its input is pulled, with or without an `ORDER BY` above it. Both deliveries run the same plan, so a pulled row and
-a collected row are the same row. `close()` stops the pull before the end, dropping
-the stream releases the scan cursor, and a pull that raises ends the stream
-rather than leaving it resumable. The spilled sort is the one stream that owns
-files — the runs are removed when the merge ends, when `close` stops it, and when
-it raises — so exhaust it or close it; a stream dropped unfinished leaves them to
-the store's owner (the CLI deletes its per-query directory at exit). A join owns
-nothing of its own: closing it only stops probing.
-
-```moonbit nocheck
-///|
-fn main raise {
-  let cat = @catalog.Catalog::new()
-  cat.register(@csv.scan_string("id,name\n1,ada\n2,grace\n", "people"))
-  let stream = @moonlake.stream("SELECT id FROM people", cat)
-  for name in stream.names() {
-    println(name) // the column is "id"
-  }
-  while stream.next() is Some(batch) {
-    for r in 0..<batch.row_count() {
-      println(batch.columns()[0].get(r).to_string())
-    }
-  }
-}
-```
-
 ## Docs
 
-- **Playground** ([open](https://superbigcup325.github.io/moonlake/)): register several CSV/Parquet files in a visible session, run cross-file joins, inspect the physical plan, and drop tables or clear the session — the whole engine as wasm-gc, all client-side.
-- **[docs/DEMO.md](docs/DEMO.md)**: the reproducible demo, from running the engine to the DuckDB cross-check and the benchmark.
-- **[docs/verification.md](docs/verification.md)**: the correctness and performance report (differential and property testing, pushdown fuzzing, memory and spill numbers).
-- **[docs/bench-baseline.md](docs/bench-baseline.md)**: the release performance baseline (scan/join/gather/spill) and the machine it belongs to, with a committed JSON record and a `--compare` mode.
-- **[docs/spill-survey.md](docs/spill-survey.md)**: how six systems handle larger-than-memory queries, and where moonlake's design lands.
-- **[docs/devlog.md](docs/devlog.md)**: the build log, week by week.
-- **[docs/ROADMAP.md](docs/ROADMAP.md)**: what is being worked towards, what is refused on purpose, and what would start a direction currently on hold.
-- **[CHANGELOG.md](CHANGELOG.md)**: release notes.
+- **Playground** ([open](https://superbigcup325.github.io/moonlake/)): register several CSV/Parquet files in a visible session, run cross-file joins, inspect the physical plan, and drop tables or clear the session — the whole engine as wasm-gc, all client-side
+- **[docs/DEMO.md](docs/DEMO.md)**: the reproducible demo, from running the engine to the DuckDB cross-check and the benchmark
+- **[docs/cli.md](docs/cli.md)**: the `moonlake` command — inputs, output modes, plans, memory budgets and spilling
+- **[docs/sql-surface.md](docs/sql-surface.md)**: the SQL that is accepted, the semantics it follows, and what is refused
+- **[docs/sources.md](docs/sources.md)**: CSV inference and ranged scans, the Parquet reader and writer scope, streaming IO per target
+- **[docs/streaming.md](docs/streaming.md)**: `stream` / `next()` — which shapes are pulled rather than collected, and the lifecycle
+- **[docs/verification.md](docs/verification.md)**: the correctness and performance report (differential and property testing, pushdown fuzzing, memory and spill numbers)
+- **[docs/bench-baseline.md](docs/bench-baseline.md)**: the release performance baseline (scan/join/gather/spill) and the machine it belongs to, with a committed JSON record and a `--compare` mode
+- **[docs/spill-survey.md](docs/spill-survey.md)**: how six systems handle larger-than-memory queries, and where moonlake's design lands
+- **[docs/devlog.md](docs/devlog.md)**: the build log, week by week
+- **[docs/ROADMAP.md](docs/ROADMAP.md)**: what is being worked towards, what is refused on purpose, and what would start a direction currently on hold
+- **[CHANGELOG.md](CHANGELOG.md)**: release notes
 
 ## Where moonlake sits
 
@@ -312,6 +218,24 @@ resolved dependencies; it checks CSV queries, Parquet raw/Snappy round-trips,
 DATE/NULL values and table removal. Reference tools are pinned in
 [harness/requirements.txt](harness/requirements.txt).
 
+**Building from source.** `main` depends on `superbigcup325/colenc@0.1.3`,
+published on mooncakes, so a plain checkout builds — no workspace file needed:
+
+```bash
+moon update   # refresh the registry index; the graph downloads on the first check
+moon check
+```
+
+Hacking on `colenc` and `moonlake` together still works: add a `moon.work` that
+lists the sibling checkout, and the workspace version shadows the registry one:
+
+```bash
+ln -s ../colenc .colenc
+printf 'members = [".", "./.colenc"]\n' > moon.work
+```
+
+Remove both again before checking what a consumer actually installs.
+
 A release page is the `CHANGELOG.md` section for that version, not a second copy
 of it: `python3 harness/release_notes.py <version>` prints the body (the title
 is the bare version), `--check <version>` asserts that a published body still
@@ -329,4 +253,5 @@ moonlake is being built on top of these open-source packages:
 
 ## License
 
-[Apache-2.0](LICENSE)
+[Apache-2.0](LICENSE) © 2026 The moonlake Authors. [NOTICE](NOTICE) carries the
+copyright statement and the licenses of the packages moonlake builds on.
