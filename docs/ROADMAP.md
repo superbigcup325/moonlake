@@ -1880,6 +1880,26 @@ sum reads 2.31 -> 2.08 s with its 17.4 MB of spill gone as well. The shapes whos
 not a row (median, standard deviations, `string_agg`, count-distinct) keep the partitioned
 path, and their tests exercise it. §94.
 
+### The budget that costs a join 2.6x (2026-10-31)
+
+§89 left q2 unattributed: 1.53 s unbudgeted against 3.93 s at 16 MB, with an identical
+plan, identical counters, identical rows, and 8.6 MB of spill that cannot pay for 2.4 s.
+The census now says why, and it is not an overhead — it is a different engine. Unbudgeted,
+q2 runs the composed chain (§52): 402 structural points, a peak of 909,672 KB, and each
+join step handing batches on. At 16 MB the composer is refused because the sides it must
+hold are larger than the budget, so the eager path runs: 12 structural points, `hash join
+swapped its sides (step 2)` at 3.7 GB estimated, `hash join collapsed its output (step 1)`
+at 3.2 GB, and a peak of 1,435,488 KB. The budget's path is 2.6x slower **and holds 1.6x
+the memory**, so the gate that protects the budget is choosing the worse side of both axes.
+
+The bar, on the 22-query SF1 set at 16 MB and 64 MB:
+
+- q2 within 1.2x of its unbudgeted wall time (1.53 s), and no query over 5% slower than
+  today's budgeted run.
+- no query's peak above its current budgeted peak; q2's below its unbudgeted 909,672 KB.
+- the rule that picks between the two paths is stated in terms of what each one holds, not
+  as a constant tuned to q2, and the queries it moves are named with their before and after.
+
 ### The small-group aggregate contract (2026-10-31)
 
 q1 is the classic report: 5.9M rows of lineitem folded into **four** groups. Under a
