@@ -27,6 +27,9 @@ fn exec_joins(
   // before the loop.
   let mut acc = tables[steps[0].table]
   for i, step in steps {
+    // every step carries its name: the census points read it, and so does the
+    // stage timing a caller with a clock asked for
+    let tag = "step \{i}"
     if i == 0 {
       if !prescanned[step.table] {
         acc = filter_batches(acc, step.build_filter)
@@ -61,10 +64,10 @@ fn exec_joins(
             stats,
             census=Some(c),
             extra~,
-            tag="step \{i}",
+            tag~,
           )
         }
-        None => acc = join_or_spill(acc, right, step, opts, stats)
+        None => acc = join_or_spill(acc, right, step, opts, stats, tag~)
       }
     }
     // The tables whose last step was this one have no reader left: the plan is
@@ -113,6 +116,25 @@ fn tables_finished_at(steps : Array[JoinStep], i : Int32) -> Array[Int32] {
 /// in-memory join_step runs; over budget the join spills (grace hash
 /// join) when a store is provided, and is a clean error without one.
 fn join_or_spill(
+  acc : Array[@types.DataBatch],
+  right : Array[@types.DataBatch],
+  step : JoinStep,
+  opts : ExecOptions,
+  stats : Array[(String, Int64)],
+  census~ : MemCensus? = None,
+  extra~ : Array[(String, Int64)] = [],
+  tag~ : String = "",
+) -> Array[@types.DataBatch] raise @types.SqlError {
+  let start = stage_ticks()
+  let out = routed_join(acc, right, step, opts, stats, census~, extra~, tag~)
+  stage_timed("join \{tag}", stats, start)
+  out
+}
+
+///|
+/// The routing `join_or_spill` times, kept apart so the timing covers every
+/// branch it can take.
+fn routed_join(
   acc : Array[@types.DataBatch],
   right : Array[@types.DataBatch],
   step : JoinStep,

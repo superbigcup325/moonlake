@@ -353,6 +353,17 @@ pub fn unix_now() -> Int64 {
 }
 
 ///|
+extern "C" fn monotonic_nanos_ffi() -> Int64 = "moonlake_io_monotonic_nanos"
+
+///|
+/// Nanoseconds on the monotonic clock: the only clock here that measures a
+/// duration, so the only one `--analyze` times a stage with. It never steps
+/// backwards, and its origin is unspecified.
+pub fn monotonic_nanos() -> Int64 {
+  monotonic_nanos_ffi()
+}
+
+///|
 #borrow(path, bytes)
 extern "C" fn write_new_ffi(path : Bytes, bytes : Bytes) -> Int32 = "moonlake_io_write_new"
 

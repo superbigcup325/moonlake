@@ -2574,3 +2574,40 @@ The budget path is 2-3x the unbudgeted path on joins and nobody has attributed t
 second half of it (§89). q19's 16 MB time is decided by the scan's batch size, which
 is chosen for the cache; the fix needs the budget inside the source reader (§85). The
 unbudgeted peak follows the shared decode and has no contract to meet (§86).
+
+## W5 (2026-10-31): a clock, so the next attribution is a run and not a build
+
+### Goal
+
+§89 left q2's 2.4 s attributable to nothing: the plan, the counters and the rows are
+identical at 1.53 s and 3.93 s, and four ablations had ruled out the sort, the collapse,
+the partitioner and the store. §95 then ruled out the routing as a whole — handing every
+budgeted step to plain `join_step` read 1.63 s with identical answers — and refused to fix
+it, because both candidate fixes needed to know how long one stage takes and the engine had
+no clock. So this round builds the clock.
+
+### What landed
+
+`set_stage_clock` installs a nanoseconds source; the engine's report is unchanged unless one
+is installed, which keeps ANALYZE's row and byte counts deterministic and every existing
+snapshot intact. The CLI installs one for `--analyze` on native, reading `CLOCK_MONOTONIC`
+through `platform/io`; a target without a monotonic clock installs none. Five stages are
+named: `collect`, `join step <n>`, `join`, `aggregate`, `sort`/`sort+project`.
+
+The module-level cell is a deliberate trade: threading a clock through `ExecOptions` would
+have made 44 literals — most of them tests — learn a new field to serve one report.
+
+### What it found in its first run
+
+q2 at 16 MB: scans 291 -> 249 ms, aggregate and sort 0 ms, and the whole gap in two join
+steps — step 1 299 -> 685 ms and step 2 925 -> 2617 ms, where step 2 is the step the census
+names `hash join swapped its sides`. The swap costs 2.8x the plain join on the same 800k
+output rows, and the collapse 2.3x more, for a run that ends up 1.6x hungrier than no budget
+at all. That is the next contract, and it now has a number instead of a hypothesis.
+
+### Edges
+
+The stage sums do not add to the wall time (1785 ms of stages against 1.62 s unbudgeted):
+analyze carries a stats array and a census-free run still pays for it, so a duration is for
+attribution, not for benchmarks. The scan stage is the one place a stage can be *cheaper*
+than reality, because a lazy source's first batch is pulled inside the first join.

@@ -1912,6 +1912,25 @@ relaxing the composer gate moves nothing. Both candidate fixes need a step's out
 so the next contract is per-stage wall time in `--analyze` — an instrument, not a guess.
 §95.
 
+### The instrument: per-stage time in `--analyze` (2026-10-31)
+
+§95 refused a fix because it could not attribute one: two candidate fixes for q2's 2.2x
+needed the time a stage takes, and ANALYZE carries no clocks on purpose (row and byte counts
+are its deterministic part). The contract is a clock that the caller installs: the report
+names `collect`, `join step <n>`, `join`, `aggregate` and `sort`/`sort+project` in
+milliseconds, every report without an installed clock stays byte-identical, and a target
+without a monotonic clock simply installs none. The bar: the lines are enough to name which
+stage and which join step carries a gap without rebuilding a probe binary, and the
+deterministic part of the report does not change.
+
+**Result (§96).** Shipped: `set_stage_clock` plus a native `CLOCK_MONOTONIC` binding in
+`platform/io`, installed by the CLI for `--analyze` alone. On q2 the report pays for itself
+immediately: scans 291 -> 249 ms, aggregate and sort 0 ms at both budgets, and the whole gap
+sits in two join steps — step 1 299 -> 685 ms and step 2 925 -> 2617 ms, the latter being
+the `hash join swapped its sides (step 2)` step. So the next contract is that step: the swap
+costs 2.8x the plain join on the same 800k output rows and the collapse another 2.3x, and
+together they turn a budget into a slower *and* hungrier run than no budget. §96.
+
 ### The small-group aggregate contract (2026-10-31)
 
 q1 is the classic report: 5.9M rows of lineitem folded into **four** groups. Under a

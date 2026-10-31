@@ -29,6 +29,8 @@ pub fn run_select_stream(String, @catalog.Catalog) -> ResultStream raise @types.
 
 pub fn run_select_stream_opts(String, @catalog.Catalog, ExecOptions) -> ResultStream raise @types.SqlError
 
+pub fn set_stage_clock((() -> Int64)?) -> Unit
+
 // Errors
 
 // Types and methods

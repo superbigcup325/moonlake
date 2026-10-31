@@ -177,3 +177,11 @@ MOONBIT_FFI_EXPORT int64_t moonlake_io_read_small(moonbit_bytes_t path,
 // Wall clock, in seconds. Spill owner markers record when a directory was
 // claimed; nothing here times anything.
 MOONBIT_FFI_EXPORT int64_t moonlake_io_now(void) { return (int64_t)time(NULL); }
+
+// Monotonic clock, in nanoseconds, for `--analyze` timing only: a wall clock
+// could step backwards mid-query, and a duration is what a stage report wants.
+MOONBIT_FFI_EXPORT int64_t moonlake_io_monotonic_nanos(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+  return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}

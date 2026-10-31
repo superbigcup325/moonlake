@@ -6489,3 +6489,48 @@ and the one defect worth naming loudly: **for this shape a budget is slower and 
 no budget at all**, which means the routing's promise is not kept where the output exceeds
 it. The next contract is the instrument: per-stage wall time in `--analyze`, so the next
 attempt attributes instead of ablating.
+
+## 96. The clock ANALYZE was missing, and what it names on q2 (2026-10-31)
+
+§95 refused to guess at q2's 2.2x because two candidate fixes both needed a number nothing
+measured: the time a *stage* takes. ANALYZE deliberately carried no clocks — row and byte
+counts are its deterministic part — so the clock is now opt-in. `set_stage_clock` installs a
+nanoseconds source, the CLI installs one for `--analyze` on a target with a monotonic clock
+(the native binding reads `CLOCK_MONOTONIC` through `platform/io`), and every report without
+one is byte-identical to the report it always was. The stages are `collect`, `join step <n>`,
+`join`, `aggregate`, and `sort` or `sort+project`.
+
+q2, SF1, native, one analyze run each:
+
+| stage | no budget | 16 MB |
+| --- | --- | --- |
+| collect | 291 ms | 249 ms |
+| join step 1 | 299 ms | 685 ms |
+| join step 2 | 925 ms | 2617 ms |
+| join steps 3-5 | 2 ms | 1 ms |
+| join (all steps) | 1306 ms | 3349 ms |
+| aggregate | 0 ms | 0 ms |
+| sort+project | 0 ms | 0 ms |
+
+Three things this settles that §89 and §95 could only infer:
+
+1. **The scans are not it.** 291 ms against 249 ms: the budgeted run reads the same bytes, and
+   a second less than half the gap lives anywhere but the join.
+2. **The sort is not it either** — 0 ms at both budgets, on 50 rows, exactly as §89's ablation
+   said.
+3. **It is one join step.** Steps 3-5 (supplier, nation, region) are microseconds at both
+   budgets; step 1 goes 299 -> 685 ms and step 2 goes 925 -> 2617 ms. Step 2 is the step the
+   census names `hash join swapped its sides (step 2)`, so the swap is 2.8x the plain join on
+   the same rows and the collapse costs another 2.3x. Both branches exist to hold less than
+   the 15 MB build side at 16 MB; together they buy a 1.4 GB peak instead of the 890 MB the
+   unbudgeted run holds, which is the defect §95 named.
+
+The numbers are for attribution, not for benchmarks: an analyze run carries the stats array
+and its stage sums do not add up to the wall time (1785 ms of stages against 1.62 s wall on
+the unbudgeted run), so a duration here means "this stage, relative to that one".
+
+Two notes for the next reader. The clock is a module-level cell because one query runs on one
+thread, and it is installed by the caller rather than by `ExecOptions` so that the 44
+`ExecOptions` literals in the tree — most of them tests — did not have to learn a new field.
+And the tag that names a join step now reaches the timing site on every path, not just on
+census paths, which is why the lines read `join step 1` rather than `join`.

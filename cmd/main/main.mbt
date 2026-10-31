@@ -486,6 +486,10 @@ fn analyze_query(
   memory : Int32,
   spill_dir : String?,
 ) -> String raise @types.SqlError {
+  // a stage report is worth durations only when the caller asked for one, and
+  // only a platform with a monotonic clock can supply them
+  @engine.set_stage_clock(stage_clock())
+  defer @engine.set_stage_clock(None)
   if memory <= 0 {
     return @engine.explain_analyze(sql, cat)
   }

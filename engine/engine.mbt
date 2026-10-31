@@ -377,6 +377,7 @@ fn run_pipeline(
   // table with a source scans through it (projection + predicate hints), and
   // applies its build filter per batch so unmatched rows never accumulate;
   // prescanned marks those tables so exec_joins does not filter them twice.
+  let t_collect = stage_ticks()
   let narrowed : Array[Array[@types.DataBatch]] = []
   let prescanned : Array[Bool] = []
   for k in 0..<tables.length() {
@@ -441,6 +442,8 @@ fn run_pipeline(
     }
     None => ()
   }
+  stage_timed("collect", stats, t_collect)
+  let t_join = stage_ticks()
   let joined = exec_joins(
     narrowed,
     bq.steps,
@@ -457,6 +460,8 @@ fn run_pipeline(
     }
     stats.push(("joins", joined_rows.to_int64()))
   }
+  stage_timed("join", stats, t_join)
+  let t_aggregate = stage_ticks()
   let kept : Array[@types.DataBatch] = if bq.aggregate {
     let grouped = aggregate_within_budget(
       joined,
@@ -475,6 +480,7 @@ fn run_pipeline(
   } else {
     joined
   }
+  stage_timed("aggregate", stats, t_aggregate)
   // External sort: a non-aggregate ORDER BY under a budget sorts
   // externally (runs on disk, streaming merge into the projection and
   // the OFFSET/LIMIT window). Aggregate GROUP BY inputs spill through
@@ -508,6 +514,7 @@ fn run_pipeline(
             None
           }
         }
+        let t_sort = stage_ticks()
         let batch = external_sort_project(
           produced,
           pre_types,
@@ -521,6 +528,7 @@ fn run_pipeline(
           store,
           stats,
         )
+        stage_timed("sort", stats, t_sort)
         if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
           stats.push(("result", batch.row_count().to_int64()))
         }
@@ -559,6 +567,7 @@ fn run_pipeline(
     }
     keys.push((ke, spec.desc, spec.nulls_first))
   }
+  let t_project = stage_ticks()
   let batch = if keys.length() > 0 {
     let sorted = sort_exprs(pre, keys, None, None)
     let projected = project(sorted, out_exprs, bq.out_types)
@@ -569,6 +578,7 @@ fn run_pipeline(
     let projected = if bq.distinct { dedupe_rows(projected) } else { projected }
     order_limit(projected, [], bq.limit, bq.offset)
   }
+  stage_timed("sort+project", stats, t_project)
   if stats.length() > 0 && !(stats[stats.length() - 1].0 == "result") {
     stats.push(("result", batch.row_count().to_int64()))
   }
@@ -579,8 +589,11 @@ fn run_pipeline(
 /// Run the query and render the physical plan annotated with the
 /// actual row counts each stage produced — scans, join outputs,
 /// aggregate groups and the final result — plus what it spilled, if
-/// anything. No clocks: row counts and byte counts are the
-/// deterministic part of ANALYZE.
+/// anything. No clocks by default: row counts and byte counts are the
+/// deterministic part of ANALYZE, and they stay the whole report unless
+/// the caller installs one with `set_stage_clock`. A caller that does
+/// (the CLI's `--analyze` on a target with a monotonic clock) also gets
+/// a `time <stage> (ms)` line per stage, including each join step.
 pub fn explain_analyze(
   sql : String,
   catalog : @catalog.Catalog,

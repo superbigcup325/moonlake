@@ -26,6 +26,8 @@ options(
     "mem_rss_native.mbt": [ "native", "llvm" ],
     "mem_rss_native_wbtest.mbt": [ "native", "llvm" ],
     "mem_rss_other.mbt": [ "wasm", "wasm-gc", "js" ],
+    "stage_clock_native.mbt": [ "native", "llvm" ],
+    "stage_clock_other.mbt": [ "wasm", "wasm-gc", "js" ],
     "spill_owner_native.mbt": [ "native", "llvm" ],
     "spill_owner_native_wbtest.mbt": [ "native", "llvm" ],
     "spill_owner_other.mbt": [ "wasm", "wasm-gc", "js" ],
