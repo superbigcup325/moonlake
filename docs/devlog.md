@@ -2550,6 +2550,14 @@ next contract.
   The record's own attribution of q19 to the batch size was wrong and is corrected in
   §85: one defect produced the 2x at every budget and the budget only made it visible.
 
+- The fold that spilled 199 MB to produce four rows (§93, §94): q1 under a 16 MB
+  budget now splits into seventeen segments, carries each segment's group state as
+  rows (`avg` as its own sum and count) and re-folds the partials, so it reads 5.04 ->
+  2.62 s with its 199,193,427 bytes of spill I/O gone and a peak 13% lower; q20's inner
+  sum drops its 17.4 MB of spill for 2.31 -> 2.08 s. A dense key set keeps the
+  partitioned path (the merged partials would be as large as the input), and a median or
+  a standard deviation has no state that is a row.
+
 ### What was refused, and why that is the output
 
 Three contracts were written first and measured after, and all three failed their own

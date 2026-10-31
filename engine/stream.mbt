@@ -351,6 +351,7 @@ fn fold_pulled(
       partitions: 0,
       peak_buffered: 0L,
       largest_spilled: 0L,
+      segments: 0,
     }
   }
 }
@@ -384,6 +385,9 @@ fn finish_agg_pull(
     stats.push(
       ("largest partition spilled (estimated)", folded.largest_spilled),
     )
+  }
+  if folded.segments > 1 {
+    stats.push(("fold segments", folded.segments.to_int64()))
   }
   stats.push(("aggregate", grouped.row_count().to_int64()))
   let batch = if bq.order_by.length() > 0 {

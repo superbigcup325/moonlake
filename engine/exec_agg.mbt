@@ -572,7 +572,11 @@ fn aggregate_seq(
   group_types : Array[@types.DataType],
   aggs : Array[AggSpec],
   census~ : MemCensus? = None,
+  state~ : Bool = false,
 ) -> @types.DataBatch raise @types.SqlError {
+  // the columnar path renders sum and count as their own partials, so a state
+  // fold may use it: only a shape with `avg` (which needs two state columns) or
+  // min/max falls to the boxed one
   if col_agg_plan(group_types, aggs) is Some(kinds) {
     return aggregate_cols(seq, group_exprs, group_types, kinds, aggs, census~)
   }
@@ -849,14 +853,119 @@ fn aggregate_seq(
     }
     columns.push(vec)
   }
-  for i in 0..<m {
-    let vec = @types.ColumnVector::make(aggs[i].out_type, n)
-    for r in 0..<n {
-      vec.set(r, acc_finish(acc_rows[r][i], aggs[i]))
+  if state {
+    for i in 0..<m {
+      for vec in agg_state_columns(aggs[i], acc_rows, i, n) {
+        columns.push(vec)
+      }
     }
-    columns.push(vec)
+  } else {
+    for i in 0..<m {
+      let vec = @types.ColumnVector::make(aggs[i].out_type, n)
+      for r in 0..<n {
+        vec.set(r, acc_finish(acc_rows[r][i], aggs[i]))
+      }
+      columns.push(vec)
+    }
   }
   @types.DataBatch::new(columns, n)
+}
+
+///|
+/// How many columns an aggregate's partial state occupies when a fold is split
+/// into segments: `avg` needs its sum and its count, everything else one. Zero
+/// means the state cannot be rendered as rows, and the shape keeps the
+/// partitioned path.
+fn agg_state_width(spec : AggSpec) -> Int32 {
+  match spec.kind {
+    Sum | Count | CountStar | Min | Max => 1
+    Avg => 2
+    _ => 0
+  }
+}
+
+///|
+/// Whether every aggregate of the fold has a renderable state, so a fold over
+/// that outgrows its budget can split into segments and re-fold its partials.
+fn aggs_state_mergeable(aggs : Array[AggSpec]) -> Bool {
+  for spec in aggs {
+    if agg_state_width(spec) == 0 {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// The state columns of one aggregate, in the order `agg_state_specs` re-reads
+/// them: `avg` is (sum, count) because an average of averages is not an average,
+/// while a sum, a count, a min and a max are their own partials.
+fn agg_state_columns(
+  spec : AggSpec,
+  acc_rows : Array[Array[Acc]],
+  i : Int32,
+  n : Int32,
+) -> Array[@types.ColumnVector] {
+  let cols : Array[@types.ColumnVector] = []
+  match spec.kind {
+    Avg => {
+      let sums = @types.ColumnVector::make(@types.Float64, n)
+      let counts = @types.ColumnVector::make(@types.Int64, n)
+      for r in 0..<n {
+        match acc_rows[r][i] {
+          AvgF(a) => {
+            sums.set(
+              r,
+              if a.count == 0L {
+                @types.Null
+              } else {
+                @types.Float64(a.sum)
+              },
+            )
+            counts.set(r, @types.Int64(a.count))
+          }
+          _ => ()
+        }
+      }
+      cols.push(sums)
+      cols.push(counts)
+    }
+    Sum => {
+      let vec = @types.ColumnVector::make(spec.out_type, n)
+      for r in 0..<n {
+        match acc_rows[r][i] {
+          SumI(a) =>
+            vec.set(r, if a.seen { @types.Int64(a.sum) } else { @types.Null })
+          SumF(a) =>
+            vec.set(r, if a.seen { @types.Float64(a.sum) } else { @types.Null })
+          _ => ()
+        }
+      }
+      cols.push(vec)
+    }
+    Count | CountStar => {
+      let vec = @types.ColumnVector::make(@types.Int64, n)
+      for r in 0..<n {
+        match acc_rows[r][i] {
+          CountOf(a) => vec.set(r, @types.Int64(a.count))
+          _ => ()
+        }
+      }
+      cols.push(vec)
+    }
+    Min | Max => {
+      let vec = @types.ColumnVector::make(spec.out_type, n)
+      for r in 0..<n {
+        match acc_rows[r][i] {
+          MinMax(a) => vec.set(r, a.cur)
+          _ => ()
+        }
+      }
+      cols.push(vec)
+    }
+    _ => ()
+  }
+  cols
 }
 
 ///|
