@@ -200,9 +200,25 @@ open(f'{d}/grp_ok.csv', 'w').write('k,v\n' + rows)
 open(f'{d}/grp_bad.csv', 'w').write('k,v\n' + rows + '1,oops\n')
 PY2
 dir=$work/j
+# median has no state that is a row, so this fold partitions instead of
+# splitting into segments and the spill lifecycle is what gets exercised
+out=$($rel exec --csv "$work/grp_ok.csv" --memory 200K --spill-dir "$dir" --analyze \
+  "SELECT k, count(*) AS n, sum(v) AS s, median(v) AS m FROM grp_ok GROUP BY k")
+grep -q "spill partitions:" <<<"$out" || fail "the grouped query was expected to spill: $out"
+# the same file without the median: count and sum carry their own partials, so
+# the fold splits into segments and writes nothing at all (§94)
+dir=$work/j2
 out=$($rel exec --csv "$work/grp_ok.csv" --memory 200K --spill-dir "$dir" --analyze \
   "SELECT k, count(*) AS n, sum(v) AS s FROM grp_ok GROUP BY k")
-grep -q "spill partitions:" <<<"$out" || fail "the grouped query was expected to spill: $out"
+grep -q "spill partitions:" <<<"$out" && fail "the mergeable grouped query was expected to fold in segments: $out"
+grep -q "fold segments:" <<<"$out" || fail "no segment count reported: $out"
+[ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] && fail "a segmented fold left files behind: $(ls -A "$dir" | head -3)"
+rows=$($rel exec --csv "$work/grp_ok.csv" --memory 200K --spill-dir "$dir" \
+  "SELECT count(*), sum(s) FROM (SELECT k, count(*) AS n, sum(v) AS s FROM grp_ok GROUP BY k)" | tail -1)
+# 50 groups, and the sums of all 300,000 values: 299999*300000/2
+[ "$rows" = "50|44999850000" ] || fail "segmented fold answered $rows, expected 50|44999850000"
+pass "a mergeable GROUP BY over the budget folds in segments and spills nothing"
+
 dir=$work/k
 if $rel exec --csv "$work/grp_bad.csv" --memory 200K --spill-dir "$dir" \
   "SELECT k, count(*) AS n, sum(v) AS s FROM grp_bad GROUP BY k" >/dev/null 2>"$work/k.err"; then
