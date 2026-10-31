@@ -27,10 +27,15 @@ jobs:
           fetch-depth: 0 # `git describe --tags` needs the tags
       - name: Install MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- 0.10.18+6c83a7f62
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Toolchain version
-        run: moon version --all
+      - name: "Toolchain version (floor: moonc 0.10.16)"
+        run: |
+          moon version --all
+          moonc -v | grep -qE '^v(0\.10\.(1[6-9]|[2-9][0-9])|0\.(1[1-9]|[2-9][0-9])\.[0-9]|[1-9][0-9]*\.)' || {
+            echo "moonc 0.10.16 or newer is required" >&2
+            exit 1
+          }
       - name: Update registry index
         run: moon update
       - name: Provenance (version claims, archive contents, clean tree)

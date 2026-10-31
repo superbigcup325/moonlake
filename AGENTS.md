@@ -8,7 +8,9 @@ You can browse and install extra skills here:
 ## Repository layout
 
 - `README.mbt.md` — the file readers land on (tutorial + API tour); `README.md`
-  is a symlink kept for GitHub.
+  is a symlink kept for GitHub; the library snippets are compiled from
+  `examples/`, so keep the two in step.
+- `examples/` — the README's library snippets as runnable packages.
 - `docs/devlog.md` — weekly log: goals, approach and quality boundaries.
 - `docs/verification.md`, `docs/spill-survey.md`, `docs/DEMO.md` — verification
   evidence, the memory-spill design survey, and demo notes.
@@ -39,11 +41,12 @@ You can browse and install extra skills here:
 
 ## Tooling
 
-- Verified against `moon 0.1.20261023` (moonc `v0.10.17`, 2026-10-23). CI
-  installs `latest` and prints `moon version --all` per job: toolchain behavior
-  does change between releases (0.1.20261016 repurposed `moon install`), so when
-  a step that used to pass starts failing, read that version line before
-  blaming the code.
+- CI pins `moonc 0.10.18+6c83a7f62` (moon 0.1.20261028) and asserts the
+  0.10.16 floor in every job; the nightly `toolchain-latest` job checks `latest`
+  informationally. The tree is also checked locally on 0.10.17. Toolchain
+  behavior does change between releases (0.1.20261016 repurposed `moon
+  install`), so when a step that used to pass starts failing, read the version
+  line before blaming the code.
 
 - `moon fmt` is used to format your code properly.
 
@@ -76,12 +79,16 @@ You can browse and install extra skills here:
 - `moon fmt` once replaced `README.md` with a dangling symlink and swallowed its
   content; the working setup is `README.mbt.md` as the real file with `README.md`
   as a symlink to it.
+- The README's library snippets import `moonlake`, `catalog` and `sources/csv`;
+  the streaming snippet needs nothing else. A copy that only imports
+  `superbigcup325/moonlake` fails at `moon check` with `Package "catalog" not
+  found`. `examples/basic` and `examples/stream` are the compiled copies.
 - A fresh clone needs `moon update` (registry index) before check/test; the
   dependency graph itself resolves and downloads during the first
   `moon check`/`moon build`/`moon test`. Since `moon 0.1.20261016` a bare
   `moon install` is **not** a dependency fetch: it installs a binary package and
   now *requires* a `SOURCE` argument, so the old `moon update && moon install`
-  recipe found in tutorials exits 2 (the four workflows here run `moon update`
+  recipe found in tutorials exits 2 (the workflows here run `moon update`
   only and let the next step resolve). A populated local `.mooncakes` cache
   masks a missing dependency, so wipe it to simulate a fresh clone. If the
   toolchain home is not writable, `moon update` cannot refresh the registry

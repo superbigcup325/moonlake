@@ -24,6 +24,22 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
   are on hold with the evidence each one waits for.
 - No external database process or database FFI binding, no storage engine — the query engine is MoonBit; filesystem access uses `moonbitlang/x` (including its native system bindings) plus a small private native C stub (`platform/io`, POSIX) for incremental file reads and writes, which is not part of the published API and is replaced by whole-file calls on wasm-gc/js. moonlake reads external files and computes in memory. Queries larger than memory degrade honestly: a CLI `--memory` budget (library `execute_with` + a spill store) spills a blocking `ORDER BY` to sorted runs and streams the result back; large joins and GROUP BYs partition their inputs to disk the same way.
 
+### Repository layout
+
+| path | what lives there |
+|---|---|
+| `sql/` | lexer, parser and AST |
+| `types/` | `Scalar`, `DataType`, `DataBatch` and value encodings |
+| `catalog/` | table registration and the scan interface |
+| `sources/csv/`, `sources/parquet/` | CSV inference and scanning; the in-house Parquet reader and writer |
+| `engine/` | binder, plan, vectorized operators, joins, aggregates, windows, streaming |
+| `spill/` | the spill store used by the larger-than-memory operators |
+| `cmd/main/` | the `moonlake` command-line binary |
+| `playground/` | the wasm-gc browser page |
+| `examples/` | the README's library snippets as compiled packages |
+| `harness/` | TPC-H generation, golden comparisons, benchmarks and CI drivers |
+| `docs/` | demo, verification report, roadmap, devlog and design surveys |
+
 ### SQL surface
 
 - `SELECT` (including `*`) / `FROM` (multi-table) / `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`
@@ -106,6 +122,8 @@ moon run cmd/main -- exec --csv harness/data/sf001/lineitem.csv \
 # ...
 ```
 
+CI pins `moonc` 0.10.18 (`0.10.18+6c83a7f62`); the supported floor is 0.10.16, and a nightly job checks `latest` separately.
+
 For everyday use, install a standalone binary and skip `moon run`:
 
 ```bash
@@ -121,6 +139,18 @@ As a library:
 ```bash
 moon add superbigcup325/moonlake
 ```
+
+A new module names the packages it uses in `moon.pkg`. Both snippets below need these:
+
+```text
+import {
+  "superbigcup325/moonlake",
+  "superbigcup325/moonlake/catalog",
+  "superbigcup325/moonlake/sources/csv",
+}
+```
+
+`examples/basic/` and `examples/stream/` are these two snippets as compiled packages: `moon run examples/basic` and `moon run examples/stream`.
 
 > This README and the browser playground track `main`. `moon add` gives you the
 > latest published release from mooncakes (0.6.3). 0.6.0 through 0.6.3, in order:
@@ -226,7 +256,9 @@ fn main raise {
   let cat = @catalog.Catalog::new()
   cat.register(@csv.scan_string("id,name\n1,ada\n2,grace\n", "people"))
   let stream = @moonlake.stream("SELECT id FROM people", cat)
-  println(stream.names()) // ["id"]
+  for name in stream.names() {
+    println(name) // the column is "id"
+  }
   while stream.next() is Some(batch) {
     for r in 0..<batch.row_count() {
       println(batch.columns()[0].get(r).to_string())
@@ -293,6 +325,7 @@ moonlake is being built on top of these open-source packages:
 - [moonbitlang/quickcheck](https://github.com/moonbitlang/quickcheck) (Apache-2.0) — property-based testing
 - [superbigcup325/colenc](https://github.com/superbigcup325/colenc) (Apache-2.0) — Parquet DELTA, BYTE_STREAM_SPLIT and RLE encoding/decoding primitives
 - [apache/parquet-format](https://github.com/apache/parquet-format) (Apache-2.0) — the Parquet format and encoding specifications that `sources/parquet` implements; its [parquet-testing](https://github.com/apache/parquet-testing) corpus supplies the files the reader is verified against
+- The TPC-H query texts in `harness/queries/` are the official benchmark texts, used here for correctness validation against DuckDB; TPC-H is a trademark of the Transaction Processing Performance Council
 
 ## License
 

@@ -1,12 +1,14 @@
 # Reproducible demo
 
 Everything below runs from a fresh clone on Linux/macOS with
-[MoonBit](https://docs.moonbitlang.com) (`moon` 0.1.20261023 or newer — CI
-installs `latest`), and `uv` (which can supply Python 3.12). Reference tools are
+[MoonBit](https://docs.moonbitlang.com) (`moonc` 0.10.16 or newer — CI pins
+`0.10.18+6c83a7f62`), and `uv` (which can supply Python 3.12). Reference tools are
 pinned in `harness/requirements.txt`; a Python 3.12 virtual environment with
 `pip install -r harness/requirements.txt` works too. The engine needs no
 external database process or database FFI binding; filesystem access uses
-`moonbitlang/x`'s system bindings.
+`moonbitlang/x`'s system bindings. The checkout ships the SF0.01 and SF0.1
+fixtures (about 136 MB) so the demo runs offline; a shallow clone is enough for
+the quickstart.
 
 ## 1. Run the engine
 
@@ -97,6 +99,8 @@ moon check --deny-warn            # type check, warnings denied
 moon test --target native         # native test suite
 moon test --target wasm-gc        # same suite on wasm-gc
 moon test --target js             # same suite on js
+moon run examples/basic           # the README's first library snippet
+moon run examples/stream          # the README's streaming snippet
 ```
 
 All three targets run the identical test suite; a bare `moon test` selects

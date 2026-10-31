@@ -15,10 +15,15 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- 0.10.18+6c83a7f62
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Toolchain version
-        run: moon version --all
+      - name: "Toolchain version (floor: moonc 0.10.16)"
+        run: |
+          moon version --all
+          moonc -v | grep -qE '^v(0\.10\.(1[6-9]|[2-9][0-9])|0\.(1[1-9]|[2-9][0-9])\.[0-9]|[1-9][0-9]*\.)' || {
+            echo "moonc 0.10.16 or newer is required" >&2
+            exit 1
+          }
       - name: Update registry index
         run: |
           moon update
@@ -94,10 +99,15 @@ jobs:
           df -h /
       - name: Install MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- 0.10.18+6c83a7f62
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - name: Toolchain version
-        run: moon version --all
+      - name: "Toolchain version (floor: moonc 0.10.16)"
+        run: |
+          moon version --all
+          moonc -v | grep -qE '^v(0\.10\.(1[6-9]|[2-9][0-9])|0\.(1[1-9]|[2-9][0-9])\.[0-9]|[1-9][0-9]*\.)' || {
+            echo "moonc 0.10.16 or newer is required" >&2
+            exit 1
+          }
       - name: Update registry index
         run: moon update
       - uses: actions/setup-python@v5
@@ -115,3 +125,23 @@ jobs:
         env:
           MOONLAKE_BIN: _build/native/release/build/cmd/main/main.exe
         run: python3 harness/check_large_write.py
+
+  toolchain-latest:
+    # Informational: the blocking jobs pin a known-good toolchain. This job is
+    # allowed to fail so a new upstream release is visible without turning the
+    # nightly red before the pinned version has been updated.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install latest MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: Toolchain version
+        run: moon version --all
+      - name: Update registry index
+        run: moon update
+      - name: Check under latest
+        run: moon check --deny-warn
+

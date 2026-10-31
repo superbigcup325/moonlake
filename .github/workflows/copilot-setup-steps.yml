@@ -31,11 +31,15 @@ jobs:
 
       - name: Set up MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- 0.10.18+6c83a7f62
           echo "$HOME/.moon/bin" >> $GITHUB_PATH
 
       - name: Update MoonBit dependencies
         run: |
             moon version --all
+            moonc -v | grep -qE '^v(0\.10\.(1[6-9]|[2-9][0-9])|0\.(1[1-9]|[2-9][0-9])\.[0-9]|[1-9][0-9]*\.)' || {
+              echo "moonc 0.10.16 or newer is required" >&2
+              exit 1
+            }
             moon update
             

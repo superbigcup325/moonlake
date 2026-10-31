@@ -8,12 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The README's two library snippets are compiled packages under `examples/`
+  and run in CI, with the `moon.pkg` imports a new module needs; the README
+  gains a repository layout and the toolchain floor.
 - `--analyze` names what a routed join step did with the sides it had: `hashed the build
   side`, `swapped its sides` or `partitioned`.
 - `--analyze` names the time each stage took on a target with a monotonic clock: `time
   collect`, `time join step <n>`, `time join`, `time aggregate` and `time sort` in
   milliseconds. The library's report is unchanged unless the caller installs the clock with
   `set_stage_clock`, so row and byte counts stay the deterministic part of ANALYZE.
+
+### Changed
+
+- CI pins `moonc 0.10.18+6c83a7f62` instead of taking whatever `latest` is, and
+  asserts the 0.10.16 floor in every job. A nightly `toolchain-latest` job checks
+  the upstream release informationally.
 
 ### Fixed
 
