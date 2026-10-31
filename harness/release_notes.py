@@ -4,14 +4,14 @@ The CHANGELOG is the record; a GitHub release page is a *view* of it. Every
 release body is generated from this script, so the two cannot drift, and the
 release title is the bare version (`0.6.3`, not `v0.6.3` and not a sentence).
 
-    python3 harness/release_notes.py 0.6.3            # the section body
+    python3 harness/release_notes.py 0.6.3            # the release body
     python3 harness/release_notes.py --lint           # structure of the file
     python3 harness/release_notes.py --list           # versions the file has
-    python3 harness/release_notes.py 0.6.3 --with-link
+    python3 harness/release_notes.py 0.6.3 --plain    # just the section
     python3 harness/release_notes.py --check 0.6.3 < body.txt
 
-`--with-link` appends the two lines a release page carries: where the record
-lives, and how to install the version. `--check` exits 1 when the file given on
+Every rendering ends with the two lines a release page carries: where the record
+lives, and how to install the version; `--plain` drops them. `--check` exits 1 when the file given on
 stdin is not what this script would emit, which is how a release body is
 asserted to be the section it claims to be.
 """
@@ -92,7 +92,9 @@ def main(argv):
     check = argv[1] == "--check"
     version = argv[2] if check else argv[1]
     v, date, body = pick(version)
-    text = with_link(v, date, body) if "--with-link" in argv else body
+    # a published body always carries the trailer, so --check compares against
+    # the trailer by default; --plain is for a caller that wants the section
+    text = with_link(v, date, body) if "--plain" not in argv else body
     if check:
         want = sys.stdin.read()
         if want.strip() != text.strip():
