@@ -1912,6 +1912,29 @@ relaxing the composer gate moves nothing. Both candidate fixes need a step's out
 so the next contract is per-stage wall time in `--analyze` — an instrument, not a guess.
 §95.
 
+### Release notes are the changelog (2026-10-31)
+
+Nine release pages carried four title styles — `moonlake 0.3.1 — the browser build loads…`,
+`0.6.2 — the residual stops rebuilding the side that never moves`, `v0.6.1`, `0.6.3` — and
+bodies that were hand-written summaries of the CHANGELOG section they sat beside, so the two
+drifted: 0.6.3's page predates §95-§97 and does not mention them.
+
+From now on a release page is a view of the file, not a second copy of it:
+
+- the title is the bare version: `0.6.3`;
+- the body is `python3 harness/release_notes.py 0.6.3 --with-link` — the CHANGELOG section
+  for that version verbatim, then where the record lives and the install line;
+- `python3 harness/release_notes.py --check 0.6.3 < body.txt` asserts a published body is
+  still the section it claims, which is how a page edited by hand is caught;
+- `python3 harness/release_notes.py --lint` keeps the file in Keep a Changelog shape: every
+  version dated, subsections only Added/Changed/Deprecated/Removed/Fixed/Security and in that
+  order. It found six violations — 0.6.2, 0.5.0, 0.3.1 and 0.2.0 out of order, and 0.4.0
+  with a `### Performance` section, which is not one of the six. They are reordered now, with
+  no content changed (1,170 content lines before and after).
+
+The pages themselves are external state, so the maintainer applies the convention at release
+time; the script and the file are what make it mechanical rather than remembered.
+
 ### The routing test that overflows (2026-10-31)
 
 §95 named the budget's cost on a join but not the mechanism; §96's clock put it in one step.

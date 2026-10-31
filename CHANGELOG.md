@@ -44,6 +44,16 @@ The join's residual stops rebuilding the side that never moves, and the partitio
 stops paying per scan batch. This is a patch release: a defect fix and two cost fixes,
 no public signature moved, and the answers are identical byte for byte.
 
+### Changed
+
+- A budgeted step counts a string column's bytes from the column instead of building one
+  `Scalar` per row, which is 11% of q2's and 5% of q13's wall time at 16 MB and 64 MB
+  (verification §90). No fit decision moves, because the count is the same to the byte.
+- The partitioner routes a side in `budget / 4` chunks instead of in the scan's batches,
+  which is 20x fewer gathers: 24% of q7's and 10% of q9's wall time at 16 MB, with peaks
+  unchanged (verification §92). Rows, keys and partition numbers do not move, so no
+  answer changes.
+
 ### Fixed
 
 - The join's residual masks were rebuilt for both sides on every probe batch, although
@@ -54,16 +64,6 @@ no public signature moved, and the answers are identical byte for byte.
   same fix is worth 11% of q2 at 16 MB and 5% of q13. Verification §92, with the whole
   set against 0.6.1 at both budgets: 21 of 22 cases more than 5% faster at 16 MB
   (q19 -94.4%, q2 -76.0%, q21 -49.3%) and 21 of 22 at 64 MB (q19 -94.5%, q2 -87.0%).
-
-### Changed
-
-- A budgeted step counts a string column's bytes from the column instead of building one
-  `Scalar` per row, which is 11% of q2's and 5% of q13's wall time at 16 MB and 64 MB
-  (verification §90). No fit decision moves, because the count is the same to the byte.
-- The partitioner routes a side in `budget / 4` chunks instead of in the scan's batches,
-  which is 20x fewer gathers: 24% of q7's and 10% of q9's wall time at 16 MB, with peaks
-  unchanged (verification §92). Rows, keys and partition numbers do not move, so no
-  answer changes.
 
 ## [0.6.1] - 2026-10-31
 
@@ -731,6 +731,19 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 > through); every other public signature and every produced file is unchanged,
 > byte for byte.
 
+### Added
+
+- 2026-10-23 native Parquet file output streams instead of buffering: a new
+  native-only `platform/io` package (C stub, `FileSink`) writes pages as they are
+  encoded and renames a temporary file over the target on success, so a failed or
+  interrupted write leaves the previous file intact. `write_file_with` keeps one
+  signature on all three backends (wasm-gc/js keep the whole-file write their
+  hosts require) and the public interface gains only `pub type Emit`. Measured
+  peak RSS on a Parquet input drops 326 → 101 MB raw and 199 → 101 MB Snappy, and
+  the produced archives are byte-identical to 0.4.0's; with a CSV input the
+  archive-sized copy is likewise gone (427 → 337 MB at 75 MB of output). The
+  remaining CSV growth is the scan, tracked separately
+
 ### Changed
 
 - 2026-10-24 a query killed outright no longer leaks its spill directory: each
@@ -773,19 +786,6 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   interface is unchanged. Measured numbers and the range-level tests are in
   `docs/verification.md` §20
 
-### Added
-
-- 2026-10-23 native Parquet file output streams instead of buffering: a new
-  native-only `platform/io` package (C stub, `FileSink`) writes pages as they are
-  encoded and renames a temporary file over the target on success, so a failed or
-  interrupted write leaves the previous file intact. `write_file_with` keeps one
-  signature on all three backends (wasm-gc/js keep the whole-file write their
-  hosts require) and the public interface gains only `pub type Emit`. Measured
-  peak RSS on a Parquet input drops 326 → 101 MB raw and 199 → 101 MB Snappy, and
-  the produced archives are byte-identical to 0.4.0's; with a CSV input the
-  archive-sized copy is likewise gone (427 → 337 MB at 75 MB of output). The
-  remaining CSV growth is the scan, tracked separately
-
 ## [0.4.0] - 2026-10-23
 
 > First release since 0.3.1. It carries everything that landed on `main` in
@@ -795,132 +795,6 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 > two-key join, the spill isolation fixes, the archive-consumer gate, and the
 > correctness fixes below (non-finite JSON, spilled-sort ordering). 0.2.0 was
 > never published on its own.
-
-### Fixed
-
-- 2026-10-23 a spilled `ORDER BY` could return a wrong answer: the run writer
-  accumulated several independently sorted chunks and wrote them back to back,
-  while the final k-way merge reads each run file as one sorted stream. A run
-  that held pieces of more than one sorted batch was only piecewise sorted, so
-  the merge leaked chunk heads into the result — over SF0.1 at `--memory 1M`,
-  `ORDER BY l_extendedprice DESC LIMIT 3` reported 95799.5 as its maximum
-  instead of 95949.5. A 200 KB budget happened to keep one chunk per run, which
-  is why the acceptance check stayed green; the regression came from the new
-  benchmark oracle that compares answers, not stdout hashes. A run is now
-  sorted before it is written (bounded by `budget/4`), and join/aggregation
-  partition writers keep their unsorted runs. Recorded spill timings taken
-  before this fix are not comparable
-- 2026-10-23 `--json` (and the playground, whose `JSON.parse` runs on the same
-  string) emitted a non-finite DOUBLE as a bare `Infinity`, `-Infinity` or
-  `NaN` token, so one such value made the whole line invalid JSON — a division
-  by zero, which this engine deliberately keeps as IEEE inf/NaN, was enough.
-  Those three values now render as strings, keeping the output strictly
-  parseable and still distinct from a finite number and from SQL NULL; finite
-  doubles stay JSON numbers
-- 2026-10-22 DuckDB 2.0 removed `fetchone()` from its relation API, breaking
-  Parquet fixture generation and writer interop. Single-row reads now use the
-  connection cursor API. The corpus gate only skips DuckDB read errors, lets
-  Python/API errors fail, and refuses success when a recorded file was not
-  verified; an all-skipped run could previously pass. CI uses Python 3.12 and
-  the DuckDB/PyArrow versions in `harness/requirements.txt`
-- 2026-10-22 the nightly and pre-commit hook labelled a bare `moon test` as
-  native, but the module had no preferred target and it ran wasm. Both now
-  select native explicitly, and `moon.mod` sets wasm-gc as the default target
-- 2026-10-22 the README and harness guide still described the old single-table
-  playground and five spill checks, and claimed all current features shipped
-  in 0.3.1. They now describe the session UI, seven spill checks and the
-  development/release boundary; quickstarts refresh the registry first and
-  acknowledgements include the colenc dependency
-- 2026-10-22 unsupported Parquet physical-type and encoding errors now
-  interpolate the actual column name instead of printing literal placeholders
-- 2026-10-21 two spilled queries sharing one `--spill-dir` corrupted each
-  other: every query wrote `run0.bin`, `run1.bin` … into the directory it was
-  given and then removed every `run<n>.bin` it found there, so a concurrent
-  pair failed on both sides with `spill read: No such file or directory`. A
-  query now spills into its own `moonlake-spill-<n>` subdirectory (`create_dir`
-  is the lock) and the cleanup only looks inside the directory it created, so a
-  caller's own files in `--spill-dir` are never listed, let alone deleted. A
-  killed process still leaves its subdirectory behind: the filesystem API has
-  no pid, clock or file timestamp, so a dead owner cannot be told from a live
-  one and the next run does not guess — that boundary is pinned by the
-  acceptance instead of staying invisible
-- 2026-10-21 the Parquet corpus check counted a footer-only `select count(*)`
-  as a read, so 18 of its 35 "read" files were ones whose data pages this reader
-  refuses (LZ4/ZSTD/GZIP codecs, v2 pages, an empty dictionary page). It now
-  decodes every column and compares a five-row sample against DuckDB cell for
-  cell, and pins each file's class in `harness/parquet_corpus_expected.json`, so
-  a file that stops decoding fails the nightly instead of hiding inside a count.
-  The honest classification is 17 decoded by value, 51 refused by design, 0
-  failing
-- 2026-10-21 a spilled sort leaked its intermediate run files on the success
-  path: `reduce_and_merge` recorded the files it produced while merging and
-  then only removed them through `errdefer`, so every successful spilled
-  `ORDER BY` left them behind. The CLI's `remove_dir` is not recursive, so the
-  directory survived too — one temp tree per spilled query, until a query
-  failed mid-spill on a full disk. The intermediates are now removed after the
-  merge returns, and the CLI purges a spill directory of `run<n>.bin` files
-  (its own names only — `--spill-dir` may point at a caller's directory) and
-  reports a directory it cannot remove instead of swallowing the error
-- 2026-10-21 `ANALYZE` could not report a spill: `explain_analyze` ran with
-  `ExecOptions::in_memory()` hard-coded, so the spill counters it collected
-  were never reachable. `explain_analyze_with` takes the caller's options, the
-  CLI passes `--memory`, and the engine counts files and bytes at the store
-  boundary (`spill files` / `spill bytes written` / `spill bytes read`)
-
-### Changed
-
-- 2026-10-21 the Parquet writer speaks the format, not just the encoding: it
-  writes the standard `STRING` and `DATE` annotations (both the deprecated
-  `converted_type` and the current `logicalType`, because readers disagree on
-  which they look at), and per-column-chunk statistics marked exact. Before
-  this a written DATE was a bare INT32 and a written string an unannotated byte
-  array — a BLOB to DuckDB, an integer to anyone else. A file moonlake writes is
-  now prunable by moonlake's own row-group skipping
-- 2026-10-21 the Parquet reader acts on those annotations: an annotated DATE
-  column needs no `--date-col`, and an annotation with no faithful engine type
-  is refused instead of silently misread — `DECIMAL` (its bytes are not text)
-  and `UINT_32`/`UINT_64` (values past the signed maximum would read as
-  negative) now fail with a message naming the column and the reason. Six
-  apache/parquet-testing files moved from "read" to "refused by design"
-- 2026-10-21 `bench_release.py --compare` refuses to print deltas when the two
-  records were not taken under the same conditions (CPU, cores, kernel,
-  toolchain, dataset SHA-256, build, runs, warm-ups; `--allow-env-mismatch`
-  overrides), prints clock/load/governor as advisory lines instead of refusing
-  on them, labels a delta that sits inside the case's own run-to-run spread,
-  and records that spread per case — so the ±7% rule is measured rather than
-  assumed. Records from before the spread field say so instead of implying
-  their deltas are significant
-- 2026-10-21 the baseline's per-case peak RSS carried a fork-inherited floor:
-  hashing the dataset read all 75 MB of CSV into the harness process before the
-  cases ran, and a forked child starts with its parent's resident pages, so the
-  two Parquet cases (25 and 39 MB on their own) both reported 94.9 MB. The hash
-  runs after the measurements and the parent is collected before they start;
-  the controlled check (150 MB of ballast → an 11 ms case reported 164 MB) is
-  written down in `docs/bench-baseline.md`
-- 2026-10-21 the Parquet writer streams its input. It used to call
-  `entry.scan(...)` — the whole projected table in memory — and walk it twice:
-  once to decide REQUIRED vs OPTIONAL per column (the schema is file-wide, the
-  pages are written before the footer), once to write. Every column is now
-  written OPTIONAL with definition levels, which is the only schema that can be
-  declared before the first page and still describe a NULL arriving later, so
-  the pre-pass is gone and one `BatchStream` feeds pages as batches arrive.
-  Cost: 18,816 bytes on the SF0.1 lineitem file (0.03% — hybrid RLE turns a run
-  of ones into a few bytes). Peak RSS: 407 → 328 MB writing from
-  `lineitem.parquet` (286 → 203 with `--snappy`), 456 → 421 MB from the CSV.
-  What still bounds it is not the writer: sources read whole files (the fs API
-  has no range reads) and `write_bytes` still accumulates the archive before
-  `write_bytes_to_file`; an incremental file handle would be needed for that
-
-### Performance
-
-- 2026-10-21 a join on two int32 equality keys is 4.9x faster (69.3 → 14.0 ms
-  on a 100k x 100k join, same session, single-key control unchanged at
-  ~13 ms). It was falling back to the general path, which builds a canonical
-  string per row on both sides; the two keys are now packed into one exact
-  Int64, `(a << 32) | (b & 0xFFFFFFFF)`, which is injective so no collision
-  handling is needed, and a NULL in either component still never matches. This
-  is the partsupp-on-(partkey, suppkey) shape of TPC-H Q9. Strings, Int64 pairs
-  and three-plus keys keep the general path
 
 ### Added
 
@@ -1032,12 +906,149 @@ the split that removes it, and the re-record puts those cases 6-11% below the
   in-memory `ANALYZE` stays silent; concurrent queries sharing a directory do
   not collide, and a new query leaves an interrupted query's directory alone
 
+### Changed
+
+- 2026-10-21 the Parquet writer speaks the format, not just the encoding: it
+  writes the standard `STRING` and `DATE` annotations (both the deprecated
+  `converted_type` and the current `logicalType`, because readers disagree on
+  which they look at), and per-column-chunk statistics marked exact. Before
+  this a written DATE was a bare INT32 and a written string an unannotated byte
+  array — a BLOB to DuckDB, an integer to anyone else. A file moonlake writes is
+  now prunable by moonlake's own row-group skipping
+- 2026-10-21 the Parquet reader acts on those annotations: an annotated DATE
+  column needs no `--date-col`, and an annotation with no faithful engine type
+  is refused instead of silently misread — `DECIMAL` (its bytes are not text)
+  and `UINT_32`/`UINT_64` (values past the signed maximum would read as
+  negative) now fail with a message naming the column and the reason. Six
+  apache/parquet-testing files moved from "read" to "refused by design"
+- 2026-10-21 `bench_release.py --compare` refuses to print deltas when the two
+  records were not taken under the same conditions (CPU, cores, kernel,
+  toolchain, dataset SHA-256, build, runs, warm-ups; `--allow-env-mismatch`
+  overrides), prints clock/load/governor as advisory lines instead of refusing
+  on them, labels a delta that sits inside the case's own run-to-run spread,
+  and records that spread per case — so the ±7% rule is measured rather than
+  assumed. Records from before the spread field say so instead of implying
+  their deltas are significant
+- 2026-10-21 the baseline's per-case peak RSS carried a fork-inherited floor:
+  hashing the dataset read all 75 MB of CSV into the harness process before the
+  cases ran, and a forked child starts with its parent's resident pages, so the
+  two Parquet cases (25 and 39 MB on their own) both reported 94.9 MB. The hash
+  runs after the measurements and the parent is collected before they start;
+  the controlled check (150 MB of ballast → an 11 ms case reported 164 MB) is
+  written down in `docs/bench-baseline.md`
+- 2026-10-21 the Parquet writer streams its input. It used to call
+  `entry.scan(...)` — the whole projected table in memory — and walk it twice:
+  once to decide REQUIRED vs OPTIONAL per column (the schema is file-wide, the
+  pages are written before the footer), once to write. Every column is now
+  written OPTIONAL with definition levels, which is the only schema that can be
+  declared before the first page and still describe a NULL arriving later, so
+  the pre-pass is gone and one `BatchStream` feeds pages as batches arrive.
+  Cost: 18,816 bytes on the SF0.1 lineitem file (0.03% — hybrid RLE turns a run
+  of ones into a few bytes). Peak RSS: 407 → 328 MB writing from
+  `lineitem.parquet` (286 → 203 with `--snappy`), 456 → 421 MB from the CSV.
+  What still bounds it is not the writer: sources read whole files (the fs API
+  has no range reads) and `write_bytes` still accumulates the archive before
+  `write_bytes_to_file`; an incremental file handle would be needed for that
+
+- 2026-10-21 a join on two int32 equality keys is 4.9x faster (69.3 → 14.0 ms
+  on a 100k x 100k join, same session, single-key control unchanged at
+  ~13 ms). It was falling back to the general path, which builds a canonical
+  string per row on both sides; the two keys are now packed into one exact
+  Int64, `(a << 32) | (b & 0xFFFFFFFF)`, which is injective so no collision
+  handling is needed, and a NULL in either component still never matches. This
+  is the partsupp-on-(partkey, suppkey) shape of TPC-H Q9. Strings, Int64 pairs
+  and three-plus keys keep the general path
+
+### Fixed
+
+- 2026-10-23 a spilled `ORDER BY` could return a wrong answer: the run writer
+  accumulated several independently sorted chunks and wrote them back to back,
+  while the final k-way merge reads each run file as one sorted stream. A run
+  that held pieces of more than one sorted batch was only piecewise sorted, so
+  the merge leaked chunk heads into the result — over SF0.1 at `--memory 1M`,
+  `ORDER BY l_extendedprice DESC LIMIT 3` reported 95799.5 as its maximum
+  instead of 95949.5. A 200 KB budget happened to keep one chunk per run, which
+  is why the acceptance check stayed green; the regression came from the new
+  benchmark oracle that compares answers, not stdout hashes. A run is now
+  sorted before it is written (bounded by `budget/4`), and join/aggregation
+  partition writers keep their unsorted runs. Recorded spill timings taken
+  before this fix are not comparable
+- 2026-10-23 `--json` (and the playground, whose `JSON.parse` runs on the same
+  string) emitted a non-finite DOUBLE as a bare `Infinity`, `-Infinity` or
+  `NaN` token, so one such value made the whole line invalid JSON — a division
+  by zero, which this engine deliberately keeps as IEEE inf/NaN, was enough.
+  Those three values now render as strings, keeping the output strictly
+  parseable and still distinct from a finite number and from SQL NULL; finite
+  doubles stay JSON numbers
+- 2026-10-22 DuckDB 2.0 removed `fetchone()` from its relation API, breaking
+  Parquet fixture generation and writer interop. Single-row reads now use the
+  connection cursor API. The corpus gate only skips DuckDB read errors, lets
+  Python/API errors fail, and refuses success when a recorded file was not
+  verified; an all-skipped run could previously pass. CI uses Python 3.12 and
+  the DuckDB/PyArrow versions in `harness/requirements.txt`
+- 2026-10-22 the nightly and pre-commit hook labelled a bare `moon test` as
+  native, but the module had no preferred target and it ran wasm. Both now
+  select native explicitly, and `moon.mod` sets wasm-gc as the default target
+- 2026-10-22 the README and harness guide still described the old single-table
+  playground and five spill checks, and claimed all current features shipped
+  in 0.3.1. They now describe the session UI, seven spill checks and the
+  development/release boundary; quickstarts refresh the registry first and
+  acknowledgements include the colenc dependency
+- 2026-10-22 unsupported Parquet physical-type and encoding errors now
+  interpolate the actual column name instead of printing literal placeholders
+- 2026-10-21 two spilled queries sharing one `--spill-dir` corrupted each
+  other: every query wrote `run0.bin`, `run1.bin` … into the directory it was
+  given and then removed every `run<n>.bin` it found there, so a concurrent
+  pair failed on both sides with `spill read: No such file or directory`. A
+  query now spills into its own `moonlake-spill-<n>` subdirectory (`create_dir`
+  is the lock) and the cleanup only looks inside the directory it created, so a
+  caller's own files in `--spill-dir` are never listed, let alone deleted. A
+  killed process still leaves its subdirectory behind: the filesystem API has
+  no pid, clock or file timestamp, so a dead owner cannot be told from a live
+  one and the next run does not guess — that boundary is pinned by the
+  acceptance instead of staying invisible
+- 2026-10-21 the Parquet corpus check counted a footer-only `select count(*)`
+  as a read, so 18 of its 35 "read" files were ones whose data pages this reader
+  refuses (LZ4/ZSTD/GZIP codecs, v2 pages, an empty dictionary page). It now
+  decodes every column and compares a five-row sample against DuckDB cell for
+  cell, and pins each file's class in `harness/parquet_corpus_expected.json`, so
+  a file that stops decoding fails the nightly instead of hiding inside a count.
+  The honest classification is 17 decoded by value, 51 refused by design, 0
+  failing
+- 2026-10-21 a spilled sort leaked its intermediate run files on the success
+  path: `reduce_and_merge` recorded the files it produced while merging and
+  then only removed them through `errdefer`, so every successful spilled
+  `ORDER BY` left them behind. The CLI's `remove_dir` is not recursive, so the
+  directory survived too — one temp tree per spilled query, until a query
+  failed mid-spill on a full disk. The intermediates are now removed after the
+  merge returns, and the CLI purges a spill directory of `run<n>.bin` files
+  (its own names only — `--spill-dir` may point at a caller's directory) and
+  reports a directory it cannot remove instead of swallowing the error
+- 2026-10-21 `ANALYZE` could not report a spill: `explain_analyze` ran with
+  `ExecOptions::in_memory()` hard-coded, so the spill counters it collected
+  were never reachable. `explain_analyze_with` takes the caller's options, the
+  CLI passes `--memory`, and the engine counts files and bytes at the store
+  boundary (`spill files` / `spill bytes written` / `spill bytes read`)
+
 ## [0.3.1] - 2026-10-20
 
 > Patch release. 0.3.0's wasm did not instantiate in a browser (so the
 > playground never loaded) and `--json` was invalid for any DATE column;
 > both are fixed here. No API changes — a 0.3.0 consumer upgrades by changing
 > the version.
+
+### Added
+
+- 2026-10-20 `harness/bench_release.py`: one release performance record covering
+  scan, join, gather and spill, with the toolchain, machine, git commit and
+  binary hash alongside the numbers, stdout hashes to prove the work did not
+  change, and `--compare` for release-to-release deltas. The first record is
+  [`harness/baseline/2026-10-20-0.3.1.json`](harness/baseline/2026-10-20-0.3.1.json),
+  with the 0.3.0-era record beside it, read in
+  [`docs/bench-baseline.md`](docs/bench-baseline.md)
+- 2026-10-20 `harness/playground_accept.cjs`: drives the playground in headless
+  Chromium — CSV and Parquet uploads with DATE columns, two error paths, a
+  cross-file JOIN (refused by name) and a same-file self-join
 
 ### Fixed
 
@@ -1059,19 +1070,6 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 - 2026-10-20 the pages workflow only rebuilt on `playground/**` changes, so the
   deployed page still served `engine 0.1.0` while main carried 0.3.0. Engine,
   sources, types, sql, catalog, spill and the module manifests now trigger it
-
-### Added
-
-- 2026-10-20 `harness/bench_release.py`: one release performance record covering
-  scan, join, gather and spill, with the toolchain, machine, git commit and
-  binary hash alongside the numbers, stdout hashes to prove the work did not
-  change, and `--compare` for release-to-release deltas. The first record is
-  [`harness/baseline/2026-10-20-0.3.1.json`](harness/baseline/2026-10-20-0.3.1.json),
-  with the 0.3.0-era record beside it, read in
-  [`docs/bench-baseline.md`](docs/bench-baseline.md)
-- 2026-10-20 `harness/playground_accept.cjs`: drives the playground in headless
-  Chromium — CSV and Parquet uploads with DATE columns, two error paths, a
-  cross-file JOIN (refused by name) and a same-file self-join
 
 ## [0.3.0] - 2026-10-20
 
@@ -1215,12 +1213,6 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 
 > Not published on its own: this milestone's changes ship in `0.3.0`.
 
-### Changed
-
-- 2026-10-15 the Parquet path is in-house: `sources/parquet` decodes Parquet itself — Thrift compact-protocol footer and page headers, row groups, v1 data pages, PLAIN and dictionary (RLE/bit-packed hybrid) encodings, definition levels, `UNCOMPRESSED` and `SNAPPY` — and `mizchi/parquet`, together with the `mizchi/duckdb` it dragged in, is gone from the dependency graph. Scope is deliberate, not accidental: flat schemas, v1 pages, those codecs and encodings; nested fields, INT96, v2 pages, DELTA/byte-stream-split encodings and the other codecs raise pointed scan errors. Two reasons to write it: the transitive `mizchi/duckdb` shipped a legacy `moon.mod.json` that the current toolchain refuses, which made the module both unpublishable and uninstallable for consumers, and the reader was the last single-maintainer dependency in the graph. Dropping it also let `moonbitlang/quickcheck` move to 0.15.0, whose generator API now lives in `moonbitlang/core/quickcheck`
-- 2026-10-13 the in-house SQL front-end (lexer, parser, AST) moved out of `engine` into its own `sql` package: the engine imports `@sql`, the AST types (`Select`, `LExpr`, `AggFn`, …) live at `@sql.*`, and the parser-side `contains_win_marker` helper is now public there; the unused `moonbit-community/sqlparser` dependency was dropped from `moon.mod`; the in-house front-end is the roadmap and sqlparser remains upstream cooperation (visibility issues/PR), not a planned swap-in
-- Division and modulo follow DuckDB: `/` is true division and always yields DOUBLE (integer operands promote, `x/0` is ±inf, `0/0` is nan) instead of C-style integer division returning NULL on a zero divisor; `%` follows fmod — the result takes the dividend's sign (`-10.5 % 3` is `-1.5`) — and `x % 0` is NULL. `--json` renders non-finite floats as bare `Infinity`/`NaN` tokens, byte-identical to DuckDB's own JSON output (Python's `json` module round-trips them; strict RFC 8259 parsers do not)
-
 ### Added
 
 - 2026-10-15 Parquet fixtures and their DuckDB goldens (`harness/gen_parquet_fixtures.py`, `harness/data/parquet`): one shape per type and coding mix — every physical type with NULLs, a low-cardinality shape that gets dictionary pages, a two-row-group shape — each generated in the codec variants the reader claims (plain/uncompressed, plain/snappy, dictionary/snappy, dictionary/uncompressed) and diffed in `check_all.sh` (now 27 goldens) so a decode bug fails the same gate the TPC-H answers do; plus fourteen decoder unit tests on hand-built buffers (compact-protocol integers and generic skipping, PLAIN layouts, the hybrid RLE/bit-packed stream including the byte-advance between runs, definition levels, malformed input raising scan errors instead of trapping)
@@ -1251,6 +1243,12 @@ the split that removes it, and the re-record puts those cases 6-11% below the
 - `NOT BETWEEN` (postfix form, three-valued negation of BETWEEN)
 - `NULL` as a comparison or arithmetic operand: `v = NULL` is UNKNOWN per row, `NOT IN (1, NULL)` is empty, `v + NULL` propagates (the literal takes its type from the other operand; standalone `SELECT NULL` remains unsupported)
 - `SELECT *` — expands to every FROM column, each table in FROM order; also inside derived tables
+
+### Changed
+
+- 2026-10-15 the Parquet path is in-house: `sources/parquet` decodes Parquet itself — Thrift compact-protocol footer and page headers, row groups, v1 data pages, PLAIN and dictionary (RLE/bit-packed hybrid) encodings, definition levels, `UNCOMPRESSED` and `SNAPPY` — and `mizchi/parquet`, together with the `mizchi/duckdb` it dragged in, is gone from the dependency graph. Scope is deliberate, not accidental: flat schemas, v1 pages, those codecs and encodings; nested fields, INT96, v2 pages, DELTA/byte-stream-split encodings and the other codecs raise pointed scan errors. Two reasons to write it: the transitive `mizchi/duckdb` shipped a legacy `moon.mod.json` that the current toolchain refuses, which made the module both unpublishable and uninstallable for consumers, and the reader was the last single-maintainer dependency in the graph. Dropping it also let `moonbitlang/quickcheck` move to 0.15.0, whose generator API now lives in `moonbitlang/core/quickcheck`
+- 2026-10-13 the in-house SQL front-end (lexer, parser, AST) moved out of `engine` into its own `sql` package: the engine imports `@sql`, the AST types (`Select`, `LExpr`, `AggFn`, …) live at `@sql.*`, and the parser-side `contains_win_marker` helper is now public there; the unused `moonbit-community/sqlparser` dependency was dropped from `moon.mod`; the in-house front-end is the roadmap and sqlparser remains upstream cooperation (visibility issues/PR), not a planned swap-in
+- Division and modulo follow DuckDB: `/` is true division and always yields DOUBLE (integer operands promote, `x/0` is ±inf, `0/0` is nan) instead of C-style integer division returning NULL on a zero divisor; `%` follows fmod — the result takes the dividend's sign (`-10.5 % 3` is `-1.5`) — and `x % 0` is NULL. `--json` renders non-finite floats as bare `Infinity`/`NaN` tokens, byte-identical to DuckDB's own JSON output (Python's `json` module round-trips them; strict RFC 8259 parsers do not)
 
 ### Fixed
 
