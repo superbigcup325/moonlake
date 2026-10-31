@@ -11,7 +11,7 @@
 
 name = "superbigcup325/moonlake"
 
-version = "0.6.2"
+version = "0.6.3"
 
 preferred_target = "wasm-gc"
 
