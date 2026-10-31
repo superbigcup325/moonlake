@@ -3501,7 +3501,7 @@ test "grace aggregation: 20k rows over 97 groups matches in-memory" {
 test "grace aggregation errors: over budget without a spill store is a clean error" {
   let cat = grace_agg_catalog()
   let _ = @engine.run_select_opts(
-    "SELECT k, sum(v) AS s FROM t GROUP BY k",
+    "SELECT k, median(v) AS s FROM t GROUP BY k",
     cat,
     { budget: 100, spill: None, },
   ) catch {

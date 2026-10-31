@@ -1870,6 +1870,16 @@ probe batch. With that fixed q19 is 3.7 s at every budget and the plan to plumb 
 into the scan is dropped — the case it was written for no longer exists, and the 2-7% it
 would have cost the unbudgeted set buys nothing.
 
+**Result (§94).** Done, and the bar was under 3.2 s: q1 under a 16 MB budget reads
+5.04 -> **2.62 s** (-48.0%) with its 199,193,427 bytes of spill I/O gone entirely, and
+2.6 s is what it costs unbudgeted, so the budget no longer costs anything on this shape.
+The fold splits into `budget`-sized segments, renders each segment's group state as rows
+(`avg` as its own sum and count), re-folds the partials and collapses them whenever they
+outgrow the budget; `--analyze` reports `fold segments` and nothing spills. q20's scalar
+sum reads 2.31 -> 2.08 s with its 17.4 MB of spill gone as well. The shapes whose state is
+not a row (median, standard deviations, `string_agg`, count-distinct) keep the partitioned
+path, and their tests exercise it. §94.
+
 ### The small-group aggregate contract (2026-10-31)
 
 q1 is the classic report: 5.9M rows of lineitem folded into **four** groups. Under a

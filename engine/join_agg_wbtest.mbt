@@ -341,7 +341,7 @@ test "min and max and a distinct count fold once per group across batches" {
 
 ///|
 test "a budgeted composed join spills, answers the same rows and leaves no run" {
-  let sql = "select b.k as k, count(*) as n, sum(p.v) as s, min(p.v) as lo from probe p left join build b on p.k = b.k group by b.k"
+  let sql = "select b.k as k, count(*) as n, sum(p.v) as s, min(p.v) as lo, median(p.v) as a from probe p left join build b on p.k = b.k group by b.k"
   let plain = ja_catalog(ja_probe_batches(), ja_build_batches())
   let want = ja_show_sql(sql, plain, ExecOptions::in_memory())
   let budgeted = ja_catalog(ja_probe_batches(), ja_build_batches())
@@ -449,14 +449,19 @@ test "a budget the build side fits keeps the composed plan" {
 
 ///|
 test "a composed plan with an over-budget fold spills after the join count" {
-  let sql = "select b.k as k, count(*) as n from probe p join build b on p.k = b.k group by b.k"
+  let sql = "select b.k as k, count(*) as n, median(p.v) as a from probe p join build b on p.k = b.k group by b.k"
+  let want = ja_show_sql(
+    sql,
+    ja_catalog(ja_probe_batches(), ja_build_batches()),
+    ExecOptions::in_memory(),
+  )
   let cat = ja_catalog(ja_probe_batches(), ja_build_batches())
   let (store, files) = ja_mem_store()
   let stats : Array[(String, Int64)] = []
   let result = ja_run(sql, cat, { budget: 512, spill: Some(store), }, stats) catch {
     e => abort("\{e}")
   }
-  assert_eq(ja_show(scalars_of([result.batch()])), ["1|6", "2|2"])
+  assert_eq(ja_show(scalars_of([result.batch()])), want)
   let joins = ja_index(stats, "joins")
   let spill = ja_index(stats, "spill partitions")
   assert_true(spill >= 0 && joins >= 0)

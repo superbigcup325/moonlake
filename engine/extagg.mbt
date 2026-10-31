@@ -242,6 +242,241 @@ priv struct PulledAgg {
   partitions : Int32
   peak_buffered : Int64
   largest_spilled : Int64
+  // how many segments a mergeable fold split into; 0 when it did not fold that
+  // way, so a run that fits its budget reports nothing
+  segments : Int32
+}
+
+///|
+/// The specs that re-fold a batch of partial *state*: the keys are the batch's
+/// leading columns and every state column is folded by the operation it is the
+/// partial of — a sum of sums, a count of counts, a min of mins, a max of maxes.
+/// `avg` is the reason the state exists at all: its two columns are the part-sum
+/// and the part-count, so an average of averages never happens.
+fn merge_state_specs(
+  aggs : Array[AggSpec],
+  group_types : Array[@types.DataType],
+) -> (Array[PhysExpr], Array[AggSpec]) {
+  let keys : Array[PhysExpr] = []
+  for i, t in group_types {
+    keys.push(PhysExpr::ColRef(i, t))
+  }
+  let mut at = group_types.length()
+  let specs : Array[AggSpec] = []
+  for spec in aggs {
+    match spec.kind {
+      Avg => {
+        specs.push({
+          kind: Sum,
+          input: Some(PhysExpr::ColRef(at, @types.Float64)),
+          out_type: @types.Float64,
+          sep: None,
+          q: None,
+        })
+        specs.push({
+          kind: Sum,
+          input: Some(PhysExpr::ColRef(at + 1, @types.Int64)),
+          out_type: @types.Int64,
+          sep: None,
+          q: None,
+        })
+        at = at + 2
+      }
+      Count | CountStar => {
+        specs.push({
+          kind: Sum,
+          input: Some(PhysExpr::ColRef(at, @types.Int64)),
+          out_type: @types.Int64,
+          sep: None,
+          q: None,
+        })
+        at = at + 1
+      }
+      Sum | Min | Max => {
+        specs.push({ ..spec, input: Some(PhysExpr::ColRef(at, spec.out_type)), })
+        at = at + 1
+      }
+      _ => ()
+    }
+  }
+  (keys, specs)
+}
+
+///|
+/// Turn a merged state batch into the grouped result: the keys pass through, and
+/// each aggregate's state becomes its value — an average is its sum over its
+/// count, with no value in the group at all giving NULL rather than a division.
+fn finalize_state(
+  state : @types.DataBatch,
+  aggs : Array[AggSpec],
+  group_types : Array[@types.DataType],
+) -> @types.DataBatch {
+  let g = group_types.length()
+  let n = state.row_count()
+  let cols = state.columns()
+  let columns : Array[@types.ColumnVector] = []
+  for c in 0..<g {
+    columns.push(cols[c])
+  }
+  let mut at = g
+  for spec in aggs {
+    match spec.kind {
+      Avg => {
+        let sums = cols[at]
+        let counts = cols[at + 1]
+        let vec = @types.ColumnVector::make(@types.Float64, n)
+        for r in 0..<n {
+          let count = match counts.get(r) {
+            @types.Int64(c) => c
+            _ => 0L
+          }
+          vec.set(
+            r,
+            if count == 0L {
+              @types.Null
+            } else {
+              match sums.get(r) {
+                @types.Float64(s) => @types.Float64(s / count.to_double())
+                @types.Int64(s) =>
+                  @types.Float64(s.to_double() / count.to_double())
+                _ => @types.Null
+              }
+            },
+          )
+        }
+        columns.push(vec)
+        at = at + 2
+      }
+      Sum | Count | CountStar | Min | Max => {
+        columns.push(cols[at])
+        at = at + 1
+      }
+      _ => ()
+    }
+  }
+  @types.DataBatch::new(columns, n)
+}
+
+///|
+/// Whether the fold's keys are sparse enough for the state to be worth carrying
+/// as rows: at most one distinct group key per eight rows of the first batch. A
+/// shape whose keys are nearly as many as its rows gains nothing from segments —
+/// the merged partials would be as large as the input it replaced — and keeps the
+/// partitioned path, which is the shape q20 is.
+fn fold_keys_are_sparse(
+  batch : @types.DataBatch,
+  group_exprs : Array[PhysExpr],
+) -> Bool raise @types.SqlError {
+  let n = batch.row_count()
+  // a batch too small to say anything about the key density splits freely: the
+  // state of a few hundred rows is cheap either way
+  if n < 1024 || group_exprs.length() == 0 {
+    return true
+  }
+  let cols : Array[@types.ColumnVector] = []
+  for e in group_exprs {
+    cols.push(eval_vec(e, batch))
+  }
+  let seen : Map[String, Bool] = Map([])
+  for r in 0..<n {
+    let vals : Array[@types.Scalar] = []
+    for c in cols {
+      vals.push(c.get(r))
+    }
+    seen[canonical_key(vals)] = true
+    if seen.length() * 8 > n {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// The fold for an aggregation whose partials merge: read the pull in
+/// `budget`-sized segments, fold each one into its own grouped batch, and merge
+/// the partials as they arrive — re-folding them together whenever they outgrow
+/// the budget, so the merge itself stays bounded. q1 folds 5.9M rows of lineitem
+/// into four groups, and the partitioned path wrote and read 199 MB to do it;
+/// this path touches the spill store never (§94).
+fn aggregate_pulled_segments(
+  next : () -> @types.DataBatch? raise @types.SqlError,
+  group_exprs : Array[PhysExpr],
+  group_types : Array[@types.DataType],
+  aggs : Array[AggSpec],
+  limit : Int64,
+) -> PulledAgg raise @types.SqlError {
+  let (keys, mspecs) = merge_state_specs(aggs, group_types)
+  let mut partials : Array[@types.DataBatch] = []
+  let mut segments : Int32 = 0
+  let mut partial_bytes = 0L
+  let mut peak = 0L
+  let mut ended = false
+  while !ended {
+    let buffered : Array[@types.DataBatch] = []
+    let mut bytes = 0L
+    let mut segment_done = false
+    while !segment_done {
+      match next() {
+        Some(batch) => {
+          buffered.push(batch)
+          bytes += estimate_batch_bytes(batch).to_int64()
+          segment_done = bytes > limit
+        }
+        None => {
+          ended = true
+          segment_done = true
+        }
+      }
+    }
+    if buffered.length() > 0 {
+      segments = segments + 1
+      let partial = aggregate_seq(
+        BatchSeq::of_batches(buffered),
+        group_exprs,
+        group_types,
+        aggs,
+        state=true,
+      )
+      partials.push(partial)
+      partial_bytes += estimate_batch_bytes(partial).to_int64()
+      if partials.length() > 1 && partial_bytes > limit {
+        let merged = aggregate_seq(
+          BatchSeq::of_batches(partials),
+          keys,
+          group_types,
+          mspecs,
+          state=true,
+        )
+        partials = [merged]
+        partial_bytes = estimate_batch_bytes(merged).to_int64()
+      }
+    }
+    let held = bytes + partial_bytes
+    if held > peak {
+      peak = held
+    }
+  }
+  let state = match partials.length() {
+    0 =>
+      aggregate_seq(
+        BatchSeq::of_batches([]),
+        keys,
+        group_types,
+        mspecs,
+        state=true,
+      )
+    1 => partials[0]
+    _ =>
+      aggregate_seq(
+        BatchSeq::of_batches(partials),
+        keys,
+        group_types,
+        mspecs,
+        state=true,
+      )
+  }
+  let batch = finalize_state(state, aggs, group_types)
+  { batch, partitions: 0, peak_buffered: peak, largest_spilled: 0L, segments, }
 }
 
 ///|
@@ -262,11 +497,34 @@ fn aggregate_pulled(
   opts : ExecOptions,
 ) -> PulledAgg raise @types.SqlError {
   let limit = opts.budget.to_int64()
+  // the shape of the first batch decides whether the fold's state is carried as
+  // rows: only a sparse key set makes the segments cheaper than partitioning,
+  // and the decision is made before any segment is folded
+  let mut first : @types.DataBatch? = next()
+  let split = match first {
+    Some(batch) =>
+      aggs_state_mergeable(aggs) && fold_keys_are_sparse(batch, group_exprs)
+    None => false
+  }
+  let pull = fn() -> @types.DataBatch? raise @types.SqlError {
+    match first {
+      Some(batch) => {
+        first = None
+        Some(batch)
+      }
+      None => next()
+    }
+  }
+  if split {
+    return aggregate_pulled_segments(
+      pull, group_exprs, group_types, aggs, limit,
+    )
+  }
   let buffered : Array[@types.DataBatch] = []
   let mut bytes = 0L
   let mut exhausted = false
   while !exhausted && bytes <= limit {
-    match next() {
+    match pull() {
       Some(batch) => {
         buffered.push(batch)
         bytes += estimate_batch_bytes(batch).to_int64()
@@ -280,6 +538,7 @@ fn aggregate_pulled(
       partitions: 0,
       peak_buffered: bytes,
       largest_spilled: 0L,
+      segments: 0,
     }
   }
   let store = match opts.spill {
@@ -340,5 +599,6 @@ fn aggregate_pulled(
       bytes
     },
     largest_spilled: largest,
+    segments: 0,
   }
 }

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- A GROUP BY under a memory budget whose aggregate state fits in columns splits its fold
+  into `budget`-sized segments instead of partitioning the input: q1 at 16 MB reads
+  5.04 -> 2.62 s with the 199,193,427 bytes it used to write and read again gone, and q20's
+  inner sum reads 2.31 -> 2.08 s. `avg` carries its sum and its count between segments, so
+  no average of averages happens; the shapes whose state is not a row (median, standard
+  deviations, `string_agg`, count-distinct) keep the partitioned path. The last bits of a
+  floating-point sum at a budget move, as they already did per partition. `--analyze`
+  reports `fold segments` when the path is taken (verification §94).
+
 ## [0.6.2] - 2026-10-31
 
 The join's residual stops rebuilding the side that never moves, and the partitioner

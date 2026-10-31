@@ -453,10 +453,11 @@ test "a budgeted GROUP BY that overflows without a spill store is a clean error"
   let (cat, _cells) = agg_catalog(agg_batches())
   let msg = try {
     ignore(
-      run_select_opts("select k, count(*) as n from t group by k", cat, {
-        budget: 64,
-        spill: None,
-      }),
+      run_select_opts(
+        "select k, count(*) as n, median(v) as a from t group by k",
+        cat,
+        { budget: 64, spill: None, },
+      ),
     )
     ""
   } catch {
@@ -483,10 +484,11 @@ test "a spill write that fails leaves no run behind" {
   let (cat, _cells) = agg_catalog(agg_batches())
   let msg = try {
     ignore(
-      run_select_opts("select k, count(*) as n from t group by k", cat, {
-        budget: 64,
-        spill: Some(store),
-      }),
+      run_select_opts(
+        "select k, count(*) as n, median(v) as a from t group by k",
+        cat,
+        { budget: 64, spill: Some(store), },
+      ),
     )
     ""
   } catch {
@@ -546,7 +548,7 @@ test "a budgeted GROUP BY applies HAVING to the finished groups after spilling" 
   // only group 'a' has more than three rows, and its rows arrive in all four
   // batches, so the count is only right if every partition folded them all
   let (want, got, stats, left) = agg_both(
-    "select k, count(*) as n from t group by k having count(*) > 3",
+    "select k, count(*) as n, median(v) as a from t group by k having count(*) > 3",
     agg_batches(),
   )
   assert_eq(want.length(), 1)
@@ -556,9 +558,26 @@ test "a budgeted GROUP BY applies HAVING to the finished groups after spilling" 
 }
 
 ///|
+test "a mergeable GROUP BY over budget folds in segments and needs no store" {
+  // an aggregate whose state fits in columns re-folds from its own partials: a
+  // sum of sums, a count of counts, a min of mins, a max of maxes, and an avg
+  // carried as its own (sum, count) pair — so a fold that outgrows the budget
+  // splits into segments instead of partitioning. The answers match the
+  // unbudgeted run, nothing spills, and no run is left behind (§94)
+  let (want, got, stats, left) = agg_both(
+    "select k, count(*) as n, sum(v) as s, min(v) as lo, max(v) as hi, avg(v) as a from t group by k",
+    agg_batches(),
+  )
+  assert_eq(got, want)
+  assert_true(stats.filter(fn(p) { p.0 == "spill partitions" }).is_empty())
+  assert_eq(stats.filter(fn(p) { p.0 == "fold segments" }).length(), 1)
+  assert_eq(left, 0)
+}
+
+///|
 test "a budgeted GROUP BY keeps duplicate keys of a multi-column key together" {
   let (want, got, stats, left) = agg_both(
-    "select g, k, count(*) as n, sum(v) as s, min(v) as lo, max(v) as hi from t group by g, k",
+    "select g, k, count(*) as n, sum(v) as s, min(v) as lo, max(v) as hi, median(v) as a from t group by g, k",
     agg_batches(),
   )
   assert_true(want.length() > 4)
@@ -576,7 +595,9 @@ test "a spilled GROUP BY reports its buffered and spilled byte estimates" {
   let (store, _files) = agg_mem_store()
   let stats : Array[(String, Int64)] = []
   let _ = run_parsed(
-    @sql.parse_select("select k, count(*) as n from t group by k"),
+    @sql.parse_select(
+      "select k, count(*) as n, median(v) as a from t group by k",
+    ),
     cat,
     stats,
     { budget: 64, spill: Some(store), },

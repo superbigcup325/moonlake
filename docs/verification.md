@@ -6371,3 +6371,79 @@ phase in the roadmap's small-group contract, which spills group state rather tha
 
 The refutation is worth the record: it puts the cost at 199 MB of I/O for four groups, and
 it says the fix has to know the *total* group count, not a per-batch one.
+
+## 94. The fold that spilled 199 MB to produce four rows (2026-10-31)
+
+§93 recorded q1 as the case a budget paid twice for: four groups
+(`l_returnflag` x `l_linestatus`) out of 5,916,591 rows, 199,193,427 bytes written into
+160 spill files and read back — 5.12 s against 2.6 s unbudgeted, at a 77 MB peak. The gate
+was the input's bytes, and the question that decides whether partitioning is worth its
+write is the number of distinct group keys, which no batch metadata reports.
+
+The way out is not to guess the group count but to make the partial result a valid input: a
+fold splits into segments as long as each segment's grouped batch can be folded again with
+the same aggregates. That holds exactly when the aggregate's *state* fits in columns — a
+sum of sums, a count of counts, a min of mins, a max of maxes, and an `avg` carried as its
+own (sum, count) pair, because an average of averages is not an average. A median, a
+standard deviation, a `string_agg` and a count-distinct have no such shape and keep the
+partitioned path.
+
+The pulled fold now reads the pull in `budget`-sized segments, renders each segment's group
+state as rows (`aggregate_seq(state~=true)`: `avg` two columns, everything else one),
+re-folds the partials as they arrive — collapsing them whenever they outgrow the budget, so
+the merge stays bounded — and turns the merged state into the grouped result at the end
+(`finalize_state`: an average is its sum over its count, and a group with no value at all
+is NULL rather than a division). It reports `fold segments` in `--analyze`, and nothing
+spills.
+
+q1, SF1, native release, 16 MB budget:
+
+```
+                     0.6.2                     this
+wall                 5.04 s                    2.62 s   (-48.0%)
+spill partitions     16                        0
+spill files          160                       0
+spill bytes written  199,193,427               0
+fold segments        -                         17
+peak                 77.6 MB                   67.5 MB  (-13.0%)
+```
+
+and 5.07 -> 2.59 s (-48.9%) at 64 MB, against 2.6 s unbudgeted: the segmented fold costs
+what never having had a budget costs. The roadmap's bar was under 3.2 s.
+
+Three things this needed, each measured:
+
+- **The first version only covered sum/count/min/max, and fired nowhere.** Its gate was
+  `aggs_mergeable`, its merge re-folded the partials as if their values were inputs, and
+  `--analyze` reported no `fold segments` for any of the twenty-two cases: the only shape
+  whose aggregate input overflows at 16 MB is q1, and q1's `avg` was outside the gate. The
+  state render above is what makes the mechanism reach the case it was written for.
+- **A segment costs what its keys cost.** q20's inner `sum(l_quantity)` is a scalar
+  aggregate over 17 MB, and splitting it into segments made the query 15% *slower*: the
+  state fold bypassed `aggregate_cols`, the columnar accumulator, so every row went through
+  the boxed one. The columnar path's output is already its own state — a sum column and a
+  count column, with the same validity — so it serves a state fold as it is, and q20 then
+  reads 2.31 -> 2.08 s with its 17.4 MB of spill gone.
+- **A dense key set gains nothing from segments.** The merged partials would be as large as
+  the input they replace, so a fold whose first batch holds more than one distinct key per
+  eight rows keeps the partitioned path (`fold_keys_are_sparse`). A batch under 1024 rows
+  says nothing either way and may split freely.
+
+The whole 22-query set against 0.6.2, both budgets, one sweep at a time (the earlier pair
+ran concurrently and shared a spill directory, so both were discarded):
+
+```
+16 MB   q1 -47.7%   q20 -12.4%   q22 -2.7%   ...   worst: q4 +1.9%, q8 +1.9%
+64 MB   q1 -48.6%   q17 -1.3%    q22 -1.3%   ...   worst: q6 +3.0%, q19 +1.9%
+```
+
+Nothing is over 5% slower at either budget, and the only answer that moves is q1's.
+q20 pays for its 17.4 MB of avoided spill with a peak of 75.6 -> 99.4 MB at 16 MB: the
+segmented fold holds its buffered segment and its merged state in memory, where the
+partitioned one wrote them out.
+
+The one thing that moves is the last bits of a floating-point sum, because the partials are
+added segment by segment — the same association the partitioned path already did per
+partition, and the reason the gate for numbers is still the unbudgeted run (one fold,
+unchanged). q1's integer sums and its counts are identical; its money sums differ in the
+12th significant digit (`56586554400.7299` -> `56586554400.73008`).
