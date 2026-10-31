@@ -2,9 +2,11 @@
 
 > One record per release, native release build, TPC-H SF0.1, same script and
 > same machine. The newest is
-> [`harness/baseline/2026-10-26-0.5.1.json`](../harness/baseline/2026-10-26-0.5.1.json),
-> taken beside a 0.5.0 re-record so the two can be compared (the last section).
-> The first was 0.3.1 at `3d766de`
+> [`harness/baseline/2026-10-31-0.6.3.json`](../harness/baseline/2026-10-31-0.6.3.json),
+> taken beside a same-session 0.5.1 control so the two can be compared (the last
+> section). 0.6.0 through 0.6.2 have no record of their own: they shipped inside
+> 48 hours of each other, and this pair spans all four (see that section for what
+> stands in for the missing ones). The first was 0.3.1 at `3d766de`
 > ([`2026-10-20-0.3.1.json`](../harness/baseline/2026-10-20-0.3.1.json)); the
 > earlier 0.3.0-era record
 > ([`2026-10-20-0.3.0.json`](../harness/baseline/2026-10-20-0.3.0.json)) is kept
@@ -863,3 +865,60 @@ the cheap index alone the rows read 329.3 (q3), 584.5 (q5), 701.1 (q9), 262.9
 (q10), 95.2 (q11) and 87.5 (q20 at 16 MB), so composition on q3 gives back the
 index saving it gained (its chain holds `orders` and `lineitem` resident) and
 costs q5 2.5 MB, while q10 gains 24 and q11 60.
+
+## 0.6.3 record, beside a same-session 0.5.1 control (2026-10-31)
+
+- [`harness/baseline/2026-10-31-0.6.3.json`](../harness/baseline/2026-10-31-0.6.3.json):
+  tag `v0.6.3`, `6736796`, built from a worktree of that tag.
+- [`harness/baseline/2026-10-31-0.5.1-control.json`](../harness/baseline/2026-10-31-0.5.1-control.json):
+  tag `v0.5.1`, `f8e1204`, built the same way, recorded in the same session.
+
+The 0.5.1 record at the top of this file was taken on `moon 0.1.20261016`, and
+`--compare` refuses to print deltas across a toolchain change, so this is a
+control rather than a reuse: two tags built as worktrees of one checkout and
+recorded back to back on `moon 0.1.20261023`. The control ran at 4200 MHz and
+the 0.6.3 record at 3463 MHz (governor `powersave`, load 4.6 -> 3.7), so the
+wins below are, if anything, conservative. Every timed case's stdout hashes to
+the same value in both records, and every case is checked against DuckDB before
+its number is recorded.
+
+| case | 0.5.1 | 0.6.3 | wall delta | peak RSS | run spread, old / new |
+|---|---|---|---|---|---|
+| scan/count_csv | 164 ms | 133 ms | -19.3% | 35 -> 27 MB | 15.5% / 12.1% |
+| scan/filtered_count_csv | 182 ms | 150 ms | -17.8% | 33 -> 29 MB | 11.4% / 9.9% |
+| scan/parquet_count | 4.2 ms | 4.2 ms | 0.0% | 20 -> 21 MB | 58.9% / 125.2% |
+| scan/parquet_sum | 12.3 ms | 12.7 ms | +3.3% | 20 -> 21 MB | 46.3% / 38.7% |
+| join/two_table_count | 232 ms | 197 ms | -15.1% | 35 -> 41 MB | 13.2% / 12.7% |
+| join/q3 | 272 ms | 223 ms | -17.8% | 45 -> 45 MB | 3.7% / 9.5% |
+| gather/wide_projection | 460 ms | 507 ms | +10.2% | 223 -> 221 MB | 17.0% / 26.9% |
+| gather/self_join_fanout | 385 ms | 292 ms | -24.1% | 41 -> 46 MB | 4.5% / 9.0% |
+| spill/order_by_wide | 509 ms | 486 ms | -4.5% | 36 -> 39 MB | 6.6% / 16.7% |
+
+**What moved outside the noise.** Five cases moved further than their own
+run-to-run spread, and all five moved down: the two CSV counts (-19.3%,
+-17.8%), the two join cases (-15.1%, -17.8%), and the self-join fanout (-24.1%).
+The counts are consistent with 0.6.1's CSV reader changes, which the release
+credits with about 15% on the TPC-H scans at SF1 and 9.64 -> 8.31 s on q1
+(§67, §68); the join cases sit on the single-copy handoff (0.6.0), the swap
+(0.6.1) and the residual reuse (0.6.2); the fanout is the one that emits 60k
+wide rows per run, the shape those three changes mostly help. That is a
+consistency argument, not a bisection: this record pair has two points, and
+`wide_projection` reading 10.2% slower inside a 26.9% spread is the reminder
+that a single session boundary is weak evidence. `order_by_wide` is 4.5% inside
+16.7%, so it is inside its own noise too.
+
+**Two cases that are recorded but not comparable.** `spill/format_write` and
+`spill/format_read` write and read the spill format, and their output hash
+differs between the two tags: a piece now costs `BATCH_FIXED_BYTES` 160 plus
+`COLUMN_FIXED_BYTES` 64 per column instead of 16 and 4 (the partition piece cost
+contract), so the same spill writes a different arrangement of pieces. Their
+numbers for context only: write 1284 -> 1325 ms at 319 -> 326 MB, read 477 ->
+467 ms at 231 -> 227 MB.
+
+**What this is not.** One machine, SF0.01, native release, one session per tag.
+The absolute numbers are small enough that process startup and CSV ingest are
+part of every case, and the spread column is the honest error bar. 0.6.0 through
+0.6.2 have no record of their own; their changes carry A/B numbers in
+`docs/verification.md` §82 (swap instead of spill), §89 (a budget can cost a
+query that never spills) and §94 (the folded aggregate), and this pair is the
+four-release span in one comparison.

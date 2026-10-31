@@ -37,7 +37,7 @@ moonlake is a pure-MoonBit, columnar SQL query engine for analytical (OLAP) work
 - `WITH name AS (SELECT ...)` — non-recursive CTEs, statement level; a name is its own qualifier, later CTEs may reference earlier ones
 - Scalar functions: `coalesce` / `nullif` / `greatest` / `least`, `date_trunc(unit, date)`, `date_diff(unit, start, end)`; `SELECT` works without FROM and a bare `NULL` select item reads as INTEGER
 - Pushdown: single-table predicates from WHERE/ON are applied as build/probe filters at each hash join; equalities become hash keys even when implied by disjunctions. At joins that preserve a side (`LEFT`/`RIGHT`/`FULL`), WHERE predicates — spanning ones included — stay post-join so NULL-extended rows still meet them
-- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking operators. `ORDER BY` becomes sorted runs whose final merge streams into projection/DISTINCT/OFFSET/LIMIT (a LIMIT query holds only its output window); a hash join partitions both sides and splits an over-budget partition again, and a `GROUP BY` partitions its input and aggregates each partition one spill file at a time, while an `ORDER BY` over a `GROUP BY` sorts that grouped result in memory once the fold ends, since a grouped result is not input and the budget does not bound it (verification §45, §50) — so a hot group key is fine while a single join key holding most of a side is refused with that reason, unless the query is a shape the fold accepts and the join is never collected (verification §49). `--analyze` under a budget reports `spill runs` / `spill files` / `spill bytes written` / `spill bytes read`, and the CLI removes its temp directory on both exit paths. A query spills into its own `moonlake-spill-<n>` subdirectory of `--spill-dir` (or `TMPDIR`), so two processes may share one `--spill-dir` without touching each other's runs, and a caller's own files there are never read or deleted. A subdirectory is claimed with an `owner` marker naming the pid, the boot id and the pid's start time, so a run killed outright no longer leaks: the next query removes that subdirectory when the marker proves its owner is gone (another boot, a pid that no longer exists, a pid whose start time changed), and keeps — and reports — any directory it cannot judge, such as one with no marker (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
+- Larger than memory: `exec --memory <n>[K|M|G] [--spill-dir <dir>]` bounds the blocking operators. `ORDER BY` becomes sorted runs whose final merge streams into projection/DISTINCT/OFFSET/LIMIT (a LIMIT query holds only its output window); a hash join partitions the sides that do not fit, splits an over-budget partition again, and swaps the sides when the table side is the one that overflows (0.6.1, verification §82), and a `GROUP BY` partitions its input and aggregates each partition one spill file at a time, while an `ORDER BY` over a `GROUP BY` sorts that grouped result in memory once the fold ends, since a grouped result is not input and the budget does not bound it (verification §45, §50) — so a hot group key is fine while a single join key holding most of a side is refused with that reason, unless the query is a shape the fold accepts and the join is never collected (verification §49). `--analyze` under a budget reports `spill runs` / `spill files` / `spill bytes written` / `spill bytes read` (plus `fold segments` when a budgeted `GROUP BY` splits its fold instead of partitioning), and the CLI removes its temp directory on both exit paths. A query spills into its own `moonlake-spill-<n>` subdirectory of `--spill-dir` (or `TMPDIR`), so two processes may share one `--spill-dir` without touching each other's runs, and a caller's own files there are never read or deleted. A subdirectory is claimed with an `owner` marker naming the pid, the boot id and the pid's start time, so a run killed outright no longer leaks: the next query removes that subdirectory when the marker proves its owner is gone (another boot, a pid that no longer exists, a pid whose start time changed), and keeps — and reports — any directory it cannot judge, such as one with no marker (library form: `execute_with` with `ExecOptions` + a `SpillStore`; the engine itself never touches the filesystem)
 
 Out of scope: writes (`INSERT`/`UPDATE`/`CREATE TABLE`/DDL beyond CTEs), persistence, transactions, indexes, explicit window frame clauses (the default frame is supported), cost-based optimization, multi-statement scripts.
 
@@ -51,39 +51,41 @@ bash harness/check_all.sh                         # 33 goldens: all PASS (22 TPC
 MOONLAKE_DATA=harness/data/sf01 bash harness/check_all.sh   # same at SF0.1 (regenerate first: gen_tpch.py 0.1)
 ```
 
-Informational benchmark (SF0.01, best of 3, via `harness/bench.py`;
-same machine, one run, both engines; refreshed 2026-10-06 after the
-unboxed-CSV-ingest pass:
+Informational benchmark (SF0.01, best of 3, via `harness/bench.py`; same
+machine, one run, both engines; refreshed 2026-10-31):
 
 | query | moonlake native | duckdb |
 |---|---|---|
-| Pricing Summary Report | 183 ms | 3.3 ms |
-| Shipping Priority | 142 ms | 4.1 ms |
-| Local Supplier Volume | 151 ms | 4.1 ms |
-| Forecasting Revenue Change | 124 ms | 0.8 ms |
-| Volume Shipping | 166 ms | 4.7 ms |
-| Returned Item Reporting | 143 ms | 7.4 ms |
-| Shipping Modes and Order Priority | 147 ms | 3.3 ms |
-| Promotion Effect | 122 ms | 1.4 ms |
+| Pricing Summary Report (q1) | 100 ms | 3.5 ms |
+| Shipping Priority (q3) | 70 ms | 3.0 ms |
+| Local Supplier Volume (q5) | 77 ms | 3.7 ms |
+| Forecasting Revenue Change (q6) | 68 ms | 1.1 ms |
+| Volume Shipping (q7) | 83 ms | 5.4 ms |
+| Product Type Profit Measure (q9) | 93 ms | 4.7 ms |
+| Shipping Modes and Order Priority (q12) | 89 ms | 2.6 ms |
+| Promotion Effect (q14) | 67 ms | 2.4 ms |
 
-These are the eight queries `harness/bench.py` runs (it prints the
-same rows labelled q1–q14). Times include process startup and reading
-the CSV from disk. duckdb is in-process over pre-loaded tables — the
-same query from a fresh `read_csv_auto` costs it ~55 ms, where
-moonlake's built-in byte-level reader plus the columnar evaluator
-(vectorized kernels, int-keyed hash joins, projection pruning,
-direct-to-vector CSV materialization) lands at 122–183 ms, down
-3.4–6x from the original row-at-a-time build on the same machine
-(539–995 ms on the four queries benchmarked then).
+All 22 queries land between 10 ms and 129 ms against DuckDB's 1.1 ms to
+6.1 ms; the eight above are a spread and `harness/bench.py` prints the set.
+Times include process startup and reading the CSV from disk. duckdb is
+in-process over pre-loaded tables — the same q6 from a fresh `read_csv_auto`
+costs it 49 ms, where moonlake's built-in byte-level reader plus the columnar
+evaluator (vectorized kernels, int-keyed hash joins, projection pruning,
+direct-to-vector CSV materialization) lands at 67 ms. The four queries
+benchmarked against the original row-at-a-time build took 539-995 ms on this
+machine.
 
 `--explain` prints the plan; a scan line states what it will read: the exact
 row count when the format knows it (a Parquet footer) and `?` when it does not
 (a lazy CSV scan counts nothing up front), plus `row groups: k of n read` when
-statistics eliminated some. `--analyze` adds the actual row count per stage and,
-under `--memory`, what the query spilled.
+statistics eliminated some. `--analyze` adds the actual row count per stage, the time
+each stage took where a monotonic clock exists (native targets: `time collect`,
+`time join step <n>`, `time join`, `time aggregate`, `time sort`), what a routed
+join step did with its sides (`hashed the build side`, `swapped its sides`,
+`partitioned`), and, under `--memory`, what the query spilled.
 
 **Scan pushdown (2026-10-20).** Registering a table now stores its schema and
-where the bytes live, not the rows; a scan produces 4096-row batches, decodes
+where the bytes live, not the rows; a scan produces 2048-row batches, decodes
 only the columns the query projects, and skips Parquet row groups whose
 statistics cannot match the pushed predicate. On the same machine and SF0.01
 data, `python3 harness/bench_scan.py --base <build of the previous commit>`,
@@ -121,19 +123,21 @@ moon add superbigcup325/moonlake
 ```
 
 > This README and the browser playground track `main`. `moon add` gives you the
-> latest published release from mooncakes (0.6.0): the build-side index that is
-> one row-id range instead of a list per key, the chain of joins that composes
-> with or without a budget, and the column-wise group state that makes a million
-> groups of a `sum` peak at 117 MB instead of 323 MB, with the measurements in
-> [verification.md](docs/verification.md) §52, §54 and §55. Everything since
-> 0.5.1 is in it. On `main` since then, two changes to how a chain of joins
-> holds memory: each step hands its output to the next without copying it into
-> one batch (q21 at SF1 peaks 58 MB lower, verification §65), and a step lets go
-> of the tables it has finished with instead of holding them to the end (another
-> 60 MB, §66). Also on `main`: the scan reads a field's end a word at a time and
-> a batch is 2048 rows rather than 4096, which is worth about 10% of wall time on
-> the TPC-H queries at SF1 (§67). The next release carries all of it and no
-> version is claimed for it yet.
+> latest published release from mooncakes (0.6.3). 0.6.0 through 0.6.3, in order:
+> the peak that stopped paying for copies it did not need; the build side that
+> swaps and partitions only when it must; the join residual that stopped
+> rebuilding a side that never moves; and a budgeted `GROUP BY` that splits its
+> fold into `budget`-sized segments instead of partitioning its input (q1 at
+> 16 MB reads 5.04 -> 2.62 s, q20's inner sum 2.31 -> 2.08 s).
+> On `main` since 0.6.3: a memory budget's fit tests compared byte counts as
+> `Int32` and two of them after doubling, so a side above 2^31 bytes wrapped
+> negative and a 1.5 GB side "fitted" a 16 MB budget — the comparisons are
+> `Int64` now, and a join step may hash a build side up to the whole budget
+> instead of half of it (§97: q2 at 16 MB 3.65 -> 1.96 s, q7 3.40 -> 2.31 s, q9
+> 3.44 -> 3.01 s, no query slower than +5% at 16 MB or 64 MB). Also on `main`:
+> `--analyze` names the time each stage took and what a routed join step did with
+> its sides, on targets that have a monotonic clock. No version is claimed for
+> any of it yet.
 
 **Building from source.** `main` depends on `superbigcup325/colenc@0.1.3`,
 published on mooncakes, so a plain checkout builds — no workspace file needed:
@@ -157,7 +161,7 @@ Remove both again before checking what a consumer actually installs.
 // a @catalog.Catalog with registered table entries — @csv/@parquet
 // scan into one; note the argument order: content/name, not name/content.
 // registration is lazy: the schema is available at once, and a query decodes
-// only the columns it projects, in 4096-row batches
+// only the columns it projects, in 2048-row batches
 
 ///|
 fn main raise {
@@ -275,6 +279,11 @@ consumer runs the packaged library on native / wasm-gc / js with freshly
 resolved dependencies; it checks CSV queries, Parquet raw/Snappy round-trips,
 DATE/NULL values and table removal. Reference tools are pinned in
 [harness/requirements.txt](harness/requirements.txt).
+
+A release page is the `CHANGELOG.md` section for that version, not a second copy
+of it: `python3 harness/release_notes.py <version>` prints the body (the title
+is the bare version), `--check <version>` asserts that a published body still
+matches its section, and `--lint` keeps the file in Keep a Changelog shape.
 
 ## Acknowledgements
 
