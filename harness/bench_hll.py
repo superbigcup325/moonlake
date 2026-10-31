@@ -296,6 +296,20 @@ def display(path: pathlib.Path) -> str:
     return str(path.relative_to(REPO)) if path.is_relative_to(REPO) else str(path)
 
 
+def record_path(path: pathlib.Path) -> str:
+    """A name for a path that may sit outside the repository.
+
+    The records travel with the repository, so where this checkout happens to
+    live is this machine's business and not the record's: a member inside the
+    repository is named from the root, a sibling checkout by its sibling name.
+    """
+    if path.is_relative_to(REPO):
+        return str(path.relative_to(REPO))
+    if path.parent == REPO.parent:
+        return "../" + path.name
+    return path.name
+
+
 def sha256_of(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -325,7 +339,7 @@ def dependency() -> dict:
             check=False,
         )
         if out.returncode == 0:
-            entry["colenc"] = str(member)
+            entry["colenc"] = record_path(member)
             entry["colenc_commit"] = out.stdout.strip()
             break
     return entry

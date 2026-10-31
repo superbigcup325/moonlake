@@ -9,7 +9,7 @@
     "dependency": {
       "source": "workspace",
       "moon_work": "moon.work",
-      "colenc": "/home/cyanthus/repos/moonlake/.colenc",
+      "colenc": ".colenc",
       "colenc_commit": "7200e5d8c6c6736ad7f1aff2f1d813ecf6f9d4c7"
     },
     "git_commit": "06514b40f35ae71e4e510a7c74da37fb223e11ba",
