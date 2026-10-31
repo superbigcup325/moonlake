@@ -2611,3 +2611,45 @@ The stage sums do not add to the wall time (1785 ms of stages against 1.62 s unb
 analyze carries a stats array and a census-free run still pays for it, so a duration is for
 attribution, not for benchmarks. The scan stage is the one place a stage can be *cheaper*
 than reality, because a lazy source's first batch is pulled inside the first join.
+
+## W5 (2026-10-31): a wrapped fit test, and the strategy it was hiding behind
+
+### Goal
+
+§95 refused a fix because it could not attribute the budget's cost. §96 built the clock and
+§96's first run put the cost on one swap. This round asked the swap why it was 2.8x, expecting
+to find a cursor that emits rows where it should emit runs.
+
+### What landed
+
+It was not the cursor. `routed_join`'s three fit tests compared `Int32` byte counts, two of
+them after doubling the count, so a side above 2^31 bytes wrapped negative and answered "this
+fits" for any budget at all. q2's step 2 wrapped on a 1.5 GB side and "fitted" 16 MB, then
+spent 2,437 of its 2,636 ms building an index over 7.47M hash entries instead of over the
+800,000-row side it was given. The comparisons are `Int64` now.
+
+Fixing that alone made q2 four times *slower* (3.64 s -> 14.14 s at 16 MB): with the wrap gone
+the step correctly refused the swap and fell through to the partitioner, which is the wrong
+tool for a 12.9 MB build side under a 16.7 MB budget. `build_fits` demanded half the budget —
+`batches_bytes(right) * 2 <= opts.budget` — while its own comment said the branch means "the
+build side fits the budget". Dropping the factor is the second half; together, q2 16 MB goes
+3.65 -> 1.96 s at the same peak, q7 3.40 -> 2.31 s, q9 3.44 -> 3.01 s, worst regression +4.4%
+(q22), and q7/q9 move only in the last bits of their float sums (2.7e-15, 4.4e-15).
+
+The report also names routing now: a routed step prints `join step 2 hashed the build side`,
+`... swapped its sides`, or `... partitioned`, so the next reader does not need a rebuilt
+counter binary to know which side became the hash side.
+
+### What it found on the way
+
+q2 is at 1.4 GB because of its FROM order, not its budget: step 1 is `part x supplier` (747
+rows x 10,000) and 7.47M rows exist before partsupp's keys can filter them. No hash strategy
+avoids holding that; a join reorder would, and it stays refused (§84) until its own contract.
+
+### Edges
+
+`Int32` byte counts are used all over the budget machinery (`batches_bytes` returns `Int32`,
+`join_agg_sides_bytes` summed into one). This round widened the two sides of the routing's
+comparisons and the join+aggregate composer's gate; the type itself is still `Int32`, so a
+6 GB single side would still truncate at the boundary. `estimate_batch_bytes` also saturates
+rather than raising — the numbers are estimates, and this round only removed the wrap.

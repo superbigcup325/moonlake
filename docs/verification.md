@@ -6534,3 +6534,108 @@ thread, and it is installed by the caller rather than by `ExecOptions` so that t
 `ExecOptions` literals in the tree — most of them tests — did not have to learn a new field.
 And the tag that names a join step now reaches the timing site on every path, not just on
 census paths, which is why the lines read `join step 1` rather than `join`.
+
+## 97. The routing test that wrapped, and the swap it kept choosing (2026-10-31)
+
+§96 put the whole of the budget's cost on one join step and named the step as a swap. The swap
+was not merely expensive, it was wrong: it hashed a side 100 times larger than the budget it
+was meant to respect, and it did so because its fit test wrapped.
+
+`routed_join` decides three ways with byte counts that come back as `Int32`:
+
+    let total = batches_bytes(acc) + batches_bytes(right)          // Int32 + Int32
+    if total <= opts.budget { ... }
+    let build_fits = batches_bytes(right) * 2 <= opts.budget       // Int32 * 2
+    let probe_fits = batches_bytes(acc) * 2 <= opts.budget         // Int32 * 2
+
+q2's step 2 reaches the last of those with `acc` at 1,517,473,966 bytes — 7,470,000 rows of
+part x supplier, materialised by step 1 because q2's FROM order puts a cross join first. Twice
+that is 3,034,947,932, which does not fit in `Int32` and wraps to -1,260,019,364. The test
+reads `-1260019364 <= 16777216` and answers **yes**: a 1.5 GB side "fits" a 16 MB budget, so
+the step hashes it and streams the 800k-row partsupp side past it.
+
+Instrumenting the cursor (a temporary build, reverted) shows where the 2.6 s went:
+
+| inside the swapped step | value |
+| --- | --- |
+| `SwapCursor::prime` (build the index over the prefix) | 2,437 ms |
+| `match_batch` (800,000 probe rows) | 46 ms |
+| `slice` (emit 7.47M output rows) | 1 ms |
+| fast int path, probe rows | yes, 800,000 |
+| prefix rows hashed | 7,470,000 |
+
+So the step spends 92% of its time building an index over 7.47M hash entries — a side nine
+times larger than the 800k side it could have hashed instead.
+
+**The second half of the defect.** With the wrap fixed and nothing else changed, the step
+correctly refuses that swap and falls through to the partitioner: q2 goes from 3.64 s to
+14.14 s at 16 MB (-288% backwards) while every other query stays where it was. The partitioner
+is the right answer for a bound, but not for a build side of 12.9 MB under a 16 MB budget.
+`build_fits` was the test that should have caught that step and it demanded *half* the budget
+(`batches_bytes(right) * 2 <= opts.budget`), so 12.9 MB was refused under 16.7 MB — although
+the comment above it already said the branch means "the build side fits the budget". The
+predicate now says what the comment says.
+
+Both halves are one change because either alone is a regression: the wrap makes a wrong
+strategy look affordable, and the half-budget test makes the right strategy look unaffordable.
+
+### What it buys, on the 22-query SF1 set at 16 MB
+
+Two rounds each, peak sampled from `/proc`, `same` means byte-identical output:
+
+| query | wall before | wall after | peak before | peak after |
+| --- | --- | --- | --- | --- |
+| q1 | 2.81 s | 2.80 s | 67.5 MB | 67.5 MB |
+| q2 | 3.65 s | **1.96 s** (-46.1%) | 1425.2 MB | 1425.1 MB |
+| q3 | 2.07 s | 2.05 s | 159.5 MB | 161.5 MB |
+| q4 | 1.88 s | 1.89 s | 107.5 MB | 107.5 MB |
+| q5 | 2.14 s | 2.15 s | 297.5 MB | 297.4 MB |
+| q6 | 1.96 s | 1.93 s | 29.5 MB | 29.5 MB |
+| q7 | 3.40 s | **2.31 s** (-32.2%) | 438.1 MB | 438.0 MB |
+| q8 | 1.91 s | 1.92 s | 289.4 MB | 288.9 MB |
+| q9 | 3.44 s | **3.01 s** (-12.7%) | 389.4 MB | 389.3 MB |
+| q10 | 3.63 s | 3.52 s | 258.4 MB | 255.8 MB |
+| q11 | 0.36 s | 0.37 s | 25.5 MB | 25.5 MB |
+| q12 | 2.82 s | 2.88 s | 35.4 MB | 35.5 MB |
+| q13 | 3.27 s | 3.23 s | 456.4 MB | 457.5 MB |
+| q14 | 3.53 s | 3.39 s | 55.4 MB | 55.5 MB |
+| q15 | 3.52 s | 3.63 s | 45.5 MB | 45.5 MB |
+| q16 | 0.42 s | 0.41 s | 41.6 MB | 41.6 MB |
+| q17 | 5.20 s | 4.70 s | 204.1 MB | 207.0 MB |
+| q18 | 4.50 s | 4.30 s | 79.4 MB | 73.6 MB |
+| q19 | 4.35 s | 4.35 s | 61.5 MB | 61.5 MB |
+| q20 | 2.39 s | 2.42 s | 94.1 MB | 95.9 MB |
+| q21 | 7.39 s | 7.31 s | 544.5 MB | 544.8 MB |
+| q22 | 0.72 s | 0.76 s | 33.5 MB | 33.5 MB |
+
+Nothing is slower than 5% (worst: q22 +4.4%) and no peak moves more than 2% except q18
+(-7.3%). Three queries gain: the one whose swap was wrong by nine times, and the two that were
+routing a 12.9 MB build to the partitioner or the swap when a plain hash join was affordable.
+
+q7 and q9 are the only answers that are not byte-identical. Both are float sums whose
+association follows the join's row order: worst relative difference 2.7e-15 and 4.4e-15, all
+176 rows of q9 moved in the last bits, and no field anywhere is more than 1e-9 off (§94's q1
+moved the same way when a batch size changed).
+
+### At 64 MB
+
+The same shape, with less to fix: q2 goes 2.26 -> 2.09 s (-7.7%) and its peak stays at 1.42
+GB; nothing else is outside +-5% (worst q22 +4.3%) and every peak is within 2% except q20's
++4.0% (99.5 -> 103.5 MB). At 64 MB q7 and q9 are byte-identical too — the float association
+only moves when the routing actually changes, which at that budget it does not.
+
+### What it does not fix
+
+q2 still peaks at 1.4 GB, and that is not the budget's fault: q2's FROM order makes step 1 a
+cross join of part (747 rows after the filters) with supplier (10,000), so 7.47M rows exist
+before partsupp's two keys can filter them, and no hash strategy avoids holding them. A join
+reorder would; it is a separate contract, and §84's "no reorder" still stands.
+
+The routing is now also named in `--analyze`: a routed step prints one line saying what it
+did with the side it had —
+
+    join step 2 hashed the build side: 1
+
+— from the three branches (hashed the build side, swapped its sides, partitioned). The census
+already named the swap when it was on; this names it without the census, and it is how the
+next reader can tell which side became the hash side without rebuilding with a counter.
