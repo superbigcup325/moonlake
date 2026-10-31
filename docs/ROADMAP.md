@@ -1912,6 +1912,31 @@ relaxing the composer gate moves nothing. Both candidate fixes need a step's out
 so the next contract is per-stage wall time in `--analyze` — an instrument, not a guess.
 §95.
 
+### The routing test that overflows (2026-10-31)
+
+§95 named the budget's cost on a join but not the mechanism; §96's clock put it in one step.
+The step's numbers say the step is hashing the wrong side, and the reason is arithmetic: the
+routing's "does the accumulated side fit" test reads
+
+    batches_bytes(acc) * 2 <= opts.budget
+
+with both sides `Int32`. q2's step 2 reaches it with `acc` at 1,517,473,966 bytes — 7,470,000
+rows of part x supplier — so the left side wraps to -1,260,019,364 and a 1.5 GB side "fits" a
+16 MB budget. The step then hashes those 7.47M rows: 2,437 ms of `SwapCursor::prime` inside a
+2,636 ms step, in a query whose whole unbudgeted run is 1.62 s. The same product appears in
+`build_fits`, and `total = batches_bytes(acc) + batches_bytes(right)` can overflow the same way.
+
+The bar, on the 22-query SF1 set at 16 MB and 64 MB:
+
+- no fit test can wrap: every comparison is exact for sides above 2^31 bytes, and a test that
+  says "fits" while the side is larger than the budget is a bug this round removes.
+- q2 at 16 MB no slower than today (3.61 s) and its peak no higher than today (1399 MB); no
+  query in the set more than 5% slower or more than 50% higher in peak than today's binary.
+- the branch a step takes is named by what the branch holds, so the report can say which side
+  became the hash side, not only that a step was routed.
+
+**Result (§97).** (filled in when measured)
+
 ### The instrument: per-stage time in `--analyze` (2026-10-31)
 
 §95 refused a fix because it could not attribute one: two candidate fixes for q2's 2.2x
