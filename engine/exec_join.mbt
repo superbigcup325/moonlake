@@ -153,8 +153,13 @@ fn routed_join(
   // batch a side, as it always did: a chain of many small batches costs a
   // partitioner a copy per batch per partition, and holding the handover's
   // batch and its copy at once measured worse than not collapsing (§65).
-  let total = batches_bytes(acc) + batches_bytes(right)
-  if total <= opts.budget {
+  // Int64: a side above 2^31 bytes wraps when doubled, and a wrapped test says
+  // "fits" exactly when the side is too big to fit (§97)
+  let acc_bytes = batches_bytes(acc).to_int64()
+  let right_bytes = batches_bytes(right).to_int64()
+  let budget = opts.budget.to_int64()
+  let total = acc_bytes + right_bytes
+  if total <= budget {
     return join_step(acc, right, step, census~, extra~, tag~, collapse=true)
   }
   match opts.spill {
@@ -173,9 +178,10 @@ fn routed_join(
       // this check's shape.
       let build_fits = match step.kind {
         Right => false
-        _ => batches_bytes(right) * 2 <= opts.budget
+        _ => right_bytes <= budget
       }
       if build_fits {
+        stats.push(("join \{tag} hashed the build side", 1L))
         return join_step(acc, right, step, census~, extra~, tag~, collapse=true)
       }
       // The mirror: the accumulated side is what fits, so it becomes the hash
@@ -184,12 +190,14 @@ fn routed_join(
       // INNER only: a LEFT or FULL step owes its unmatched rows to the side that
       // would become the build side.
       let probe_fits = match step.kind {
-        Inner => batches_bytes(acc) * 2 <= opts.budget
+        Inner => acc_bytes * 2L <= budget
         _ => false
       }
       if probe_fits {
+        stats.push(("join \{tag} swapped its sides", 1L))
         return join_swapped_stream(acc, right, step, census~, extra~, tag~)
       }
+      stats.push(("join \{tag} partitioned", 1L))
       collapse_handed(
         grace_join(acc, right, step, opts.budget, store, stats, census~),
         step,

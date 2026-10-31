@@ -472,8 +472,8 @@ fn JoinFoldPull::next(
 /// and measurement put that price at or below what the eager path holds for every
 /// TPC-H chain at SF1 once each side was indexed as one row-id range instead of a
 /// list per key (verification §52).
-fn join_agg_composes(sides_bytes : Int32, opts : ExecOptions) -> Bool {
-  opts.budget <= 0 || sides_bytes <= opts.budget
+fn join_agg_composes(sides_bytes : Int64, opts : ExecOptions) -> Bool {
+  opts.budget <= 0 || sides_bytes <= opts.budget.to_int64()
 }
 
 ///|
@@ -514,10 +514,10 @@ fn join_agg_scans_part(
 /// concatenated into one batch (a single batch is kept as it is), so the scan's
 /// own bytes bound it, and the check runs before the copy exists: a query that
 /// keeps the eager path never pays for one.
-fn join_agg_sides_bytes(scans : Array[Array[@types.DataBatch]]) -> Int32 {
-  let mut total = 0
+fn join_agg_sides_bytes(scans : Array[Array[@types.DataBatch]]) -> Int64 {
+  let mut total = 0L
   for side in scans {
-    total += batches_bytes(side)
+    total += batches_bytes(side).to_int64()
   }
   total
 }

@@ -396,9 +396,15 @@ test "the build side, not the whole join, decides whether a shape composes" {
   // the check runs on the charge its own function makes, before the copies
   // exist, so a query that keeps the eager path never pays for them
   let bytes = join_agg_sides_bytes(scans)
-  assert_true(bytes >= batches_bytes(scans[0]))
-  assert_false(join_agg_composes(bytes, { budget: bytes - 1, spill: None, }))
-  assert_true(join_agg_composes(bytes, { budget: bytes, spill: None, }))
+  assert_true(bytes >= batches_bytes(scans[0]).to_int64())
+  // one byte under the sum keeps the eager path, exactly the sum composes: the
+  // fit is a byte count, so it is compared as one (§97)
+  assert_false(
+    join_agg_composes(bytes, { budget: bytes.to_int() - 1, spill: None, }),
+  )
+  assert_true(
+    join_agg_composes(bytes, { budget: bytes.to_int(), spill: None, }),
+  )
   // unbounded is the same answer as "fits": nothing is refused for lack of a
   // budget, and the fold above it stays unbounded too
   assert_true(join_agg_composes(bytes, ExecOptions::in_memory()))
@@ -417,11 +423,17 @@ test "a chain's fit check sums every build side" {
   }
   assert_eq(scans.length(), 2)
   let bytes = join_agg_sides_bytes(scans)
-  assert_true(bytes > batches_bytes(scans[0]))
+  assert_true(bytes > batches_bytes(scans[0]).to_int64())
   assert_true(join_agg_sides(scans, launch.bq.steps).length() == 2)
   // a budget one byte under the sum keeps the eager path
-  assert_false(join_agg_composes(bytes, { budget: bytes - 1, spill: None, }))
-  assert_true(join_agg_composes(bytes, { budget: bytes, spill: None, }))
+  // one byte under the sum keeps the eager path, exactly the sum composes: the
+  // fit is a byte count, so it is compared as one (§97)
+  assert_false(
+    join_agg_composes(bytes, { budget: bytes.to_int() - 1, spill: None, }),
+  )
+  assert_true(
+    join_agg_composes(bytes, { budget: bytes.to_int(), spill: None, }),
+  )
   // without a budget the sides are the price and the fold is unbounded, so the
   // chain composes whatever they weigh
   assert_true(join_agg_composes(bytes, ExecOptions::in_memory()))

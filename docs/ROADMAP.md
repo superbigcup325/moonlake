@@ -1935,7 +1935,21 @@ The bar, on the 22-query SF1 set at 16 MB and 64 MB:
 - the branch a step takes is named by what the branch holds, so the report can say which side
   became the hash side, not only that a step was routed.
 
-**Result (§97).** (filled in when measured)
+**Result (§97).** The bar holds, and the defect was arithmetic rather than a strategy. The
+`Int32` products wrapped: a 1.5 GB side "fitted" 16 MB, so q2's step 2 hashed 7,470,000 rows
+for 2,437 ms of its 2,636 ms. With the comparisons in `Int64` and `build_fits` accepting a
+build side up to the budget — what its comment already claimed; the code demanded half —
+q2 at 16 MB reads 3.65 -> 1.96 s at the same 1,425 MB peak, q7 3.40 -> 2.31 s and q9
+3.44 -> 3.01 s. Nothing in the 22-query set is slower than +5% (worst q22 +4.4%) and no peak
+is more than 2% higher; at 64 MB q2 reads 2.26 -> 2.09 s with everything else inside +-5%.
+Twenty of the twenty-two answers are byte-identical at 16 MB; q7 and q9 move in the last bits
+of their float sums (relative 2.7e-15, 4.4e-15), the way §94's q1 moved when a batch size
+changed. A routed step now names its choice in `--analyze`, as the third bar item asked.
+
+The 1.4 GB peak stays, and §97 now attributes it to q2's FROM order rather than to the
+budget: step 1 is `part x supplier`, so 7.47M rows exist before partsupp's two keys can
+filter them, and no hash strategy avoids holding them. A join reorder is the fix; it remains
+a separate contract, and §84's refusal stands.
 
 ### The instrument: per-stage time in `--analyze` (2026-10-31)
 

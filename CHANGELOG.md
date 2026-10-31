@@ -8,10 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `--analyze` names what a routed join step did with the sides it had: `hashed the build
+  side`, `swapped its sides` or `partitioned`.
 - `--analyze` names the time each stage took on a target with a monotonic clock: `time
   collect`, `time join step <n>`, `time join`, `time aggregate` and `time sort` in
   milliseconds. The library's report is unchanged unless the caller installs the clock with
   `set_stage_clock`, so row and byte counts stay the deterministic part of ANALYZE.
+
+### Fixed
+
+- A join step's fit tests compared `Int32` byte counts after doubling them, so a side above
+  2^31 bytes wrapped negative and "fitted" any budget: q2 at 16 MB hashed a 1.5 GB side and
+  spent 2.4 s of a 2.6 s step doing it. The comparisons are `Int64`, and `build_fits` accepts
+  a build side up to the budget instead of half of it, which is what its comment always said.
+  q2 16 MB 3.65 -> 1.96 s, q7 3.40 -> 2.31 s, q9 3.44 -> 3.01 s at the same peaks; nothing in
+  the 22-query set is slower than +5%. q7 and q9 move in the last bits of their float sums
+  (relative 2.7e-15 and 4.4e-15).
 
 ## [0.6.3] - 2026-10-31
 
