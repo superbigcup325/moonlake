@@ -6447,3 +6447,45 @@ added segment by segment — the same association the partitioned path already d
 partition, and the reason the gate for numbers is still the unbudgeted run (one fold,
 unchanged). q1's integer sums and its counts are identical; its money sums differ in the
 12th significant digit (`56586554400.7299` -> `56586554400.73008`).
+
+## 95. The budget that holds more than no budget, and four ablations that moved the cost (2026-10-31)
+
+§89 left q2's 2.4 s unattributed after four refutations. The census settles the first half of
+the question and refuses the second: this is not an overhead on one engine, it is two
+engines. Unbudgeted q2 runs 402 structural points with a peak of 890 MB; at 16 MB it runs
+**12** points with a peak of 1399 MB.
+
+| q2, SF1, native | wall | peak |
+| --- | --- | --- |
+| no budget | 1.62 s | 890 MB |
+| 64 MB | 1.97 s | 1401 MB |
+| 16 MB | 3.61 s | 1399 MB |
+
+A budget costs this shape 2.2x in time and 1.6x in memory, and the peak is set by the shape
+rather than by the budget (the same 1.4 GB at 16 MB and 64 MB). The routing's decisions
+claim to bound the sides; what they do not bound is the step's own output — 800k rows of
+part x partsupp, named at 1.62 GB collected and 3.2 GB collapsed (a 4.4 MB spill is all
+that reaches disk).
+
+Four ablations against the same tree, each rebuilt and measured:
+
+- **the routing itself.** Every budgeted step handed to plain `join_step`: q2 3.61 -> 1.63 s
+  (-54.5%), answers identical. This is the whole gap, and it is the routing, not the sort,
+  the scan, the projection or the fold.
+- **the collapse.** Not collapsing when the sides fit: q2 4.01 s (+11%), peak 2053 MB (+46%);
+  q7 -19% and q21 -14% peak. The collapse is not the cost either, and removing it is worse.
+- **the two fit branches.** Disabling both (`build_fits`, `probe_fits`) leaves grace only:
+  q2 13.43 s (+274%), q8 3.71 s against 1.74 s, q17 +17% with a peak 2.4x higher. The
+  branches that made 0.6.1's q8 win are worth their keep, so this is refused.
+- **the composer.** Relaxing `join_agg_composes` from the budget to 16x it moved no query at
+  all: every composable join+aggregate shape in the set already composes, and the shapes
+  that do not are past 256 MB of sides. That gate costs the matrix nothing.
+
+What is left is the missing measurement, and it is a clock rather than a cache. The two
+candidate fixes both need to know a step's *output* size before choosing how to produce it:
+the estimator that would say it (the `collapsed its output` label) measures after the fact,
+and this host has no profiler. So the round stops here with the curve, the four ablations
+and the one defect worth naming loudly: **for this shape a budget is slower and hungrier than
+no budget at all**, which means the routing's promise is not kept where the output exceeds
+it. The next contract is the instrument: per-stage wall time in `--analyze`, so the next
+attempt attributes instead of ablating.

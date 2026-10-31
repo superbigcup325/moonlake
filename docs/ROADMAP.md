@@ -1900,6 +1900,18 @@ The bar, on the 22-query SF1 set at 16 MB and 64 MB:
 - the rule that picks between the two paths is stated in terms of what each one holds, not
   as a constant tuned to q2, and the queries it moves are named with their before and after.
 
+**Result (§95).** Refused for now, with the gap attributed one step further than §89 left
+it. The census shows two engines rather than an overhead: 402 structural points unbudgeted
+against 12 at 16 MB, and q2 reads 1.62 s / 890 MB unbudgeted, 1.97 s / 1401 MB at 64 MB and
+3.61 s / 1399 MB at 16 MB — a budget that is slower *and* hungrier, with the peak set by the
+shape instead of the budget. Four ablations: the routing itself is the whole gap (plain
+`join_step` for every step reads 1.63 s, -54.5%, identical answers), the collapse is not it
+(removing it is +11% and +46% peak), grace alone is 13.4 s so the fit branches stay, and
+relaxing the composer gate moves nothing. Both candidate fixes need a step's output size
+*before* choosing how to produce it, and the label that could say it measures after the fact,
+so the next contract is per-stage wall time in `--analyze` — an instrument, not a guess.
+§95.
+
 ### The small-group aggregate contract (2026-10-31)
 
 q1 is the classic report: 5.9M rows of lineitem folded into **four** groups. Under a
