@@ -1,11 +1,15 @@
 # moonlake correctness and performance verification report
 
-> 2026-10-06 · distillation of the verification arc. Goal: go beyond the
-> surface evidence of "SF0.01 + 1e-9 relative tolerance cross-check", give
-> reproducible, normalized verification for vectorization, hash join and
-> predicate pushdown, and provide empirical numbers for performance, memory,
-> spilling, concurrency and edge cases. Every item is reproducible with the
-> commands quoted in the text.
+> Started 2026-10-06 as a distillation of the verification arc, and append-only
+> since: 97 sections, the latest dated 2026-10-31 (§97). Sections are numbered
+> in the order they were measured and each carries its own date, so the date to
+> trust is the section's, not this line's.
+>
+> Goal: go beyond the surface evidence of "SF0.01 + 1e-9 relative tolerance
+> cross-check", give reproducible, normalized verification for vectorization,
+> hash join and predicate pushdown, and provide empirical numbers for
+> performance, memory, spilling, concurrency and edge cases. Every item is
+> reproducible with the commands quoted in the text.
 
 ## 1. Vectorization (eval_vec vs the scalar interpreter)
 
