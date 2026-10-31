@@ -20,6 +20,16 @@
   .drop { border: 2px dashed color-mix(in srgb, currentColor 40%, transparent); border-radius: .5rem;
           padding: 1rem; text-align: center; font-size: .9rem; }
   .drop.over { border-color: highlight; }
+  /* The native control is drawn by the browser in the browser's own UI language,
+     so a Chinese browser put its own "choose file" / "no file chosen" strings in
+     the middle of this English page. The label below is ours; the input is still
+     a real one (Playwright and the file dialog both reach it), only invisible. */
+  .filebtn { display: inline-block; padding: .3rem .9rem; border-radius: .35rem; cursor: pointer;
+            border: 1px solid color-mix(in srgb, currentColor 35%, transparent); font-size: .9rem; }
+  .filebtn:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+  .filebtn:focus-within { outline: 2px solid highlight; outline-offset: 2px; }
+  .filebtn input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+                   overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .err { color: #c0392b; font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap; }
   pre { background: color-mix(in srgb, currentColor 6%, transparent); padding: .6rem .8rem; overflow-x: auto; font-size: .82rem; }
   #tables { font-size: .85rem; }
@@ -33,7 +43,7 @@
 <p>The whole analytical engine, compiled to WebAssembly GC — your files never leave the browser, no server, no external wasm modules. Upload several files, join across them, inspect the plan.</p>
 
 <div class="drop" id="drop">drop <code>.csv</code> / <code>.parquet</code> files here (one or many), or
-  <input type="file" id="file" accept=".csv,.parquet,text/csv" multiple>
+  <label class="filebtn" for="file">choose files<input type="file" id="file" accept=".csv,.parquet,text/csv" multiple></label>
   <div>parquet DATE columns without a DATE annotation: <input type="text" id="datecols" placeholder="comma-separated, e.g. l_shipdate" style="width:16rem"></div>
 </div>
 
