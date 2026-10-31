@@ -1922,8 +1922,9 @@ drifted: 0.6.3's page predates §95-§97 and does not mention them.
 From now on a release page is a view of the file, not a second copy of it:
 
 - the title is the bare version: `0.6.3`;
-- the body is `python3 harness/release_notes.py 0.6.3 --with-link` — the CHANGELOG section
-  for that version verbatim, then where the record lives and the install line;
+- the body is `python3 harness/release_notes.py 0.6.3` — the CHANGELOG section for that
+  version verbatim, then where the record lives and the install line (`--plain` drops the
+  trailer);
 - `python3 harness/release_notes.py --check 0.6.3 < body.txt` asserts a published body is
   still the section it claims, which is how a page edited by hand is caught;
 - `python3 harness/release_notes.py --lint` keeps the file in Keep a Changelog shape: every
