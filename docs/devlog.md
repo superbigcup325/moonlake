@@ -2653,3 +2653,58 @@ avoids holding that; a join reorder would, and it stays refused (§84) until its
 comparisons and the join+aggregate composer's gate; the type itself is still `Int32`, so a
 6 GB single side would still truncate at the boundary. `estimate_batch_bytes` also saturates
 rather than raising — the numbers are estimates, and this round only removed the wrap.
+
+## W5 (2026-10-31): what the documents said, and what the releases did
+
+### Goal
+
+The README, the nine published release pages, the release baseline and the spill survey were
+each written once and not re-read against the code since. Ask every one of them what it claims
+and check the claim against the tree, the registry and a measurement.
+
+### What landed
+
+**Release pages.** Four title styles (`moonlake 0.3.1 — the browser build loads…`,
+`0.6.2 — the residual stops rebuilding the side that never moves`, `v0.6.1`, `0.6.3`) and nine
+hand-written bodies that had drifted from the CHANGELOG sections beside them; 0.6.3's page
+predates §95-§97 and never mentions them. The title is the bare version now and the body is
+printed by `harness/release_notes.py <ver>`: the CHANGELOG section verbatim, then the record
+link pinned to the tag and the install line, so the page and the file cannot say different
+things. `--check` asserts a published body still matches its section, which is how a hand edit
+is caught, and it caught itself first: its default rendering dropped the trailer every
+published body carries, so all nine reported a mismatch until that was fixed.
+
+**The file itself.** `--lint` wants every version dated, subsections only
+Added/Changed/Deprecated/Removed/Fixed/Security and in that order. It found six violations
+(0.6.2, 0.5.0, 0.3.1 and 0.2.0 out of order, 0.4.0 with a `### Performance` section that is not
+one of the six). Reordered, with no content changed: 1,170 content lines before and after,
+compared as a multiset.
+
+**README.** It still said `moon add` gives 0.6.0, its benchmark table was 2026-10-06's, and it
+described a scan as producing 4096-row batches (2048 since §68) and `--analyze` as it was
+before §96 gave it a clock. The 22 queries were re-measured with `harness/bench.py` and DuckDB
+2.0 on the same data: 10-129 ms against 1.1-6.1 ms, and the fresh-`read_csv_auto` caveat
+re-measured at 49 ms rather than carried over. The budget paragraph now says what a routed step
+does with a side it cannot fit (swap, §82) and that `--analyze` reports `fold segments`.
+Quickstart output re-run and unchanged.
+
+**docs/bench-baseline.md** promised one record per release and had none since 0.5.1, and
+`--compare` refuses to print deltas across a toolchain change, so reusing the old record would
+have mixed `moon 0.1.20261016` with 0.1.20261023. Both tags were built as worktrees of one
+checkout and recorded back to back: 0.6.3 (`6736796`) and a 0.5.1 control (`f8e1204`). Five
+cases moved further than their own run-to-run spread and all five moved down (the two CSV
+counts -19.3% and -17.8%, the two join cases -15.1% and -17.8%, the self-join fanout -24.1%);
+the control ran at 4.2 GHz and 0.6.3 at 3.46 GHz, so the wins are conservative. The two
+spill-format cases are recorded but not comparable, because the piece byte model changed and
+they write different arrangements.
+
+**docs/spill-survey.md** opens with "exceeding memory means the query cannot run", which has
+been false since the budget landed. It keeps its 2026-10-04 text and gains a status note naming
+which of its §4 decisions was taken: a byte budget per query, MLSPILL3 over the parquet reuse
+(the §3.5 bake-off measured it 1.6x faster to write with equal reads), and scan laziness as
+"external files supplied batch by batch".
+
+### What this round was not
+
+No engine change, so no verification section: every number here is either re-measured with an
+existing harness or quoted from the section that first measured it.

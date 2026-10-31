@@ -5,6 +5,27 @@
 > be scoped. Background numbers are in `docs/verification.md` §5: memory grows
 > near-linearly with data, SF0.1 ≈ 353 MB, extrapolating to SF1.0 ≈ 3.5 GB —
 > under the current architecture, exceeding memory means the query cannot run.
+>
+> **Status, 2026-10-31: that last sentence is no longer true, and this survey is
+> now history rather than an open design.** Read §3 as the decision that was
+> taken. Shape B landed as sketched there: the engine takes a byte budget and
+> stays free of the filesystem, and the caller injects both (`--memory` in the
+> CLI, `ExecOptions` in the library). The three decision points in §4 have
+> answers. The budget interface is a byte count per query, priced in §25. The
+> spill format is MLSPILL3, the hand-written serializer of candidate (a): the
+> bake-off in §3.5 measured it 1.6x faster to write than the parquet reuse in
+> (b) with equal reads, and the later presence bitmap removed the last per-row
+> byte (this file's 2026-10-19 addendum; lifecycle in §10, reclamation in §22).
+> The scope of scan laziness is "external files supplied batch by batch", and on
+> native the reader touches only the projected column chunks of the row groups
+> the statistics did not prune. Operators: the external sort of §5.2, extended
+> to sort, feed and hand over incrementally (§33); a hash join whose one-sided
+> spill swaps the sides or partitions them (§81, §82); and hash aggregation,
+> which partitions past the budget and, since 0.6.3, folds in `budget`-sized
+> segments when its state is a row (§45, §94). Two things this survey did not
+> anticipate: a query under a budget can be slower than the same query above it
+> (§89), and a byte fit test can be wrong in both directions, because an `Int32`
+> comparison wraps and a half-budget factor hides behind it (§97).
 
 ## 1. Six systems at a glance
 

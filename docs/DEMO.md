@@ -46,9 +46,9 @@ moon run cmd/main -- exec --explain \
 ```
 
 `--json` emits the result as one JSON array, printed as it arrives: the
-opening `[` starts the first line and each batch adds one more, so a 2,000,000-row
-result is 489 lines that `json.load` reads as one document (a result that fits
-one batch is a single line). Strings are escaped and SQL NULL is `null`.
+opening `[` starts the first line and each 2,048-row batch adds one more, so a
+2,000,000-row result is about 980 lines that `json.load` reads as one document
+(a result that fits one batch is a single line). Strings are escaped and SQL NULL is `null`.
 
 ## 2. Cross-validate against DuckDB (the correctness claim)
 
@@ -85,9 +85,10 @@ moon build cmd/main --target native   # the module's preferred target is
 uv run --python 3.12 --with-requirements harness/requirements.txt python harness/bench.py
 ```
 
-Prints the moonlake-native vs DuckDB table from the README (best of 3
-per query). Numbers vary by machine; the comparison is what is being
-demonstrated, not superiority.
+Prints all 22 TPC-H queries, moonlake native against DuckDB over the same
+CSV data, best of 3 per query (the README quotes an eight-query spread of it).
+Numbers vary by machine; the comparison is what is being demonstrated, not
+superiority.
 
 ## 4. Tests and gates
 
@@ -111,8 +112,8 @@ python3 harness/check_release.py --check-consumer
 ```
 
 After publishing a new release of the current API, validate the registry copy
-without a workspace override (replace `0.5.0` with the published version):
+without a workspace override (replace `0.6.3` with the published version):
 
 ```bash
-python3 harness/check_consumer.py --registry-version 0.5.0
+python3 harness/check_consumer.py --registry-version 0.6.3
 ```
