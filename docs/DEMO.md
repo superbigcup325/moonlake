@@ -116,8 +116,8 @@ python3 harness/check_release.py --check-consumer
 ```
 
 After publishing a new release of the current API, validate the registry copy
-without a workspace override (replace `0.6.3` with the published version):
+without a workspace override (replace `0.6.4` with the published version):
 
 ```bash
-python3 harness/check_consumer.py --registry-version 0.6.3
+python3 harness/check_consumer.py --registry-version 0.6.4
 ```

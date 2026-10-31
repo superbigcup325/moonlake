@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.4] - 2026-10-31
 
 ### Added
 
@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI pins `moonc 0.10.18+6c83a7f62` instead of taking whatever `latest` is, and
   asserts the 0.10.16 floor in every job. A nightly `toolchain-latest` job checks
   the upstream release informationally.
+- The README opens with two screenshots of the playground, install and library use became
+  subsections of the quickstart, the benchmark table keeps four of its eight rows (the rest
+  is `harness/bench.py`) and the scan-pushdown numbers are cited from verification §68 rather
+  than restated. The verification report dates each section instead of the file, and the
+  roadmap names the current release.
 
 ### Fixed
 
@@ -33,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   q2 16 MB 3.65 -> 1.96 s, q7 3.40 -> 2.31 s, q9 3.44 -> 3.01 s at the same peaks; nothing in
   the 22-query set is slower than +5%. q7 and q9 move in the last bits of their float sums
   (relative 2.7e-15 and 4.4e-15).
+- The playground drew the browser's own file input, so a browser whose UI language is not
+  English put its own "choose file" strings in the middle of an English page. The control is
+  a page-styled label now; the input stays a real one and is only invisible, so the file
+  dialog and the acceptance run still reach it.
 
 ## [0.6.3] - 2026-10-31
 

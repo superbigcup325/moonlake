@@ -11,10 +11,9 @@ CSV and Parquet files in-process, native or in the browser, from one codebase.
 as wasm-gc, all client-side. Drag in one or more CSV/Parquet files, write SQL, get a
 columnar result, inspect the physical plan. No install, nothing uploaded.
 
-Latest release **0.6.3** (2026-10-31) on
+Latest release **0.6.4** (2026-10-31) on
 [mooncakes](https://mooncakes.io/docs/superbigcup325/moonlake), Apache-2.0. This README
-and the playground track `main`; what has landed since 0.6.3 is under *Unreleased* in
-[CHANGELOG.md](CHANGELOG.md).
+and the playground track `main`; [CHANGELOG.md](CHANGELOG.md) records each release.
 
 ## What it is
 

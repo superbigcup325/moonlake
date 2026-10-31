@@ -1,10 +1,11 @@
 # Roadmap
 
-**Current release: 0.6.3 (2026-10-31).** `CHANGELOG.md` and the release pages are
+**Current release: 0.6.4 (2026-10-31).** `CHANGELOG.md` and the release pages are
 what shipped; this file is the planning log and keeps the order it was written
 in, so the 0.6.1 note below predates 0.6.2 (the residual is evaluated once, and
-the partitioner routes in chunks — §90, §92) and 0.6.3 (a budgeted `GROUP BY`
-folds in segments when its state fits — §94).
+the partitioner routes in chunks — §90, §92), 0.6.3 (a budgeted `GROUP BY` folds
+in segments when its state fits — §94) and 0.6.4 (`--analyze` names the time each
+stage took — §96 — and a fit test above 2^31 bytes no longer wraps — §97).
 
 **0.6.1 is released** — `superbigcup325/moonlake@0.6.1` on mooncakes, the annotated
 tag `v0.6.1` on `ec63c74`, a GitHub release, and the deployed playground passing
