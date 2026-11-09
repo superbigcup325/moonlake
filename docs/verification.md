@@ -6664,11 +6664,18 @@ Acceptance on the upgraded tree:
 - both runnable examples; and
 - all nine release-benchmark answer oracles agree with DuckDB.
 
-The timed release baseline has not been re-recorded. The host was under
-unrelated 100%-per-core Flutter and Edge work throughout the acceptance window
-and load stayed between 1.7 and 15, so a JSON record from it would be a wrong
-number in a tracked document. Re-run `harness/bench_release.py` when the host is
-quiet; no dependency performance claim is made until then.
+A timed baseline was recorded at `harness/baseline/2026-11-09-colenc-0.1.4.json`
+when load fell to 0.56 before and 0.89 after the run. The native release
+medians of seven runs were: `scan/count_csv` 212.9 ms, `join/q3` 368.2 ms,
+`gather/wide_projection` 785.8 ms, `gather/self_join_fanout` 468.5 ms,
+`spill/order_by_wide` 864.7 ms, and spill format write/read 2352.0/936.2 ms.
+The nine timed answers agree with DuckDB. The record keeps its own run spreads;
+the 7 ms Parquet count case moved 75.2% across runs and the wide projection
+32.5%, so these rows are compared against that spread and never through one
+sample. No 0.1.3-versus-0.1.4 performance claim is made from this record.
+
+An earlier attempt during unrelated Flutter and Edge work was discarded: load
+was between 1.7 and 15 and its spreads were too large for a tracked baseline.
 
 The F1 and I0 evidence checks are unchanged at moonlake `3b69d33`: there is no
 FSST encode call or retained model between batches, and no Roaring or
