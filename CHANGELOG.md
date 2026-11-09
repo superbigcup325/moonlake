@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   it adds typed HLL batch updates and `TDigest::quantiles`, and carries the
   Roaring portable-stream and performance fixes. No moonlake source change was
   required.
+- `string_agg` appends each value to a `StringBuilder` instead of rebuilding a
+  growing `String` on every row. On 4,000,000 rows and 100 groups under a 4 MB
+  budget, three interleaved rounds put the unchanged control at 45.07 s and the
+  candidate at 2.49 s (-94.5%), with identical answers, 64.2 versus 64.3 MB peak
+  RSS, the same 16 spill partitions/402 files, and a 9% worst round-to-round
+  spread. A regression test pins multi-row order and separators.
 
 ## [0.6.4] - 2026-10-31
 

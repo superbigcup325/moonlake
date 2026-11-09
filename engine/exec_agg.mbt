@@ -50,7 +50,7 @@ priv struct AccMed {
 
 ///|
 priv struct AccStrAgg {
-  mut text : String
+  text : StringBuilder
   mut seen : Bool
 }
 
@@ -100,7 +100,7 @@ fn new_accs(aggs : Array[AggSpec]) -> Array[Acc] {
         Avg => AvgF({ sum: 0.0, count: 0L, })
         Count | CountStar => CountOf({ count: 0L, })
         CountDistinct => Distinct({ seen: Map([]), })
-        StringAgg => StrAgg({ text: "", seen: false, })
+        StringAgg => StrAgg({ text: StringBuilder(), seen: false, })
         SdSamp | SdPop | VarSamp | VarPop =>
           VarF({ mean: 0.0, m2: 0.0, count: 0L, })
         Median => MedV({ vals: [], })
@@ -183,11 +183,13 @@ fn acc_step(acc : Acc, spec : AggSpec, input : @types.Scalar) -> Unit {
         StrAgg(a) =>
           match v {
             @types.Str(s) => {
-              let sep = match spec.sep {
-                Some(x) => x
-                None => ""
+              if a.seen {
+                match spec.sep {
+                  Some(sep) => a.text.write_string(sep)
+                  None => ()
+                }
               }
-              a.text = if a.seen { a.text + sep + s } else { s }
+              a.text.write_string(s)
               a.seen = true
             }
             _ => ()
@@ -278,7 +280,12 @@ fn acc_finish(acc : Acc, spec : AggSpec) -> @types.Scalar raise @types.SqlError 
         )
       }
     }
-    StrAgg(a) => if a.seen { @types.Str(a.text) } else { @types.Null }
+    StrAgg(a) =>
+      if a.seen {
+        @types.Str(a.text.to_string())
+      } else {
+        @types.Null
+      }
     MedV(a) => {
       if a.vals.length() == 0 {
         return @types.Null

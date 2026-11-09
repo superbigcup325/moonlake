@@ -6681,3 +6681,28 @@ The F1 and I0 evidence checks are unchanged at moonlake `3b69d33`: there is no
 FSST encode call or retained model between batches, and no Roaring or
 row-selection/gather path in the engine. Both investigations remain gated on a
 consumer workload rather than a colenc API change.
+
+## 99. string_agg rebuilt a growing string per row (2026-11-09)
+
+The accumulator stored a `String` and did `a.text + sep + s` for every row.
+Each step therefore copied the whole aggregate built so far; a group with `n`
+values paid quadratic copying and allocated a new string each time. The
+accumulator now owns a `StringBuilder`, writes the separator (except before the
+first value) and the value, and converts once at the finish step. NULL inputs
+are still skipped, the separator is still literal-only, and values keep row
+order.
+
+`harness/bench_agg_pull.py --shapes string-state --budgets 4M --rounds 3`
+against the unchanged binary, three interleaved rounds on the same host:
+
+| candidate | control | peak RSS | answers | counters |
+| --- | --- | --- | --- | --- |
+| 2.49 s | 45.07 s | 64.2 / 64.3 MB | identical | 16 partitions, 402 files |
+
+The worst round-to-round wall spread was 9%, and load was 0.66 before and 1.14
+after the cases. The control binary was SHA-256 `fc75a449…8e95`; the candidate
+was `54b306b8…cff9`, so the two samples were not the same executable. The new
+regression test `string_agg keeps row order and separators across many values`
+pins `a|b|c` for three rows in one group. wasm-gc 421, native 435 and js 421
+tests pass, as do all 33 golden comparisons. The 18x gain is in the accumulator
+copy, not in partitioning: spill counts and bytes are unchanged.

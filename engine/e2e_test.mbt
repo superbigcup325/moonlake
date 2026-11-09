@@ -2566,6 +2566,19 @@ test "string_agg concatenates with a literal separator" {
 }
 
 ///|
+test "string_agg keeps row order and separators across many values" {
+  let cat = @catalog.Catalog::new()
+  cat.register(
+    @csv.scan_string("k,v\n1,a\n1,b\n1,c\n", "t") catch {
+      e => abort("\{e}")
+    },
+  )
+  let r = run("SELECT string_agg(v, '|') AS joined FROM t GROUP BY k", cat)
+  assert_eq(r.row_count(), 1)
+  assert_eq(r.get(0, 0), @types.Str("a|b|c"))
+}
+
+///|
 /// Projection pruning reaches the scan: a column the query never reads is
 /// never parsed, so a value that would fail its inferred type cannot fail the
 /// query. Asking for the column still surfaces the error.
