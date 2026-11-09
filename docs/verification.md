@@ -6643,3 +6643,34 @@ did with the side it had —
 — from the three branches (hashed the build side, swapped its sides, partitioned). The census
 already named the swap when it was on; this names it without the census, and it is how the
 next reader can tell which side became the hash side without rebuilding with a counter.
+
+## 98. colenc 0.1.4 dependency acceptance (2026-11-09)
+
+The dependency moves from colenc 0.1.3 to 0.1.4 in `deps/colenc-0.1.4`. No source
+change was required. The dependency changes serialized data in no way: it adds
+typed HLL batch updates and `TDigest::quantiles`, and carries the Roaring
+portable-stream and measured CPU fixes.
+
+Acceptance on the upgraded tree:
+
+- wasm-gc 420/420, native 434/434 and js 420/420 tests;
+- `moon check --deny-warn`, `moon fmt --check` and interface freshness;
+- the 33 TPC-H golden comparisons plus external-sort, grace-join and
+  grace-aggregation equivalence;
+- the spill lifecycle and failure-cleanup suite;
+- all eight embedded and nine regenerable Parquet page-level encoding cases;
+- writer interop in both directions with pyarrow and DuckDB;
+- the packaged consumer from a fresh cache on native, wasm-gc and js;
+- both runnable examples; and
+- all nine release-benchmark answer oracles agree with DuckDB.
+
+The timed release baseline has not been re-recorded. The host was under
+unrelated 100%-per-core Flutter and Edge work throughout the acceptance window
+and load stayed between 1.7 and 15, so a JSON record from it would be a wrong
+number in a tracked document. Re-run `harness/bench_release.py` when the host is
+quiet; no dependency performance claim is made until then.
+
+The F1 and I0 evidence checks are unchanged at moonlake `3b69d33`: there is no
+FSST encode call or retained model between batches, and no Roaring or
+row-selection/gather path in the engine. Both investigations remain gated on a
+consumer workload rather than a colenc API change.

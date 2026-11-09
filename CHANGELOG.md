@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The `superbigcup325/colenc` dependency moves from 0.1.3 to 0.1.4. The
+  dependency keeps every serialized format and encoding choice bit unchanged;
+  it adds typed HLL batch updates and `TDigest::quantiles`, and carries the
+  Roaring portable-stream and performance fixes. No moonlake source change was
+  required.
+
 ## [0.6.4] - 2026-10-31
 
 ### Added
